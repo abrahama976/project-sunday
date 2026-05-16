@@ -140,10 +140,10 @@ export default function ChatPage() {
           >
             <div style={{ fontSize: "2rem", marginBottom: "1rem" }}>◈</div>
             <p style={{ fontSize: "1.125rem", color: "var(--color-text-muted)" }}>
-              Good evening, Rohit.
+              Hi, Alstone.
             </p>
             <p style={{ fontSize: "0.875rem", marginTop: "0.5rem" }}>
-              Project Sunday is ready. What are we working on tonight?
+              Project Sunday is ready. What are we working on?
             </p>
           </div>
         )}
