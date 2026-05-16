@@ -33,3 +33,5 @@ yarn-error.log*
 
 # Misc
 *.log
+# Local credentials — never commit
+supabase/Credentials/
