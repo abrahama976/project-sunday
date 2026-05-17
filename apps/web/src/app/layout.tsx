@@ -29,7 +29,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning data-scroll-behavior="smooth" className={inter.variable}>
       <body style={{ fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
         <NavBar />
-        <main style={{ minHeight: "calc(100dvh - 56px)" }}>{children}</main>
+        <main style={{
+          minHeight: "calc(100dvh - 52px - 60px)",
+          marginTop: 0,
+        }}>{children}</main>
       </body>
     </html>
   );

@@ -85,6 +85,7 @@ export default function ChatPage() {
     );
 
     let channel: ReturnType<typeof supabase.channel> | null = null;
+    let pollInterval: number | undefined;
 
     void (async () => {
       const {
@@ -117,10 +118,16 @@ export default function ChatPage() {
             void loadHistory();
           }
         });
+
+      // Polling fallback: re-fetch every 4s in case Realtime drops assistant messages
+      const pollInterval = setInterval(() => {
+        void loadHistory();
+      }, 4000);
     })();
 
     return () => {
       cancelled = true;
+      clearInterval(pollInterval);
       authListener.subscription.unsubscribe();
       if (channel) supabase.removeChannel(channel);
     };
@@ -163,7 +170,7 @@ export default function ChatPage() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100dvh - 56px)" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100dvh - 52px)", paddingBottom: "60px" }}>
       <div
         style={{
           flex: 1,
@@ -203,7 +210,7 @@ export default function ChatPage() {
           >
             <div
               style={{
-                maxWidth: "72ch",
+                maxWidth: "min(72ch, calc(100vw - 2.5rem))",
                 padding: "0.75rem 1rem",
                 borderRadius:
                   msg.role === "user"
@@ -280,6 +287,7 @@ export default function ChatPage() {
           background: "var(--color-surface)",
           display: "flex",
           gap: "0.75rem",
+          marginBottom: "0px",
         }}
       >
         <textarea
