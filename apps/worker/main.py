@@ -14,7 +14,7 @@ from router import route
 from summariser import maybe_summarise
 from context.loader import load_profile
 from executors.base import already_executed, mark_executed, set_status
-from executors.file_ops import file_read, file_list
+from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
 from executors.calendar_ops import calendar_query
@@ -57,6 +57,8 @@ async def execute_action(client: Client, action: dict):
             result = await file_read(**args)
         elif tool == "file_list":
             result = await file_list(**args)
+        elif tool == "file_write":
+            result = await file_write(**args)
         elif tool == "update_profile":
             result = await update_profile(**args)
         elif tool == "web_fetch":

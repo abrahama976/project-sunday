@@ -1,5 +1,18 @@
 TOOLS = [
     {
+        "name": "file_write",
+        "description": "Write text content to a file. Always requires user approval.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute or ~ path to write to"},
+                "content": {"type": "string", "description": "Text content to write"},
+                "append": {"type": "boolean", "description": "If true, append to file instead of overwriting (default false)"}
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
         "name": "file_read",
         "description": "Read the contents of a file on the Mac.",
         "parameters": {
