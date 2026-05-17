@@ -35,3 +35,8 @@ yarn-error.log*
 *.log
 # Local credentials — never commit
 supabase/Credentials/
+
+# Worker Google OAuth (local only)
+apps/worker/credentials.json
+apps/worker/token_calendar.json
+apps/worker/token_gmail.json
