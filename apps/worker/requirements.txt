@@ -1,0 +1,7 @@
+fastapi==0.115.12
+uvicorn==0.34.3
+supabase>=2.16.0
+realtime==2.4.3
+google-genai==1.16.0
+python-dotenv==1.1.0
+aiofiles==24.1.0

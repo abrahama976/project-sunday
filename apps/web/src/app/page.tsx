@@ -36,48 +36,93 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Subscribe-first, load-second, dedupe — fixes the race.
   useEffect(() => {
     let cancelled = false;
     const seen = new Set<string>();
 
-    const channel = supabase
-      .channel("messages-realtime")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
-        (payload) => {
-          const row = payload.new;
-          if (!isMessage(row)) return;
-          if (seen.has(row.id)) return;
-          seen.add(row.id);
-          setMessages((prev) => [...prev, row]);
+    const mergeMessages = (rows: Message[]) => {
+      setMessages((prev) => {
+        const byId = new Map<string, Message>();
+        for (const m of prev) byId.set(m.id, m);
+        for (const m of rows) {
+          seen.add(m.id);
+          byId.set(m.id, m);
         }
-      )
-      .subscribe();
+        return Array.from(byId.values()).sort((a, b) =>
+          a.created_at.localeCompare(b.created_at)
+        );
+      });
+    };
 
-    (async () => {
-      const { data, error } = await supabase
+    const appendMessage = (row: Message) => {
+      if (seen.has(row.id)) return;
+      seen.add(row.id);
+      mergeMessages([row]);
+    };
+
+    const loadHistory = async () => {
+      const { data, error: loadErr } = await supabase
         .from("messages")
         .select("*")
         .order("created_at", { ascending: true })
         .limit(MAX_MESSAGES_LOADED);
 
       if (cancelled) return;
-      if (error) {
-        setError(`Failed to load history: ${error.message}`);
+      if (loadErr) {
+        setError(`Failed to load history: ${loadErr.message}`);
         return;
       }
-      if (data) {
-        const valid = data.filter(isMessage);
-        valid.forEach((m) => seen.add(m.id));
-        setMessages(valid);
+      if (data) mergeMessages(data.filter(isMessage));
+    };
+
+    // RLS-filtered Realtime requires the user JWT on the socket.
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.access_token) {
+          supabase.realtime.setAuth(session.access_token);
+        }
       }
+    );
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    void (async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (session?.access_token) {
+        await supabase.realtime.setAuth(session.access_token);
+      }
+
+      channel = supabase
+        .channel("messages-realtime")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "messages" },
+          (payload) => {
+            const row = payload.new;
+            if (!isMessage(row)) return;
+            appendMessage(row);
+          }
+        )
+        .subscribe((status, err) => {
+          if (cancelled) return;
+          if (status === "SUBSCRIBED") {
+            void loadHistory();
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            setError(
+              `Realtime unavailable: ${err?.message ?? status}. Refresh to see new messages.`
+            );
+            void loadHistory();
+          }
+        });
     })();
 
     return () => {
       cancelled = true;
-      supabase.removeChannel(channel);
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);
 
@@ -93,22 +138,22 @@ export default function ChatPage() {
     setError(null);
 
     try {
-      const { error: insertErr } = await supabase
+      const { data, error: insertErr } = await supabase
         .from("messages")
-        .insert({ role: "user", content: text, model_used: "user" });
+        .insert({ role: "user", content: text, model_used: "user" })
+        .select()
+        .single();
 
       if (insertErr) throw insertErr;
-
-      // Placeholder echo. Phase 3 worker will replace this.
-      const { error: echoErr } = await supabase.from("messages").insert({
-        role: "assistant",
-        content:
-          `Received: \`${text}\`\n\n` +
-          `_The Mac worker is not yet connected. ` +
-          `This will route to Gemini (and later Ollama for sensitive data) in Phase 3._`,
-        model_used: "placeholder",
-      });
-      if (echoErr) throw echoErr;
+      // Show the user message immediately; worker reply arrives via Realtime.
+      if (data && isMessage(data)) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === data.id)) return prev;
+          return [...prev, data].sort((a, b) =>
+            a.created_at.localeCompare(b.created_at)
+          );
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       setError(`Send failed: ${msg}`);
