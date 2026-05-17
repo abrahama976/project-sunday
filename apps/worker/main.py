@@ -126,13 +126,15 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
 
 async def poll_approved(client: Client):
     while True:
-        await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
         try:
+            await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
             rows = client.table("action_queue").select("*").eq("approved", True).in_("status", ["pending", "approved"]).execute()
-            for row in (rows.data or []):
+            found = rows.data or []
+            print(f"[poll] checking approved queue — {len(found)} rows")
+            for row in found:
                 await execute_action(client, row)
         except Exception as e:
-            print(f"[poll] error: {e}")
+            print(f"[poll] error: {e}", flush=True)
 
 async def main():
     print("[worker] Project Sunday worker starting...")
@@ -140,7 +142,11 @@ async def main():
     client = get_client()
 
     asyncio.create_task(run_heartbeat(client, HEARTBEAT_INTERVAL_SECONDS))
-    asyncio.create_task(poll_approved(client))
+    def _on_poll_done(task):
+        if task.exception():
+            print(f"[poll] task died: {task.exception()}", flush=True)
+    poll_task = asyncio.create_task(poll_approved(client))
+    poll_task.add_done_callback(_on_poll_done)
 
     print("[worker] ready. Listening for messages and approvals.")
 
