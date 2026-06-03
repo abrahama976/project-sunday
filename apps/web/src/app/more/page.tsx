@@ -3,6 +3,7 @@ import Link from "next/link";
 
 const MENU_ITEMS = [
   { href: "/schedule",  label: "Schedule",  desc: "Today's timeline and travel", icon: "📅" },
+  { href: "/health",    label: "Health",    desc: "Water, meals, sleep logs",    icon: "🍎" },
   { href: "/inventory", label: "Inventory", desc: "Groceries, pantry, supplies",  icon: "📦" },
   { href: "/profile",   label: "Profile",   desc: "What the AI knows about you",  icon: "👤" },
   { href: "/settings",  label: "Settings",  desc: "Worker, notifications, account", icon: "⚙️" },

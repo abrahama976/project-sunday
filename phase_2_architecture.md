@@ -43,6 +43,12 @@
 - [x] Dedicated Gemini call to extract tasks with tags + flexibility_score
 - [x] Batch insert via task_create, confirm back in chat
 
+### ✅ Step 7: Health UI Dashboard (COMPLETED)
+- [x] Create mobile-first Next.js page at `/health`
+- [x] Read `health_logs` for today's entries (Water, Meals, Sleep)
+- [x] Quick-action buttons to manually log Water and Meals
+- [x] Link from `/more` hub
+
 ---
 
 ## New Table Schemas
