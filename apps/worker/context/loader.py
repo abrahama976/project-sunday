@@ -1,15 +1,16 @@
-from pathlib import Path
-from config import CONTEXT_FILE_PATH
+from supabase import Client
 
-_cache: str | None = None
+_cache: str = ""
 
-def load_profile() -> str:
+def fetch_and_cache_profile(client: Client) -> str:
+    """Fetches the profile from Supabase and caches it for synchronous router usage."""
     global _cache
-    path = Path(CONTEXT_FILE_PATH).expanduser()
-    if not path.exists():
-        return ""
-    _cache = path.read_text(encoding="utf-8")
+    res = client.table("user_profile").select("content").limit(1).execute()
+    if res.data:
+        _cache = res.data[0].get("content", "")
+    else:
+        _cache = ""
     return _cache
 
 def get_profile() -> str:
-    return _cache if _cache is not None else load_profile()
+    return _cache

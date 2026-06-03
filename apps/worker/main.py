@@ -12,7 +12,7 @@ from config import (
 from heartbeat import run_heartbeat
 from router import route
 from summariser import maybe_summarise
-from context.loader import load_profile
+from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
 from jobs import morning_briefing, email_scan, news_fetch
@@ -66,7 +66,7 @@ async def execute_action(client: Client, action: dict):
         elif tool == "file_write":
             result = await file_write(**args)
         elif tool == "update_profile":
-            result = await update_profile(**args)
+            result = await update_profile(client, **args)
         elif tool == "web_fetch":
             result = await web_fetch(**args)
         elif tool == "calendar_query":
@@ -114,10 +114,16 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         result = await route(content, history, GEMINI_API_KEY)
     except Exception as e:
         print(f"[router] error: {e}")
+        error_msg = str(e)
+        if "503" in error_msg or "high demand" in error_msg.lower():
+            friendly_msg = "The AI provider is currently experiencing high demand. Please try again in a moment."
+        else:
+            friendly_msg = f"Sorry, I couldn't process that message: {e}"
+            
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
                 "role": "assistant",
-                "content": f"Sorry, I couldn't process that message: {e}",
+                "content": friendly_msg,
                 "model_used": "system",
             }).execute()
         )
@@ -177,8 +183,8 @@ async def poll_approved(client: Client):
 
 async def main():
     print("[worker] Project Sunday worker starting...")
-    load_profile()
     client = get_client()
+    await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
 
     # Verify Google OAuth tokens on startup
     token_status = verify_all_tokens()

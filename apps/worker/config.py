@@ -15,7 +15,6 @@ WORKER_RECONNECT_BACKOFF_BASE_SECONDS = 2
 APPROVAL_POLL_INTERVAL_SECONDS = 5
 APPROVAL_HOLD_SECONDS = 5
 
-CONTEXT_FILE_PATH = Path.home() / "Projects/PersonalAI/context/user_profile.md"
 ALLOWED_WRITE_ROOT = Path.home() / "Projects" / "PersonalAI"
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
