@@ -23,6 +23,9 @@ DEFAULT_FEEDS = [
     {"name": "Sydney Morning Herald", "url": "https://www.smh.com.au/rss/feed.xml", "category": "local"},
     {"name": "Entrepreneur",          "url": "https://feeds.feedburner.com/entrepreneur/latest", "category": "startup"},
     {"name": "The Guardian AU",       "url": "https://www.theguardian.com/australia-news/rss", "category": "local"},
+    {"name": "Mint",                  "url": "https://www.livemint.com/rss/news", "category": "news"},
+    {"name": "Times of India",        "url": "https://timesofindia.indiatimes.com/rssfeedstopstories.cms", "category": "news"},
+    {"name": "The Hindu",             "url": "https://www.thehindu.com/news/feeder/default.rss", "category": "news"},
 ]
 
 

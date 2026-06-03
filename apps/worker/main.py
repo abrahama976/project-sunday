@@ -15,11 +15,13 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, news_fetch
+from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep
 from executors.base import already_executed, mark_executed, set_status
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
+from executors.web_search_ops import web_search
+from executors.travel_ops import travel_directions, transit_departures
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
@@ -69,6 +71,12 @@ async def execute_action(client: Client, action: dict):
             result = await update_profile(client, **args)
         elif tool == "web_fetch":
             result = await web_fetch(**args)
+        elif tool == "web_search":
+            result = await web_search(**args)
+        elif tool == "travel_directions":
+            result = await travel_directions(**args)
+        elif tool == "transit_departures":
+            result = await transit_departures(**args)
         elif tool == "calendar_query":
             result = await calendar_query(**args)
         elif tool == "calendar_create":
@@ -111,7 +119,7 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         return False
     print(f"[router] routing: {content[:60]}")
     try:
-        result = await route(content, history, GEMINI_API_KEY)
+        result = await route(client, content, history, GEMINI_API_KEY)
     except Exception as e:
         print(f"[router] error: {e}")
         error_msg = str(e)
@@ -181,16 +189,55 @@ async def poll_approved(client: Client):
         except Exception as e:
             print(f"[poll] error: {e}", flush=True)
 
+async def poll_profile_updates(client: Client):
+    last_updated_at = None
+    while True:
+        try:
+            await asyncio.sleep(10)
+            res = await asyncio.to_thread(
+                lambda: client.table("user_profile").select("updated_at").limit(1).execute()
+            )
+            if res.data:
+                current_updated_at = res.data[0].get("updated_at")
+                if last_updated_at is not None and current_updated_at != last_updated_at:
+                    print(f"[poll] profile update detected, reloading...")
+                    await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
+                last_updated_at = current_updated_at
+        except Exception as e:
+            print(f"[poll] profile check error: {e}", flush=True)
+
 async def main():
     print("[worker] Project Sunday worker starting...")
     client = get_client()
     await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
+
+    # Start profile poll loop
+    def _on_profile_poll_done(task):
+        if task.exception():
+            print(f"[poll] profile task died: {task.exception()}", flush=True)
+    profile_poll_task = asyncio.create_task(poll_profile_updates(client))
+    profile_poll_task.add_done_callback(_on_profile_poll_done)
 
     # Verify Google OAuth tokens on startup
     token_status = verify_all_tokens()
     for service, valid in token_status.items():
         status = "✓" if valid else "✗ (re-auth needed)"
         print(f"[worker] Google {service}: {status}")
+
+    # Verify Ollama connectivity and list models
+    try:
+        from ollama import AsyncClient as OllamaClient
+        from config import OLLAMA_MODEL, OLLAMA_HOST
+        ollama_client = OllamaClient(host=OLLAMA_HOST)
+        models_resp = await ollama_client.list()
+        model_names = [m.get("name", m.get("model", "?")) for m in (models_resp.get("models") or [])]
+        print(f"[worker] Ollama models available: {model_names}")
+        if OLLAMA_MODEL in model_names:
+            print(f"[worker] Ollama {OLLAMA_MODEL}: ✓")
+        else:
+            print(f"[worker] ⚠ Ollama {OLLAMA_MODEL} not found in {model_names}")
+    except Exception as e:
+        print(f"[worker] Ollama: ✗ (not reachable: {e})")
 
     # Start heartbeat
     asyncio.create_task(run_heartbeat(client, HEARTBEAT_INTERVAL_SECONDS))
@@ -207,6 +254,9 @@ async def main():
     sched.register_handler("morning_briefing", morning_briefing)
     sched.register_handler("email_scan", email_scan)
     sched.register_handler("news_fetch", news_fetch)
+    sched.register_handler("meal_checkin", meal_checkin)
+    sched.register_handler("nightly_maintenance", nightly_maintenance)
+    sched.register_handler("calendar_prep", calendar_prep)
     asyncio.create_task(sched.run())
 
     print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")

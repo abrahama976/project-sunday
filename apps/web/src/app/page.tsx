@@ -1,5 +1,8 @@
 "use client";
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -156,6 +159,23 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [userName, setUserName] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data: profile } = await supabase
+        .from("user_profile")
+        .select("content")
+        .limit(1)
+        .maybeSingle();
+      if (profile?.content) {
+        const match = profile.content.match(/^#\s+(.+)/m);
+        if (match) { setUserName(match[1].trim()); return; }
+      }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.email) setUserName(user.email.split("@")[0]);
+    })();
+  }, [supabase]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -330,7 +350,7 @@ export default function ChatPage() {
               opacity: 0.7,
             }}>◈</div>
             <p style={{ fontSize: "1rem", color: "var(--color-text-muted)", fontWeight: 500 }}>
-              Good evening, Alstone.
+              {userName ? `Hey, ${userName}.` : "Hey there."}
             </p>
             <p style={{ fontSize: "0.8125rem", marginTop: "var(--space-2)" }}>
               What are we working on?

@@ -6,8 +6,10 @@ Each handler has the signature:
 These are registered with the Scheduler in main.py.
 """
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from supabase import Client
+import json
 
 from google import genai
 from google.genai import types
@@ -15,21 +17,10 @@ from config import GEMINI_MODEL, GEMINI_MAX_TOKENS
 
 
 async def morning_briefing(client: Client, gemini_api_key: str) -> None:
-    """Generate the daily morning briefing.
-
-    Composes a summary from:
-    - Today's calendar events
-    - Open/due tasks
-    - Priority emails (if available)
-    - News digest (if available)
-
-    Stores the result in the daily_briefings table and posts
-    a message to the chat.
-    """
+    """Generate the daily morning briefing."""
     today = date.today()
     today_str = today.isoformat()
 
-    # Check if briefing already exists for today
     existing = await asyncio.to_thread(
         lambda: client.table("daily_briefings")
         .select("id")
@@ -41,7 +32,6 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
         print(f"[briefing] already generated for {today_str}")
         return
 
-    # Gather context sections
     sections: dict = {}
 
     # 1. Calendar events
@@ -84,7 +74,6 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
                 news_lines.append(f"- {item['title']} ({item.get('source', 'unknown')})")
             sections["news"] = "\n".join(news_lines)
 
-            # Mark as surfaced
             ids = [item["id"] for item in news_result.data if "id" in item]
             if ids:
                 for nid in ids:
@@ -94,7 +83,21 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
     except Exception as e:
         sections["news"] = f"(News unavailable: {e})"
 
-    # Generate briefing with Gemini
+    # 5. Web Search fallback for requested regions
+    try:
+        from executors.web_search_ops import web_search
+        search_queries = ["Top news today Sydney Australia", "Top news today India", "Top news today Oman", "Top news today Singapore"]
+        search_results = []
+        for q in search_queries:
+            try:
+                res = await web_search(q)
+                search_results.append(f"### {q}\n{res}")
+            except Exception as e:
+                search_results.append(f"### {q}\nFailed: {e}")
+        sections["web_news"] = "\n\n".join(search_results)
+    except Exception as e:
+        sections["web_news"] = f"(Web news unavailable: {e})"
+
     prompt = f"""You are Project Sunday, generating a morning briefing for Alstone.
 Today is {today.strftime('%A, %d %B %Y')}.
 
@@ -110,8 +113,11 @@ Include these sections (skip any that have no data):
 ## Priority Emails
 {sections.get('emails', '(No data)')}
 
-## News
+## RSS News
 {sections.get('news', '(No data)')}
+
+## Regional Web News
+{sections.get('web_news', '(No data)')}
 
 Rules:
 - Keep it brief and actionable.
@@ -139,8 +145,6 @@ Rules:
     except Exception as e:
         content = f"⚠️ Briefing generation failed: {e}"
 
-    # Store in daily_briefings
-    import json
     await asyncio.to_thread(
         lambda: client.table("daily_briefings").insert({
             "briefing_date": today_str,
@@ -149,7 +153,6 @@ Rules:
         }).execute()
     )
 
-    # Post as a chat message
     await asyncio.to_thread(
         lambda: client.table("messages").insert({
             "role": "assistant",
@@ -157,41 +160,237 @@ Rules:
             "model_used": "gemini",
         }).execute()
     )
-
     print(f"[briefing] generated for {today_str}")
 
 
 async def email_scan(client: Client, gemini_api_key: str) -> None:
-    """Periodic email scan — check for new priority emails.
-    
-    This runs every 30 minutes. It scans for unread important emails
-    and could trigger a notification or update the dashboard.
-    For now, it logs the count.
-    """
     try:
         from executors.gmail_ops import gmail_priority_scan
         result = await gmail_priority_scan(max_results=5)
-        import json
         try:
             emails = json.loads(result)
             count = len(emails)
         except (json.JSONDecodeError, TypeError):
             count = 0 if "No unread" in result else 1
-
         print(f"[email_scan] found {count} priority email(s)")
     except Exception as e:
         print(f"[email_scan] error: {e}")
 
 
 async def news_fetch(client: Client, gemini_api_key: str) -> None:
-    """Fetch and score RSS feeds, store relevant articles.
-    
-    Runs twice daily (6am, 6pm). Uses the news_ops executor
-    to fetch, score, and store articles.
-    """
     try:
         from executors.news_ops import news_fetch_and_store
         result = await news_fetch_and_store(client, gemini_api_key)
         print(f"[news_fetch] {result}")
     except Exception as e:
         print(f"[news_fetch] error: {e}")
+
+
+async def meal_checkin(client: Client, gemini_api_key: str) -> None:
+    loc_result = await asyncio.to_thread(
+        lambda: client.table("user_location").select("timezone").limit(1).maybeSingle().execute()
+    )
+    tz_str = loc_result.data.get("timezone", "Australia/Sydney") if loc_result.data else "Australia/Sydney"
+    now = datetime.now(ZoneInfo(tz_str))
+
+    try:
+        from executors.calendar_ops import calendar_query
+        events_str = await calendar_query(query="", days_ahead=1)
+        
+        prompt = f"""You are checking Alstone's schedule to see if he has a free 15-minute gap in the next 2 hours to eat.
+Current time: {now.strftime('%Y-%m-%d %H:%M')}
+
+Schedule:
+{events_str}
+
+Is there a free 15-minute window in the next 2 hours? Reply YES or NO only."""
+
+        ai_client = genai.Client(api_key=gemini_api_key)
+        response = await asyncio.to_thread(
+            lambda: ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(max_output_tokens=10, temperature=0.1),
+            )
+        )
+        ans = response.candidates[0].content.parts[0].text.strip().upper()
+        if "YES" in ans:
+            msg = "Hey, it looks like you have a moment — did you eat? Let me log it for you."
+            await asyncio.to_thread(
+                lambda: client.table("messages").insert({
+                    "role": "assistant",
+                    "content": msg,
+                    "model_used": "system",
+                }).execute()
+            )
+            print("[meal_checkin] sent proactive check-in")
+            
+            # Delete any existing retry
+            await asyncio.to_thread(
+                lambda: client.table("scheduled_jobs").delete().eq("job_name", "meal_checkin_retry").execute()
+            )
+        else:
+            print("[meal_checkin] no free window, silently skipping and scheduling retry")
+            retry_hour = (datetime.now(timezone.utc).hour + 1) % 24
+            await asyncio.to_thread(
+                lambda: client.table("scheduled_jobs").upsert({
+                    "job_name": "meal_checkin_retry",
+                    "cron_expr": f"0 {retry_hour} * * *",
+                    "timezone": "UTC",
+                    "config": {"description": "Retry meal check-in"}
+                }).execute()
+            )
+    except Exception as e:
+        print(f"[meal_checkin] failed: {e}")
+
+
+async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
+    print("[nightly_maintenance] starting")
+    now_utc = datetime.now(timezone.utc)
+    
+    # 1. Archive tasks > 7 days old
+    try:
+        cutoff_7 = (now_utc - timedelta(days=7)).isoformat()
+        await asyncio.to_thread(
+            lambda: client.table("tasks")
+            .update({"is_archived": True})
+            .eq("status", "done")
+            .lt("completed_at", cutoff_7)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[nightly_maintenance] tasks error: {e}")
+
+    # 2. Delete health_logs > 30 days old
+    try:
+        cutoff_30 = (now_utc - timedelta(days=30)).date().isoformat()
+        await asyncio.to_thread(
+            lambda: client.table("health_logs")
+            .delete()
+            .lt("log_date", cutoff_30)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[nightly_maintenance] health_logs error: {e}")
+
+    # 3. Compress messages > 14 days old
+    try:
+        cutoff_14 = (now_utc - timedelta(days=14)).isoformat()
+        res = await asyncio.to_thread(
+            lambda: client.table("messages")
+            .select("*")
+            .eq("is_deleted", False)
+            .lt("created_at", cutoff_14)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        msgs = res.data or []
+        if msgs:
+            text_lines = []
+            for m in msgs:
+                role = "User" if m["role"] == "user" else "Assistant"
+                text_lines.append(f"{role} ({m['created_at']}): {m['content']}")
+            prompt = "Summarise the following conversation into a single, concise paragraph capturing the key topics, tasks, and context discussed.\n\n" + "\n".join(text_lines)
+            
+            ai_client = genai.Client(api_key=gemini_api_key)
+            response = await asyncio.to_thread(
+                lambda: ai_client.models.generate_content(
+                    model="gemini-2.5-flash-lite",
+                    contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                    config=types.GenerateContentConfig(max_output_tokens=1000)
+                )
+            )
+            summary = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
+            
+            await asyncio.to_thread(
+                lambda: client.table("message_summaries").insert({
+                    "summary": summary,
+                    "message_count": len(msgs),
+                    "date_from": msgs[0]["created_at"],
+                    "date_to": msgs[-1]["created_at"]
+                }).execute()
+            )
+            
+            for m in msgs:
+                await asyncio.to_thread(
+                    lambda: client.table("messages").update({"is_deleted": True}).eq("id", m["id"]).execute()
+                )
+            print(f"[nightly_maintenance] compressed {len(msgs)} messages")
+    except Exception as e:
+        print(f"[nightly_maintenance] messages error: {e}")
+
+
+async def calendar_prep(client: Client, gemini_api_key: str) -> None:
+    print("[calendar_prep] starting")
+    try:
+        from executors.calendar_ops import calendar_query
+        events_str = await calendar_query(query="", days_ahead=1)
+        if "No events found" in events_str:
+            print("[calendar_prep] No events to prep for today.")
+            return
+
+        loc_result = await asyncio.to_thread(
+            lambda: client.table("user_location").select("lat, lng").limit(1).maybeSingle().execute()
+        )
+        loc_data = loc_result.data or {}
+        origin_lat = loc_data.get("lat")
+        origin_lng = loc_data.get("lng")
+
+        ai_client = genai.Client(api_key=gemini_api_key)
+        
+        prompt_extract = f"""Extract a JSON array of events from this calendar string.
+Each object must have 'title', 'location', and 'needs_prep' (boolean, true if there are attendees or it's a meeting).
+Calendar string:
+{events_str}
+Return ONLY valid JSON (no markdown block)."""
+        
+        response_ext = await asyncio.to_thread(
+            lambda: ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt_extract)])],
+                config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.1),
+            )
+        )
+        json_str = response_ext.candidates[0].content.parts[0].text.strip().removeprefix("```json").removesuffix("```").strip()
+        try:
+            events = json.loads(json_str)
+        except json.JSONDecodeError:
+            events = []
+            print("[calendar_prep] Failed to decode JSON from AI response")
+
+        for ev in events:
+            if ev.get("needs_prep"):
+                title = f"Prep for {ev['title']}"
+                await asyncio.to_thread(
+                    lambda: client.table("tasks").insert({
+                        "title": title,
+                        "category": "work",
+                        "tags": ["prep"],
+                        "flexibility_score": 2,
+                        "source": "calendar_prep"
+                    }).execute()
+                )
+                print(f"[calendar_prep] created task: {title}")
+                
+                # Check for travel
+                dest = ev.get("location")
+                if dest and origin_lat and origin_lng:
+                    from executors.travel_ops import travel_directions
+                    origin_str = f"{origin_lat},{origin_lng}"
+                    travel_result = await travel_directions(origin=origin_str, destination=dest, mode="transit")
+                    
+                    if "No directions" not in travel_result:
+                        await asyncio.to_thread(
+                            lambda: client.table("tasks").insert({
+                                "title": f"Travel to {ev['title']}",
+                                "description": travel_result[:500],
+                                "category": "personal",
+                                "tags": ["travel"],
+                                "flexibility_score": 1,
+                                "source": "calendar_prep"
+                            }).execute()
+                        )
+                        print(f"[calendar_prep] added travel task to {dest}")
+                        
+    except Exception as e:
+        print(f"[calendar_prep] failed: {e}")

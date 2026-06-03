@@ -1,6 +1,8 @@
+import asyncio
 from google import genai
 from google.genai import types
-from config import GEMINI_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP
+from google.genai.errors import APIError
+from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL
 from context.loader import get_profile
 from tools.registry import TOOLS
 
@@ -32,8 +34,117 @@ def build_system_prompt() -> str:
         base += f"\n\n--- USER PROFILE ---\n{profile}\n--- END PROFILE ---\n"
     return base
 
-async def route(message: str, history: list[dict], gemini_api_key: str) -> dict:
-    client = genai.Client(api_key=gemini_api_key)
+async def _ask_ollama(message: str, history: list[dict]) -> dict:
+    from ollama import AsyncClient
+    
+    messages = [{"role": "system", "content": build_system_prompt()}]
+    for h in history[-20:]:
+        role = "user" if h["role"] == "user" else "assistant"
+        messages.append({"role": role, "content": h["content"]})
+    messages.append({"role": "user", "content": message})
+    
+    try:
+        client = AsyncClient(host=OLLAMA_HOST)
+        response = await client.chat(
+            model=OLLAMA_MODEL,
+            messages=messages
+        )
+        reply = response.message.content or "No response from Ollama."
+        return {"type": "text", "content": f"[Ollama] {reply}"}
+    except Exception as e:
+        return {"type": "text", "content": f"Ollama failed to respond: {e}"}
+
+from supabase import Client
+
+async def route(client: Client, message: str, history: list[dict], gemini_api_key: str) -> dict:
+    if message.strip().startswith("/private"):
+        clean_msg = message.replace("/private", "", 1).strip()
+        print(f"[router] explicit private routing triggered")
+        return await _ask_ollama(clean_msg, history)
+
+    # 1. Brain-dump detection
+    msg_lower = message.lower()
+    is_brain_dump = False
+    if "add these tasks" in msg_lower or "brain dump" in msg_lower or "braindump" in msg_lower:
+        is_brain_dump = True
+    elif message.count("- ") + message.count("* ") + message.count("• ") >= 3:
+        is_brain_dump = True
+    elif "1." in message and "2." in message and "3." in message:
+        is_brain_dump = True
+    elif message.count(",") >= 4 and len(message.split()) < 50 and ("need to" in msg_lower or "have to" in msg_lower):
+        is_brain_dump = True
+
+    if is_brain_dump:
+        print("[router] brain-dump detected, using structured extraction...")
+        ai_client = genai.Client(api_key=gemini_api_key)
+        
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "tasks": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "title": {"type": "STRING", "description": "The task description"},
+                            "tags": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Inferred tags e.g. Personal, Career"},
+                            "flexibility_score": {"type": "INTEGER", "description": "1 to 5 (1=strict, 5=highly flexible)"}
+                        },
+                        "required": ["title", "tags", "flexibility_score"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        }
+        
+        try:
+            response = await asyncio.to_thread(
+                lambda: ai_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[
+                        types.Content(role="user", parts=[types.Part(text=message)])
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction="Extract tasks from the user's brain-dump into a structured JSON list.",
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                        temperature=0.1
+                    )
+                )
+            )
+            
+            raw_json = response.candidates[0].content.parts[0].text
+            import json
+            data = json.loads(raw_json)
+            tasks = data.get("tasks", [])
+            
+            if tasks:
+                inserted = 0
+                for t in tasks:
+                    await asyncio.to_thread(
+                        lambda: client.table("tasks").insert({
+                            "title": t["title"],
+                            "tags": t["tags"],
+                            "flexibility_score": t["flexibility_score"],
+                            "category": "personal",
+                            "source": "chat"
+                        }).execute()
+                    )
+                    inserted += 1
+                
+                reply = f"I created {inserted} tasks from your brain-dump. Here is what I categorized:\n"
+                for t in tasks:
+                    tags_str = ", ".join(t.get("tags", []))
+                    reply += f"- **{t['title']}** (Tags: {tags_str}, Flex: {t.get('flexibility_score', 3)})\n"
+                
+                return {"type": "text", "content": reply}
+            else:
+                return {"type": "text", "content": "I couldn't detect any tasks in your brain-dump."}
+                
+        except Exception as e:
+            return {"type": "text", "content": f"Failed to parse brain-dump: {e}"}
+
+    client_genai = genai.Client(api_key=gemini_api_key)
 
     gemini_tools = [
         types.Tool(function_declarations=[
@@ -51,29 +162,48 @@ async def route(message: str, history: list[dict], gemini_api_key: str) -> dict:
         contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=build_system_prompt(),
-            tools=gemini_tools,
-            max_output_tokens=GEMINI_MAX_TOKENS,
-            temperature=GEMINI_TEMPERATURE,
-        )
-    )
+    models_to_try = [GEMINI_MODEL, GEMINI_LITE_MODEL]
 
-    candidate = response.candidates[0].content
-    for part in candidate.parts:
-        if part.function_call:
-            fn = part.function_call
-            tool_name = fn.name
-            tier = TOOL_TIER_MAP.get(tool_name, "approve")
-            return {
-                "type": "tool_call",
-                "tool": tool_name,
-                "args": dict(fn.args),
-                "tier": tier
-            }
+    for model_id in models_to_try:
+        try:
+            print(f"[router] Attempting generation with {model_id}...")
+            response = await asyncio.to_thread(
+                lambda: client_genai.models.generate_content(
+                    model=model_id,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=build_system_prompt(),
+                        tools=gemini_tools,
+                        max_output_tokens=GEMINI_MAX_TOKENS,
+                        temperature=GEMINI_TEMPERATURE,
+                    )
+                )
+            )
 
-    text = "".join(p.text for p in candidate.parts if hasattr(p, "text") and p.text)
-    return {"type": "text", "content": text}
+            candidate = response.candidates[0].content
+            for part in candidate.parts:
+                if part.function_call:
+                    fn = part.function_call
+                    tool_name = fn.name
+                    tier = TOOL_TIER_MAP.get(tool_name, "approve")
+                    return {
+                        "type": "tool_call",
+                        "tool": tool_name,
+                        "args": dict(fn.args),
+                        "tier": tier
+                    }
+
+            text = "".join(p.text for p in candidate.parts if hasattr(p, "text") and p.text)
+            return {"type": "text", "content": text}
+
+        except APIError as e:
+            if e.code in [429, 503]:
+                print(f"[router] {model_id} exhausted or unavailable (Error {e.code}). Cascading to next model...")
+                continue
+            else:
+                return {"type": "text", "content": f"Google API Error: {e.message}"}
+        except Exception as e:
+            return {"type": "text", "content": f"Unexpected Error: {e}"}
+
+    print("[router] Google models exhausted. Failing over to local Ollama...")
+    return await _ask_ollama(message, history)

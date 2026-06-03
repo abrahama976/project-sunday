@@ -70,7 +70,11 @@ def _calendar_query_sync(query: str, days_ahead: int) -> str:
     for event in events:
         title = event.get("summary") or "(No title)"
         when = _format_event_start(event)
-        lines.append(f"{when} — {title} ({cal_name})")
+        loc = event.get("location")
+        loc_str = f" @ {loc}" if loc else ""
+        attendees = event.get("attendees", [])
+        att_str = f" with {len(attendees)} attendees" if attendees else ""
+        lines.append(f"{when} — {title}{loc_str}{att_str} ({cal_name})")
 
     return "\n".join(lines)
 
