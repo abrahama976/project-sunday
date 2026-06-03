@@ -17,10 +17,12 @@ from config import GEMINI_MODEL
 
 # Default RSS feeds — configurable via scheduled_jobs config
 DEFAULT_FEEDS = [
-    {"name": "Hacker News",       "url": "https://hnrss.org/frontpage", "category": "tech"},
-    {"name": "TechCrunch",        "url": "https://techcrunch.com/feed/", "category": "startup"},
-    {"name": "ABC News AU",       "url": "https://www.abc.net.au/news/feed/51120/rss.xml", "category": "local"},
-    {"name": "AFR Markets",       "url": "https://www.afr.com/rss/markets", "category": "finance"},
+    {"name": "Hacker News",           "url": "https://hnrss.org/frontpage", "category": "tech"},
+    {"name": "TechCrunch",            "url": "https://techcrunch.com/feed/", "category": "startup"},
+    {"name": "ABC News AU",           "url": "https://www.abc.net.au/news/feed/51120/rss.xml", "category": "local"},
+    {"name": "Sydney Morning Herald", "url": "https://www.smh.com.au/rss/feed.xml", "category": "local"},
+    {"name": "Entrepreneur",          "url": "https://feeds.feedburner.com/entrepreneur/latest", "category": "startup"},
+    {"name": "The Guardian AU",       "url": "https://www.theguardian.com/australia-news/rss", "category": "local"},
 ]
 
 

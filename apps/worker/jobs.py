@@ -5,6 +5,7 @@ Each handler has the signature:
 
 These are registered with the Scheduler in main.py.
 """
+import asyncio
 from datetime import date, datetime, timezone
 from supabase import Client
 
@@ -29,8 +30,8 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
     today_str = today.isoformat()
 
     # Check if briefing already exists for today
-    existing = (
-        client.table("daily_briefings")
+    existing = await asyncio.to_thread(
+        lambda: client.table("daily_briefings")
         .select("id")
         .eq("briefing_date", today_str)
         .maybeSingle()
@@ -69,8 +70,8 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
 
     # 4. News (if items exist)
     try:
-        news_result = (
-            client.table("news_items")
+        news_result = await asyncio.to_thread(
+            lambda: client.table("news_items")
             .select("title,source,summary,url")
             .eq("surfaced", False)
             .order("relevance", desc=True)
@@ -87,7 +88,7 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
             ids = [item["id"] for item in news_result.data if "id" in item]
             if ids:
                 for nid in ids:
-                    client.table("news_items").update({"surfaced": True}).eq("id", nid).execute()
+                    await asyncio.to_thread(lambda: client.table("news_items").update({"surfaced": True}).eq("id", nid).execute())
         else:
             sections["news"] = "(No new items)"
     except Exception as e:
@@ -121,13 +122,15 @@ Rules:
 
     try:
         ai_client = genai.Client(api_key=gemini_api_key)
-        response = ai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                max_output_tokens=GEMINI_MAX_TOKENS,
-                temperature=0.4,
-            ),
+        response = await asyncio.to_thread(
+            lambda: ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(
+                    max_output_tokens=GEMINI_MAX_TOKENS,
+                    temperature=0.4,
+                ),
+            )
         )
         content = "".join(
             p.text for p in response.candidates[0].content.parts
@@ -138,18 +141,22 @@ Rules:
 
     # Store in daily_briefings
     import json
-    client.table("daily_briefings").insert({
-        "briefing_date": today_str,
-        "content": content,
-        "sections": json.dumps(sections),
-    }).execute()
+    await asyncio.to_thread(
+        lambda: client.table("daily_briefings").insert({
+            "briefing_date": today_str,
+            "content": content,
+            "sections": json.dumps(sections),
+        }).execute()
+    )
 
     # Post as a chat message
-    client.table("messages").insert({
-        "role": "assistant",
-        "content": f"☀️ **Morning Briefing — {today.strftime('%A, %d %B')}**\n\n{content}",
-        "model_used": "gemini",
-    }).execute()
+    await asyncio.to_thread(
+        lambda: client.table("messages").insert({
+            "role": "assistant",
+            "content": f"☀️ **Morning Briefing — {today.strftime('%A, %d %B')}**\n\n{content}",
+            "model_used": "gemini",
+        }).execute()
+    )
 
     print(f"[briefing] generated for {today_str}")
 

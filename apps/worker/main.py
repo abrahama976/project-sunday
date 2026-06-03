@@ -37,7 +37,9 @@ async def execute_action(client: Client, action: dict):
         print(f"[worker] skipping already-executed {action_id}")
         return
 
-    row = client.table("action_queue").select("approved,status,tier").eq("id", action_id).single().execute()
+    row = await asyncio.to_thread(
+        lambda: client.table("action_queue").select("approved,status,tier").eq("id", action_id).single().execute()
+    )
     if not row.data:
         print(f"[worker] action {action_id} not found — skipping")
         return
@@ -91,11 +93,13 @@ async def execute_action(client: Client, action: dict):
             raise NotImplementedError(f"Executor for '{tool}' not yet implemented")
 
         await set_status(client, action_id, "executed")
-        client.table("messages").insert({
-            "role": "assistant",
-            "content": result,
-            "model_used": "gemini"
-        }).execute()
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "role": "assistant",
+                "content": str(result),
+                "model_used": "gemini"
+            }).execute()
+        )
 
     except Exception as e:
         print(f"[worker] executor error {action_id}: {e}")
@@ -110,31 +114,46 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         result = await route(content, history, GEMINI_API_KEY)
     except Exception as e:
         print(f"[router] error: {e}")
-        client.table("messages").insert({
-            "role": "assistant",
-            "content": f"Sorry, I couldn't process that message: {e}",
-            "model_used": "system",
-        }).execute()
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "role": "assistant",
+                "content": f"Sorry, I couldn't process that message: {e}",
+                "model_used": "system",
+            }).execute()
+        )
         return False
 
     if result["type"] == "text":
-        client.table("messages").insert({
-            "role": "assistant",
-            "content": result["content"],
-            "model_used": "gemini"
-        }).execute()
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "role": "assistant",
+                "content": result["content"],
+                "model_used": "gemini"
+            }).execute()
+        )
         return True
 
     if result["type"] == "tool_call":
         tool = result["tool"]
         tier = result["tier"]
-        inserted = client.table("action_queue").insert({
-            "action_type": tool,
-            "payload": result["args"],
-            "tier": tier,
-            "status": "pending",
-            "approved": True if tier == "auto" else None
-        }).execute()
+        inserted = await asyncio.to_thread(
+            lambda: client.table("action_queue").insert({
+                "action_type": tool,
+                "payload": result["args"],
+                "tier": tier,
+                "status": "pending",
+                "approved": True if tier == "auto" else None
+            }).execute()
+        )
+
+        if tier == "approve":
+            await asyncio.to_thread(
+                lambda: client.table("messages").insert({
+                    "role": "assistant",
+                    "content": f"I've suggested an action for your approval: {tool}. Check the Approvals tab.",
+                    "model_used": "system"
+                }).execute()
+            )
 
         if tier == "auto" and inserted.data:
             await execute_action(client, inserted.data[0])
@@ -146,7 +165,9 @@ async def poll_approved(client: Client):
     while True:
         try:
             await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
-            rows = client.table("action_queue").select("*").eq("approved", True).in_("status", ["pending", "approved"]).execute()
+            rows = await asyncio.to_thread(
+                lambda: client.table("action_queue").select("*").eq("approved", True).in_("status", ["pending", "approved"]).execute()
+            )
             found = rows.data or []
             print(f"[poll] checking approved queue — {len(found)} rows")
             for row in found:
@@ -190,12 +211,16 @@ async def main():
 
     while True:
         try:
-            all_msgs = client.table("messages").select("*").order("created_at", desc=True).limit(2).execute()
+            all_msgs = await asyncio.to_thread(
+                lambda: client.table("messages").select("*").order("created_at", desc=True).limit(2).execute()
+            )
 
             if all_msgs.data and all_msgs.data[0]["role"] == "user":
                 latest = all_msgs.data[0]
                 if latest["id"] != last_processed_id:
-                    history = client.table("messages").select("role,content").order("created_at", desc=True).limit(20).execute()
+                    history = await asyncio.to_thread(
+                        lambda: client.table("messages").select("role,content").order("created_at", desc=True).limit(20).execute()
+                    )
                     history_list = list(reversed(history.data or []))
                     if await handle_message(client, latest, history_list):
                         message_count += 1
@@ -214,11 +239,13 @@ async def main():
             print(f"[worker] error (retry {retries}/{WORKER_RECONNECT_MAX_RETRIES}): {e}")
             if retries > WORKER_RECONNECT_MAX_RETRIES:
                 try:
-                    client.table("messages").insert({
-                        "role": "assistant",
-                        "content": "Worker crashed and could not reconnect. Restart required.",
-                        "model_used": "system"
-                    }).execute()
+                    await asyncio.to_thread(
+                        lambda: client.table("messages").insert({
+                            "role": "assistant",
+                            "content": "Worker crashed and could not reconnect. Restart required.",
+                            "model_used": "system"
+                        }).execute()
+                    )
                 except Exception:
                     pass
                 sys.exit(1)

@@ -95,8 +95,8 @@ class Scheduler:
 
     async def _tick(self):
         """Check all enabled jobs and run any that are due."""
-        result = (
-            self._client.table("scheduled_jobs")
+        result = await asyncio.to_thread(
+            lambda: self._client.table("scheduled_jobs")
             .select("*")
             .eq("enabled", True)
             .execute()
@@ -153,9 +153,11 @@ class Scheduler:
             await handler(self._client, self._gemini_api_key)
 
             # Update last_run_at
-            self._client.table("scheduled_jobs").update({
-                "last_run_at": datetime.now(ZoneInfo("Australia/Sydney")).isoformat(),
-            }).eq("id", job["id"]).execute()
+            await asyncio.to_thread(
+                lambda: self._client.table("scheduled_jobs").update({
+                    "last_run_at": datetime.now(ZoneInfo("Australia/Sydney")).isoformat(),
+                }).eq("id", job["id"]).execute()
+            )
 
             print(f"[scheduler] completed job: {job_name}")
         except Exception as e:
