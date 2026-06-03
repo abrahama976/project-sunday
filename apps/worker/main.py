@@ -13,12 +13,16 @@ from heartbeat import run_heartbeat
 from router import route
 from summariser import maybe_summarise
 from context.loader import load_profile
+from google_auth import verify_all_tokens
+from scheduler import Scheduler
+from jobs import morning_briefing, email_scan, news_fetch
 from executors.base import already_executed, mark_executed, set_status
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
-from executors.calendar_ops import calendar_query
-from executors.gmail_ops import gmail_search, gmail_draft
+from executors.calendar_ops import calendar_query, calendar_create, calendar_update
+from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
+from executors.task_ops import task_create, task_update, task_list
 
 def get_client() -> Client:
     return create_client(SUPABASE_URL, get_service_role_key())
@@ -65,10 +69,24 @@ async def execute_action(client: Client, action: dict):
             result = await web_fetch(**args)
         elif tool == "calendar_query":
             result = await calendar_query(**args)
+        elif tool == "calendar_create":
+            result = await calendar_create(**args)
+        elif tool == "calendar_update":
+            result = await calendar_update(**args)
         elif tool == "gmail_search":
             result = await gmail_search(**args)
         elif tool == "gmail_draft":
             result = await gmail_draft(**args)
+        elif tool == "gmail_read_body":
+            result = await gmail_read_body(**args)
+        elif tool == "gmail_priority_scan":
+            result = await gmail_priority_scan(**args)
+        elif tool == "task_create":
+            result = await task_create(client, **args)
+        elif tool == "task_update":
+            result = await task_update(client, **args)
+        elif tool == "task_list":
+            result = await task_list(client, **args)
         else:
             raise NotImplementedError(f"Executor for '{tool}' not yet implemented")
 
@@ -141,14 +159,30 @@ async def main():
     load_profile()
     client = get_client()
 
+    # Verify Google OAuth tokens on startup
+    token_status = verify_all_tokens()
+    for service, valid in token_status.items():
+        status = "✓" if valid else "✗ (re-auth needed)"
+        print(f"[worker] Google {service}: {status}")
+
+    # Start heartbeat
     asyncio.create_task(run_heartbeat(client, HEARTBEAT_INTERVAL_SECONDS))
+
+    # Start approval poll loop
     def _on_poll_done(task):
         if task.exception():
             print(f"[poll] task died: {task.exception()}", flush=True)
     poll_task = asyncio.create_task(poll_approved(client))
     poll_task.add_done_callback(_on_poll_done)
 
-    print("[worker] ready. Listening for messages and approvals.")
+    # Start scheduler
+    sched = Scheduler(client, GEMINI_API_KEY)
+    sched.register_handler("morning_briefing", morning_briefing)
+    sched.register_handler("email_scan", email_scan)
+    sched.register_handler("news_fetch", news_fetch)
+    asyncio.create_task(sched.run())
+
+    print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")
 
     retries = 0
     last_processed_id = None

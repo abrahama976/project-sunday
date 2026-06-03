@@ -1,38 +1,13 @@
+"""Google Calendar executors: query, create, update."""
 import asyncio
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-
-_WORKER_DIR = Path(__file__).resolve().parent.parent
-_CREDENTIALS_PATH = _WORKER_DIR / "credentials.json"
-_TOKEN_PATH = _WORKER_DIR / "token_calendar.json"
-_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-
-
-def _get_credentials() -> Credentials:
-    creds = None
-    if _TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(_CREDENTIALS_PATH), _SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-        _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-
-    return creds
+from google_auth import get_credentials
 
 
 def _get_calendar_service():
-    creds = _get_credentials()
+    creds = get_credentials("calendar")
     return build("calendar", "v3", credentials=creds)
 
 
@@ -47,6 +22,7 @@ def _format_event_start(event: dict) -> str:
     return raw
 
 
+# ── Query ──────────────────────────────────────────────────────
 def _calendar_query_sync(query: str, days_ahead: int) -> str:
     days_ahead = max(1, min(days_ahead, 30))
     service = _get_calendar_service()
@@ -99,5 +75,101 @@ def _calendar_query_sync(query: str, days_ahead: int) -> str:
     return "\n".join(lines)
 
 
+# ── Create ─────────────────────────────────────────────────────
+def _calendar_create_sync(
+    summary: str,
+    start: str,
+    end: str,
+    location: str = "",
+    description: str = "",
+) -> str:
+    service = _get_calendar_service()
+
+    event_body: dict = {
+        "summary": summary,
+    }
+
+    # Detect all-day vs timed event
+    if "T" in start:
+        event_body["start"] = {"dateTime": start, "timeZone": "Australia/Sydney"}
+        event_body["end"] = {"dateTime": end, "timeZone": "Australia/Sydney"}
+    else:
+        event_body["start"] = {"date": start}
+        event_body["end"] = {"date": end}
+
+    if location:
+        event_body["location"] = location
+    if description:
+        event_body["description"] = description
+
+    created = service.events().insert(calendarId="primary", body=event_body).execute()
+    event_link = created.get("htmlLink", "")
+    return f"Event created: '{summary}' on {start}. Link: {event_link}"
+
+
+# ── Update ─────────────────────────────────────────────────────
+def _calendar_update_sync(
+    event_id: str,
+    summary: str = "",
+    start: str = "",
+    end: str = "",
+    location: str = "",
+    description: str = "",
+) -> str:
+    service = _get_calendar_service()
+
+    # Fetch existing event
+    event = service.events().get(calendarId="primary", eventId=event_id).execute()
+
+    if summary:
+        event["summary"] = summary
+    if start:
+        if "T" in start:
+            event["start"] = {"dateTime": start, "timeZone": "Australia/Sydney"}
+        else:
+            event["start"] = {"date": start}
+    if end:
+        if "T" in end:
+            event["end"] = {"dateTime": end, "timeZone": "Australia/Sydney"}
+        else:
+            event["end"] = {"date": end}
+    if location:
+        event["location"] = location
+    if description:
+        event["description"] = description
+
+    updated = service.events().update(
+        calendarId="primary", eventId=event_id, body=event
+    ).execute()
+
+    return f"Event updated: '{updated.get('summary')}'"
+
+
+# ── Async wrappers ─────────────────────────────────────────────
 async def calendar_query(query: str = "", days_ahead: int = 7) -> str:
     return await asyncio.to_thread(_calendar_query_sync, query, days_ahead)
+
+
+async def calendar_create(
+    summary: str,
+    start: str,
+    end: str,
+    location: str = "",
+    description: str = "",
+) -> str:
+    return await asyncio.to_thread(
+        _calendar_create_sync, summary, start, end, location, description
+    )
+
+
+async def calendar_update(
+    event_id: str,
+    summary: str = "",
+    start: str = "",
+    end: str = "",
+    location: str = "",
+    description: str = "",
+) -> str:
+    return await asyncio.to_thread(
+        _calendar_update_sync, event_id, summary, start, end, location, description
+    )

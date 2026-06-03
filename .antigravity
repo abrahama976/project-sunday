@@ -1,0 +1,142 @@
+# Project Sunday — Antigravity Agent Context
+# This file is read automatically by the Antigravity agent on every session.
+# DO NOT delete or rename this file.
+
+## Project Identity
+Name: Project Sunday
+Type: Personal AI assistant (private tool, not a product)
+Owner: Alstone, Sydney, Australia
+Active hours: 10am–2am AEST (Sydney time)
+Primary device: iPhone (mobile browser) — all UI must be mobile-first, 390px baseline
+
+## What This Project Does
+A self-improving personal AI assistant that:
+- Holds conversations via a Next.js web app (hosted on Vercel)
+- Executes real actions on Rohit s MacBook Pro via a Python worker
+- Learns about the user over time via a persistent markdown profile
+- Routes requests through Gemini (primary) and Ollama (future, for private/sensitive)
+
+## Monorepo Structure
+~/Projects/PersonalAI/
+├── apps/
+│   ├── web/                        ← Next.js 14 App Router (TypeScript, Tailwind)
+│   │   ├── app/
+│   │   │   ├── page.tsx            ← Root redirect
+│   │   │   ├── chat/page.tsx       ← Chat screen (WORKING)
+│   │   │   ├── approvals/page.tsx  ← Approvals screen (WORKING)
+│   │   │   ├── inventory/page.tsx  ← Inventory screen (STUB)
+│   │   │   └── dashboard/page.tsx  ← Dashboard screen (STUB)
+│   │   └── components/
+│   │       ├── BottomNav.tsx       ← Bottom tab bar (60px)
+│   │       └── TopNav.tsx          ← Top nav bar (52px)
+│   └── worker/                     ← Python 3.13 asyncio worker (runs on Mac locally)
+│       ├── main.py                 ← Entry point, poll loop (polls every 5s)
+│       ├── config.py               ← Constants: ALLOWED_WRITE_ROOT, PROFILE_PATH etc
+│       ├── context/loader.py       ← Loads user_profile.md into Gemini context
+│       ├── executors/
+│       │   ├── file_ops.py         ← file_write executor (FULLY WORKING, tested)
+│       │   └── profile_ops.py      ← update_profile (STUB — not yet implemented)
+│       └── tools/registry.py       ← Tool schema definitions for Gemini
+├── context/
+│   └── user_profile.md             ← Persistent user profile in markdown
+└── supabase/
+    └── migrations/                 ← SQL migration files
+
+## Tech Stack — DO NOT CHANGE ANY OF THESE
+- Frontend: Next.js 14 App Router + TypeScript + Tailwind CSS
+- Database: Supabase (PostgreSQL + Realtime + Auth)
+- Worker: Python 3.13 (asyncio) — local Mac only, never cloud-deployed
+- AI Model: Gemini via Google AI SDK (primary)
+- Local AI: Ollama (future — not started yet)
+- Deployment: Vercel (frontend only)
+- Auth: Supabase Auth (already wired, do not modify)
+
+## Database Tables (Supabase)
+
+### messages
+id            uuid primary key default gen_random_uuid()
+role          text              -- 'user' | 'assistant'
+content       text
+created_at    timestamptz default now()
+session_id    text
+
+### action_queue
+id            uuid primary key default gen_random_uuid()
+action_type   text              -- 'file_write' | 'update_profile' | 'web_search'
+payload       jsonb             -- action-specific parameters
+tier          text              -- 'auto' | 'approve'
+status        text              -- 'pending' | 'approved' | 'executed' | 'failed'
+approved      boolean default false
+error         text              -- populated on failure
+executed_at   timestamptz       -- populated on success
+created_at    timestamptz default now()
+
+## What Is WORKING — Do Not Break These
+1. Chat (send/receive messages) — Supabase Realtime, live on Vercel
+2. Gemini AI responses — via Google AI SDK in worker
+3. Worker poll loop — polls action_queue every 5 seconds
+4. file_write executor — end-to-end confirmed: SQL insert → worker → file on disk
+5. Path security — traversal, absolute path, hidden file attacks all blocked
+6. Supabase Auth — user authenticated, do not touch RLS policies without asking
+7. Vercel deployment — live at https://project-sunday.vercel.app
+
+## What Is NOT Built Yet (do not attempt unless explicitly asked)
+- update_profile executor (profile_ops.py is a stub)
+- web_search executor (Brave API — not started)
+- Inventory page functional logic
+- Dashboard page functional logic
+- Profile screen (route does not exist yet)
+- Ollama local routing
+
+## Current Development Priority
+FRONTEND REDESIGN FIRST — before any backend work.
+The entire frontend needs to be redesigned and rebuilt.
+Current UI is functional but visually rough.
+Approach: mockup/prototype each screen first, then implement.
+
+## Frontend Screens Required
+| Screen     | Route        | State         | Purpose                                      |
+|------------|--------------|---------------|----------------------------------------------|
+| Chat       | /chat        | Working/rough | Full-screen chat with Gemini                 |
+| Approvals  | /approvals   | Working/rough | Pending actions requiring approval           |
+| Inventory  | /inventory   | Stub          | Items AI tracks for user                     |
+| Dashboard  | /dashboard   | Stub          | Recent actions, profile summary, status      |
+| Profile    | /profile     | Does not exist| View/edit user_profile.md content            |
+
+## Design Direction — Read Before Any UI Work
+Aesthetic: Refined personal tool. NOT a SaaS product. NOT a chatbot clone.
+References: Linear, Raycast, Things 3 — clean, dark, intentional
+Theme: Dark-mode first (user active at night on phone)
+Typography: Minimal, high contrast, functional
+Navigation: Bottom tab bar (mobile), sidebar optional on desktop
+
+### Hard Design Rules
+- Mobile-first: design at 390px (iPhone 14), scale up
+- Bottom tabs: Chat | Approvals | Inventory | Dashboard (+ Profile via avatar/settings)
+- NO gradient blobs, neon accents, glowing orbs
+- NO icon-in-colored-circles pattern
+- NO centered-everything layout
+- NO generic chatbot bubble UI
+- NO corporate SaaS dashboard aesthetics
+- Solid accent colors only — no gradient buttons
+- Dark surfaces: near-black (#0f0f0f range), not pure black
+- One accent color maximum — use sparingly for CTAs only
+
+## Agent Behaviour Rules
+1. ALWAYS read the relevant existing file before editing it
+2. NEVER modify working executors (file_ops.py) without explicit instruction
+3. NEVER touch RLS policies or Supabase auth config without asking first
+4. NEVER install new npm packages without listing them and asking first
+5. NEVER change the Python worker s poll interval from 5s without asking
+6. When making UI changes, preserve all existing Supabase client calls
+7. After any edit, state exactly which files were changed and how many lines
+8. If a task is ambiguous, ask ONE clarifying question before proceeding
+9. For frontend work: build one screen at a time, confirm before moving to next
+10. Commit message format: "type(scope): description" — e.g. "feat(chat): redesign message bubbles"
+
+## Environment
+- Node: check package.json for version
+- Python: 3.13
+- Supabase project ref: anoggfyjdswlthghmlsu
+- Vercel project: project-sunday
+- Git branch: main (push only after explicit confirmation)

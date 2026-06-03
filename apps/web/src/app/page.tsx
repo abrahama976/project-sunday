@@ -26,6 +26,128 @@ function isMessage(x: unknown): x is Message {
   );
 }
 
+/* ── Timestamp formatter ────────────────────────────────── */
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+/* ── Thinking indicator ─────────────────────────────────── */
+function ThinkingDot() {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "var(--space-3)",
+      padding: "var(--space-3) 0",
+    }}>
+      <span style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: "var(--color-primary)",
+        animation: "pulse-dot 1.4s ease-in-out infinite",
+        flexShrink: 0,
+      }} />
+      <span style={{
+        fontSize: "0.8125rem",
+        color: "var(--color-text-faint)",
+      }}>
+        Thinking…
+      </span>
+      <style>{`
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 0.3; transform: scale(0.85); }
+          50% { opacity: 1; transform: scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* ── Message row ────────────────────────────────────────── */
+function MessageRow({ msg }: { msg: Message }) {
+  const [showTime, setShowTime] = useState(false);
+  const isUser = msg.role === "user";
+
+  return (
+    <div
+      onClick={() => setShowTime((v) => !v)}
+      style={{
+        display: "flex",
+        gap: "var(--space-3)",
+        padding: "var(--space-2) 0",
+        cursor: "default",
+      }}
+    >
+      {/* Accent bar for user messages */}
+      <div style={{
+        width: 2,
+        flexShrink: 0,
+        borderRadius: 1,
+        background: isUser ? "var(--color-primary)" : "transparent",
+        marginTop: 2,
+        marginBottom: 2,
+      }} />
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Role label */}
+        <div style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: "var(--space-2)",
+          marginBottom: "var(--space-1)",
+        }}>
+          <span style={{
+            fontSize: "0.75rem",
+            fontWeight: 600,
+            color: isUser ? "var(--color-primary)" : "var(--color-text-muted)",
+            letterSpacing: "0.02em",
+            textTransform: "uppercase",
+          }}>
+            {isUser ? "You" : "Sunday"}
+          </span>
+          {/* Timestamp — shown on tap (mobile) */}
+          <span style={{
+            fontSize: "0.6875rem",
+            color: "var(--color-text-faint)",
+            opacity: showTime ? 1 : 0,
+            transition: "opacity 150ms",
+          }}>
+            {formatTime(msg.created_at)}
+          </span>
+          {!isUser && msg.model_used && msg.model_used !== "system" && (
+            <span style={{
+              fontSize: "0.6875rem",
+              color: "var(--color-text-faint)",
+              marginLeft: "auto",
+              opacity: showTime ? 1 : 0,
+              transition: "opacity 150ms",
+            }}>
+              {msg.model_used}
+            </span>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="markdown-body" style={{
+          color: isUser ? "var(--color-text)" : "var(--color-text)",
+          fontSize: "0.9375rem",
+        }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {msg.content}
+          </ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Chat page ──────────────────────────────────────────── */
 export default function ChatPage() {
   // Stable client instance — avoids reconstructing on every render.
   const supabase = useMemo(() => createClient(), []);
@@ -35,6 +157,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,9 +243,9 @@ export default function ChatPage() {
         });
 
       // Polling fallback: re-fetch every 4s in case Realtime drops assistant messages
-      const pollInterval = setInterval(() => {
+      pollInterval = setInterval(() => {
         void loadHistory();
-      }, 4000);
+      }, 4000) as unknown as number;
     })();
 
     return () => {
@@ -136,6 +259,14 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  /* Auto-resize textarea */
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+  }, [input]);
 
   const send = async () => {
     if (!input.trim() || loading) return;
@@ -170,127 +301,76 @@ export default function ChatPage() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100dvh - 52px)", paddingBottom: "60px" }}>
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "1.5rem",
-          display: "flex",
-          flexDirection: "column",
-          gap: "1rem",
-        }}
-      >
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      height: "calc(100dvh - var(--nav-top-h))",
+      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
+    }}>
+      {/* Message stream */}
+      <div style={{
+        flex: 1,
+        overflowY: "auto",
+        padding: "var(--space-4) var(--space-5)",
+        display: "flex",
+        flexDirection: "column",
+      }}>
         {messages.length === 0 && !error && (
-          <div
-            style={{
-              margin: "auto",
-              textAlign: "center",
-              color: "var(--color-text-faint)",
-              paddingTop: "4rem",
-            }}
-          >
-            <div style={{ fontSize: "2rem", marginBottom: "1rem" }}>◈</div>
-            <p style={{ fontSize: "1.125rem", color: "var(--color-text-muted)" }}>
-              Hi, Alstone.
+          <div style={{
+            margin: "auto",
+            textAlign: "center",
+            color: "var(--color-text-faint)",
+            paddingTop: "4rem",
+          }}>
+            <div style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "1.5rem",
+              color: "var(--color-primary)",
+              marginBottom: "var(--space-4)",
+              opacity: 0.7,
+            }}>◈</div>
+            <p style={{ fontSize: "1rem", color: "var(--color-text-muted)", fontWeight: 500 }}>
+              Good evening, Alstone.
             </p>
-            <p style={{ fontSize: "0.875rem", marginTop: "0.5rem" }}>
-              Project Sunday is ready. What are we working on?
+            <p style={{ fontSize: "0.8125rem", marginTop: "var(--space-2)" }}>
+              What are we working on?
             </p>
           </div>
         )}
 
         {messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{
-              display: "flex",
-              justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
-            }}
-          >
-            <div
-              style={{
-                maxWidth: "min(72ch, calc(100vw - 2.5rem))",
-                padding: "0.75rem 1rem",
-                borderRadius:
-                  msg.role === "user"
-                    ? "1rem 1rem 0.25rem 1rem"
-                    : "1rem 1rem 1rem 0.25rem",
-                background:
-                  msg.role === "user"
-                    ? "var(--color-primary)"
-                    : "var(--color-surface-offset)",
-                color: msg.role === "user" ? "#fff" : "var(--color-text)",
-                fontSize: "0.9375rem",
-                lineHeight: 1.6,
-                boxShadow: "var(--shadow-md)",
-              }}
-            >
-              <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {msg.content}
-                </ReactMarkdown>
-              </div>
-              {msg.model_used && msg.role === "assistant" && (
-                <span
-                  style={{
-                    display: "block",
-                    marginTop: "0.5rem",
-                    fontSize: "0.75rem",
-                    color: "var(--color-text-faint)",
-                  }}
-                >
-                  via {msg.model_used}
-                </span>
-              )}
-            </div>
-          </div>
+          <MessageRow key={msg.id} msg={msg} />
         ))}
 
-        {loading && (
-          <div style={{ display: "flex", justifyContent: "flex-start" }}>
-            <div
-              style={{
-                padding: "0.75rem 1rem",
-                borderRadius: "1rem 1rem 1rem 0.25rem",
-                background: "var(--color-surface-offset)",
-                color: "var(--color-text-muted)",
-                fontSize: "0.875rem",
-              }}
-            >
-              Thinking…
-            </div>
-          </div>
-        )}
+        {loading && <ThinkingDot />}
 
         <div ref={bottomRef} />
       </div>
 
+      {/* Error bar */}
       {error && (
-        <div
-          style={{
-            padding: "0.5rem 1.5rem",
-            background: "rgba(239,68,68,0.08)",
-            color: "var(--color-danger, #ef4444)",
-            fontSize: "0.8125rem",
-            borderTop: "1px solid var(--color-border)",
-          }}
-        >
+        <div style={{
+          padding: "var(--space-2) var(--space-5)",
+          background: "rgba(196, 77, 77, 0.08)",
+          color: "var(--color-danger)",
+          fontSize: "0.8125rem",
+          borderTop: "1px solid var(--color-border)",
+        }}>
           {error}
         </div>
       )}
 
-      <div
-        style={{
-          padding: "0.75rem 1.5rem",
-          borderTop: "1px solid var(--color-border)",
-          background: "var(--color-surface)",
-          display: "flex",
-          gap: "0.75rem",
-          marginBottom: "0px",
-        }}
-      >
+      {/* Input bar */}
+      <div style={{
+        padding: "var(--space-3) var(--space-5)",
+        borderTop: "1px solid var(--color-border)",
+        background: "var(--color-surface)",
+        display: "flex",
+        alignItems: "flex-end",
+        gap: "var(--space-3)",
+      }}>
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -300,38 +380,48 @@ export default function ChatPage() {
               send();
             }
           }}
-          placeholder="Message Project Sunday… (Enter to send, Shift+Enter for new line)"
+          placeholder="Message Sunday…"
           rows={1}
           style={{
             flex: 1,
             background: "var(--color-surface-2)",
             border: "1px solid var(--color-border)",
             borderRadius: "var(--radius-lg)",
-            padding: "0.75rem 1rem",
+            padding: "var(--space-3) var(--space-4)",
             color: "var(--color-text)",
             resize: "none",
             lineHeight: 1.5,
             fontSize: "0.9375rem",
             outline: "none",
+            maxHeight: "120px",
+            overflowY: "auto",
           }}
         />
         <button
           onClick={send}
           disabled={loading || !input.trim()}
+          aria-label="Send message"
           style={{
-            background: "var(--color-primary)",
-            color: "#fff",
-            border: "none",
-            borderRadius: "var(--radius-lg)",
-            padding: "0 1.25rem",
-            fontWeight: 500,
-            fontSize: "0.875rem",
-            opacity: loading || !input.trim() ? 0.5 : 1,
-            transition: "opacity 180ms, background 180ms",
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: loading || !input.trim() ? "transparent" : "var(--color-primary)",
+            border: loading || !input.trim() ? "1px solid var(--color-border)" : "none",
+            borderRadius: "var(--radius-md)",
+            opacity: loading || !input.trim() ? 0.4 : 1,
+            transition: "opacity 150ms, background 150ms",
             cursor: loading || !input.trim() ? "not-allowed" : "pointer",
+            flexShrink: 0,
           }}
         >
-          Send
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke={loading || !input.trim() ? "var(--color-text-faint)" : "#fff"}
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
         </button>
       </div>
     </div>

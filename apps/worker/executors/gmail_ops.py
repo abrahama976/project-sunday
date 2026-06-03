@@ -1,43 +1,15 @@
+"""Gmail executors: search, draft, read_body, priority_scan."""
 import asyncio
 import base64
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
-from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-
-_WORKER_DIR = Path(__file__).resolve().parent.parent
-_CREDENTIALS_PATH = _WORKER_DIR / "credentials.json"
-_TOKEN_PATH = _WORKER_DIR / "token_gmail.json"
-_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
-]
-
-
-def _get_credentials() -> Credentials:
-    creds = None
-    if _TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), _SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(_CREDENTIALS_PATH), _SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-        _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-
-    return creds
+from google_auth import get_credentials
 
 
 def _get_gmail_service():
-    creds = _get_credentials()
+    creds = get_credentials("gmail")
     return build("gmail", "v1", credentials=creds)
 
 
@@ -57,6 +29,45 @@ def _format_internal_date(internal_date: str) -> str:
         return "Unknown date"
 
 
+def _extract_plain_text(payload: dict, max_chars: int = 4000) -> str:
+    """Recursively extract plain text body from Gmail message payload."""
+    mime_type = payload.get("mimeType", "")
+
+    # Direct text/plain part
+    if mime_type == "text/plain":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            text = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            return text[:max_chars]
+
+    # Multipart — recurse into parts
+    parts = payload.get("parts", [])
+    for part in parts:
+        result = _extract_plain_text(part, max_chars)
+        if result:
+            return result
+
+    # Fallback: try text/html if no plain text found
+    if mime_type == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            # Strip HTML tags (rough, but sufficient for summarisation)
+            import re
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text[:max_chars]
+
+    for part in parts:
+        if part.get("mimeType", "") == "text/html":
+            result = _extract_plain_text(part, max_chars)
+            if result:
+                return result
+
+    return ""
+
+
+# ── Search ─────────────────────────────────────────────────────
 def _gmail_search_sync(query: str, max_results: int) -> str:
     max_results = max(1, min(max_results, 10))
     service = _get_gmail_service()
@@ -89,6 +100,7 @@ def _gmail_search_sync(query: str, max_results: int) -> str:
     return "\n".join(lines)
 
 
+# ── Draft ──────────────────────────────────────────────────────
 def _gmail_draft_sync(to: str, subject: str, body: str) -> str:
     service = _get_gmail_service()
 
@@ -105,9 +117,81 @@ def _gmail_draft_sync(to: str, subject: str, body: str) -> str:
     return f"Draft created: '{subject}' to {to}"
 
 
+# ── Read Body ──────────────────────────────────────────────────
+def _gmail_read_body_sync(message_id: str) -> str:
+    """Fetch the full body of a Gmail message, return plain text truncated to 4000 chars."""
+    service = _get_gmail_service()
+
+    msg = (
+        service.users()
+        .messages()
+        .get(userId="me", id=message_id, format="full")
+        .execute()
+    )
+
+    headers = msg.get("payload", {}).get("headers", [])
+    subject = _header(headers, "Subject") or "(No subject)"
+    sender = _header(headers, "From") or "Unknown"
+    body_text = _extract_plain_text(msg.get("payload", {}))
+
+    if not body_text:
+        return f"From: {sender}\nSubject: {subject}\n\n(No readable text body found)"
+
+    return f"From: {sender}\nSubject: {subject}\n\n{body_text}"
+
+
+# ── Priority Scan ──────────────────────────────────────────────
+def _gmail_priority_scan_sync(max_results: int = 5) -> str:
+    """Scan recent unread important emails, return structured summary."""
+    max_results = max(1, min(max_results, 10))
+    service = _get_gmail_service()
+
+    # Search for unread important emails
+    listed = (
+        service.users()
+        .messages()
+        .list(userId="me", q="is:unread is:important", maxResults=max_results)
+        .execute()
+    )
+
+    message_ids = [m["id"] for m in listed.get("messages", [])]
+    if not message_ids:
+        return "No unread important emails."
+
+    results = []
+    for msg_id in message_ids:
+        msg = (
+            service.users()
+            .messages()
+            .get(userId="me", id=msg_id, format="metadata",
+                 metadataHeaders=["From", "Subject", "Date"])
+            .execute()
+        )
+        headers = msg.get("payload", {}).get("headers", [])
+        results.append({
+            "id": msg_id,
+            "from": _header(headers, "From"),
+            "subject": _header(headers, "Subject") or "(No subject)",
+            "date": _header(headers, "Date") or _format_internal_date(msg.get("internalDate", "")),
+            "snippet": msg.get("snippet", ""),
+        })
+
+    import json
+    return json.dumps(results, indent=2)
+
+
+# ── Async wrappers ─────────────────────────────────────────────
 async def gmail_search(query: str, max_results: int = 10) -> str:
     return await asyncio.to_thread(_gmail_search_sync, query, max_results)
 
 
 async def gmail_draft(to: str, subject: str, body: str) -> str:
     return await asyncio.to_thread(_gmail_draft_sync, to, subject, body)
+
+
+async def gmail_read_body(message_id: str) -> str:
+    return await asyncio.to_thread(_gmail_read_body_sync, message_id)
+
+
+async def gmail_priority_scan(max_results: int = 5) -> str:
+    return await asyncio.to_thread(_gmail_priority_scan_sync, max_results)

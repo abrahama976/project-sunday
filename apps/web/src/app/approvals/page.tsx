@@ -43,13 +43,64 @@ function isAction(x: unknown): x is Action {
 }
 
 function statusBadge(a: Action): { text: string; bg: string; color: string } {
-  if (a.status === "executed")  return { text: "Executed", bg: "var(--color-success, #10b981)", color: "#fff" };
-  if (a.status === "failed")    return { text: "Failed",   bg: "var(--color-danger, #ef4444)",  color: "#fff" };
-  if (a.status === "denied")    return { text: "Denied",   bg: "var(--color-text-muted)",       color: "#fff" };
+  if (a.status === "executed")  return { text: "Executed", bg: "var(--color-success)", color: "#fff" };
+  if (a.status === "failed")    return { text: "Failed",   bg: "var(--color-danger)",  color: "#fff" };
+  if (a.status === "denied")    return { text: "Denied",   bg: "var(--color-text-faint)", color: "var(--color-bg)" };
   if (a.status === "approved" || a.status === "executing")
     return { text: "Running", bg: "var(--color-primary)", color: "#fff" };
   return { text: "Pending", bg: "var(--color-surface-offset)", color: "var(--color-text-muted)" };
 }
+
+/* ── Collapsible payload viewer ────────────────────────── */
+function PayloadView({ payload }: { payload: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const json = JSON.stringify(payload, null, 2);
+  const preview = JSON.stringify(payload);
+  const isLong = preview.length > 80;
+
+  return (
+    <div style={{ marginBottom: "var(--space-3)" }}>
+      {isLong ? (
+        <details open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+          <summary style={{
+            fontSize: "0.75rem",
+            color: "var(--color-text-faint)",
+            cursor: "pointer",
+            marginBottom: "var(--space-2)",
+            userSelect: "none",
+          }}>
+            {open ? "Hide payload" : "Show payload"}
+          </summary>
+          <pre style={preStyle}>{json}</pre>
+        </details>
+      ) : (
+        <pre style={preStyle}>{json}</pre>
+      )}
+    </div>
+  );
+}
+
+const preStyle: React.CSSProperties = {
+  background: "var(--color-surface-2)",
+  borderRadius: "var(--radius-md)",
+  padding: "var(--space-3) var(--space-4)",
+  fontSize: "0.8125rem",
+  color: "var(--color-text-muted)",
+  overflowX: "auto",
+  whiteSpace: "pre-wrap",
+  lineHeight: 1.5,
+  fontFamily: "var(--font-mono)",
+  margin: 0,
+};
+
+const btnBase: React.CSSProperties = {
+  padding: "var(--space-2) var(--space-5)",
+  borderRadius: "var(--radius-md)",
+  fontSize: "0.8125rem",
+  fontWeight: 500,
+  cursor: "pointer",
+  transition: "opacity 150ms",
+};
 
 export default function ApprovalsPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -168,47 +219,50 @@ export default function ApprovalsPage() {
   const resolved = actions.filter((a) => a.status !== "pending" || a.approved !== null);
 
   return (
-    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "2rem 1.5rem" }}>
-      <h1 style={{ fontSize: "1.25rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-5)" }}>
+      <h1 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "var(--space-1)" }}>
         Approval Queue
       </h1>
-      <p style={{ fontSize: "0.875rem", color: "var(--color-text-muted)", marginBottom: "1.5rem" }}>
-        The Mac worker cannot execute any non-auto action until you approve it here.
+      <p style={{
+        fontSize: "0.8125rem", color: "var(--color-text-muted)",
+        marginBottom: "var(--space-6)",
+      }}>
+        Actions execute only after your approval.
       </p>
 
       {error && (
         <div style={{
-          padding: "0.625rem 1rem", marginBottom: "1rem",
-          background: "rgba(239,68,68,0.08)", borderRadius: "var(--radius-md, 0.5rem)",
-          color: "var(--color-danger, #ef4444)", fontSize: "0.8125rem",
+          padding: "var(--space-3) var(--space-4)", marginBottom: "var(--space-4)",
+          background: "rgba(196, 77, 77, 0.08)", borderRadius: "var(--radius-md)",
+          color: "var(--color-danger)", fontSize: "0.8125rem",
         }}>
           {error}
         </div>
       )}
 
-      <section style={{ marginBottom: "2.5rem" }}>
+      <section style={{ marginBottom: "var(--space-10)" }}>
         <h2 style={{
-          fontSize: "0.75rem", fontWeight: 600, letterSpacing: "0.08em",
-          textTransform: "uppercase", color: "var(--color-text-faint)", marginBottom: "1rem",
+          fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.08em",
+          textTransform: "uppercase", color: "var(--color-text-faint)",
+          marginBottom: "var(--space-4)",
         }}>
-          Awaiting your approval {pending.length > 0 && `(${pending.length})`}
+          Pending {pending.length > 0 && `(${pending.length})`}
         </h2>
 
-        {loading && <p style={{ color: "var(--color-text-faint)", fontSize: "0.875rem" }}>Loading…</p>}
+        {loading && <p style={{ color: "var(--color-text-faint)", fontSize: "0.8125rem" }}>Loading…</p>}
 
         {!loading && pending.length === 0 && (
           <div style={{
-            padding: "2rem", textAlign: "center",
+            padding: "var(--space-8)", textAlign: "center",
             borderRadius: "var(--radius-lg)",
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-border)",
-            color: "var(--color-text-faint)", fontSize: "0.875rem",
+            border: "1px dashed var(--color-border)",
+            color: "var(--color-text-faint)", fontSize: "0.8125rem",
           }}>
-            No pending actions — you&apos;re all clear.
+            No pending actions — all clear.
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
           {pending.map((action) => {
             const typeLabel = TYPE_LABELS[action.action_type] ?? action.action_type;
             const isArmed = armed?.id === action.id;
@@ -220,16 +274,16 @@ export default function ApprovalsPage() {
                 border: "1px solid var(--color-border)",
                 borderLeft: `3px solid ${ACTION_TIER_COLORS[action.tier]}`,
                 borderRadius: "var(--radius-lg)",
-                padding: "1rem 1.25rem",
-                boxShadow: "var(--shadow-md)",
+                padding: "var(--space-4) var(--space-5)",
               }}>
+                {/* Header */}
                 <div style={{
-                  display: "flex", alignItems: "center", gap: "0.5rem",
-                  marginBottom: "0.75rem", flexWrap: "wrap",
+                  display: "flex", alignItems: "center", gap: "var(--space-2)",
+                  marginBottom: "var(--space-3)", flexWrap: "wrap",
                 }}>
                   <span style={{
-                    fontSize: "0.6875rem", fontWeight: 600,
-                    padding: "0.15rem 0.5rem", borderRadius: "9999px",
+                    fontSize: "0.625rem", fontWeight: 600,
+                    padding: "2px var(--space-2)", borderRadius: "9999px",
                     background: ACTION_TIER_COLORS[action.tier],
                     color: "#fff", letterSpacing: "0.06em", textTransform: "uppercase",
                   }}>
@@ -237,37 +291,29 @@ export default function ApprovalsPage() {
                   </span>
                   <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{typeLabel}</span>
                   <span style={{
-                    fontSize: "0.75rem", color: "var(--color-text-faint)", marginLeft: "auto",
+                    fontSize: "0.6875rem", color: "var(--color-text-faint)", marginLeft: "auto",
+                    fontFamily: "var(--font-mono)",
                   }}>
-                    {new Date(action.created_at).toLocaleTimeString()}
+                    {new Date(action.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
 
-                <pre style={{
-                  background: "var(--color-surface-2, #201f1d)",
-                  borderRadius: "var(--radius-md)",
-                  padding: "0.75rem", fontSize: "0.8125rem",
-                  color: "var(--color-text-muted)",
-                  overflowX: "auto", whiteSpace: "pre-wrap",
-                  marginBottom: "1rem", lineHeight: 1.5,
-                  fontFamily: "ui-monospace, SFMono-Regular, monospace",
-                }}>
-                  {JSON.stringify(action.payload, null, 2)}
-                </pre>
+                {/* Payload */}
+                <PayloadView payload={action.payload} />
 
-                <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                {/* Actions */}
+                <div style={{ display: "flex", gap: "var(--space-2)", justifyContent: "flex-end" }}>
                   {isArmed ? (
                     <>
                       <button onClick={() => setArmed(null)} style={{
-                        padding: "0.5rem 1.25rem", borderRadius: "var(--radius-md)",
+                        ...btnBase,
                         border: "1px solid var(--color-border)", background: "transparent",
-                        fontSize: "0.875rem", color: "var(--color-text)", cursor: "pointer",
+                        color: "var(--color-text)",
                       }}>Cancel</button>
                       <button disabled style={{
-                        padding: "0.5rem 1.25rem", borderRadius: "var(--radius-md)",
-                        background: "var(--color-danger, #ef4444)", border: "none",
-                        fontSize: "0.875rem", fontWeight: 500, color: "#fff",
-                        cursor: "not-allowed", fontVariantNumeric: "tabular-nums",
+                        ...btnBase,
+                        background: "var(--color-danger)", border: "none",
+                        color: "#fff", cursor: "not-allowed", fontVariantNumeric: "tabular-nums",
                       }}>Executing in {remaining}s…</button>
                     </>
                   ) : (
@@ -276,9 +322,9 @@ export default function ApprovalsPage() {
                         disabled={acting === action.id}
                         onClick={() => denyById(action.id)}
                         style={{
-                          padding: "0.5rem 1.25rem", borderRadius: "var(--radius-md)",
+                          ...btnBase,
                           border: "1px solid var(--color-border)", background: "transparent",
-                          fontSize: "0.875rem", color: "var(--color-text-muted)",
+                          color: "var(--color-text-muted)",
                           opacity: acting === action.id ? 0.5 : 1,
                           cursor: acting === action.id ? "not-allowed" : "pointer",
                         }}>Deny</button>
@@ -286,11 +332,9 @@ export default function ApprovalsPage() {
                         disabled={acting === action.id}
                         onClick={() => handleApprove(action)}
                         style={{
-                          padding: "0.5rem 1.25rem", borderRadius: "var(--radius-md)",
-                          background: action.tier === "hold"
-                            ? "var(--color-danger, #ef4444)"
-                            : "var(--color-primary)",
-                          border: "none", fontSize: "0.875rem", fontWeight: 500, color: "#fff",
+                          ...btnBase,
+                          background: action.tier === "hold" ? "var(--color-danger)" : "var(--color-primary)",
+                          border: "none", color: "#fff",
                           opacity: acting === action.id ? 0.5 : 1,
                           cursor: acting === action.id ? "not-allowed" : "pointer",
                         }}>
@@ -308,33 +352,36 @@ export default function ApprovalsPage() {
       {resolved.length > 0 && (
         <section>
           <h2 style={{
-            fontSize: "0.75rem", fontWeight: 600, letterSpacing: "0.08em",
-            textTransform: "uppercase", color: "var(--color-text-faint)", marginBottom: "1rem",
-          }}>Recent history</h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.08em",
+            textTransform: "uppercase", color: "var(--color-text-faint)",
+            marginBottom: "var(--space-4)",
+          }}>History</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
             {resolved.map((action) => {
               const badge = statusBadge(action);
               const typeLabel = TYPE_LABELS[action.action_type] ?? action.action_type;
               return (
                 <div key={action.id} style={{
-                  display: "flex", alignItems: "center", gap: "0.75rem",
-                  padding: "0.625rem 1rem",
+                  display: "flex", alignItems: "center", gap: "var(--space-3)",
+                  padding: "var(--space-3) var(--space-4)",
                   background: "var(--color-surface)",
                   border: "1px solid var(--color-border)",
                   borderLeft: `3px solid ${ACTION_TIER_COLORS[action.tier]}`,
-                  borderRadius: "var(--radius-md)", fontSize: "0.875rem",
+                  borderRadius: "var(--radius-md)", fontSize: "0.8125rem",
                 }}>
-                  <span style={{ fontWeight: 500, minWidth: "110px" }}>{typeLabel}</span>
+                  <span style={{ fontWeight: 500, minWidth: "100px", flexShrink: 0 }}>{typeLabel}</span>
                   <span style={{
-                    color: "var(--color-text-muted)", flex: 1,
+                    color: "var(--color-text-faint)", flex: 1,
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    fontFamily: "var(--font-mono)", fontSize: "0.75rem",
                   }}>
-                    {JSON.stringify(action.payload).slice(0, 80)}…
+                    {JSON.stringify(action.payload).slice(0, 60)}
                   </span>
                   <span style={{
-                    fontSize: "0.75rem", fontWeight: 600,
-                    padding: "0.2rem 0.6rem", borderRadius: "9999px",
+                    fontSize: "0.6875rem", fontWeight: 600,
+                    padding: "2px var(--space-2)", borderRadius: "9999px",
                     background: badge.bg, color: badge.color, whiteSpace: "nowrap",
+                    flexShrink: 0,
                   }}>{badge.text}</span>
                 </div>
               );

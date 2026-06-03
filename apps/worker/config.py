@@ -23,18 +23,32 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 TOOL_TIER_MAP = {
-    "file_read":        "auto",
-    "file_list":        "auto",
-    "calendar_query":   "auto",
-    "gmail_search":     "auto",
-    "web_fetch":        "auto",
-    "file_write":       "approve",
-    "calendar_create":  "approve",
-    "gmail_draft":      "approve",
-    "update_profile":   "approve",
-    "inventory_update": "approve",
-    "file_delete":      "hold",
-    "gmail_send":       "hold",
-    "calendar_delete":  "hold",
-    "shell_cmd":        "hold",
+    # File operations
+    "file_read":            "auto",
+    "file_list":            "auto",
+    "file_write":           "approve",
+    "file_delete":          "hold",
+    # Calendar
+    "calendar_query":       "auto",
+    "calendar_create":      "approve",
+    "calendar_update":      "approve",
+    "calendar_delete":      "hold",
+    # Gmail
+    "gmail_search":         "auto",
+    "gmail_read_body":      "auto",
+    "gmail_priority_scan":  "auto",
+    "gmail_draft":          "approve",
+    "gmail_send":           "hold",
+    # Tasks
+    "task_create":          "auto",
+    "task_update":          "auto",
+    "task_list":            "auto",
+    # Web
+    "web_fetch":            "auto",
+    # Profile
+    "update_profile":       "approve",
+    # Inventory
+    "inventory_update":     "approve",
+    # Dangerous
+    "shell_cmd":            "hold",
 }

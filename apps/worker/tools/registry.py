@@ -1,4 +1,12 @@
+"""Gemini function declarations for all available tools.
+
+Each entry defines the function name, description, and parameter schema
+that Gemini uses for tool calling. The actual executor functions live in
+the executors/ directory.
+"""
+
 TOOLS = [
+    # ── File operations ────────────────────────────────────────
     {
         "name": "file_write",
         "description": "Write text content to a file. Always requires user approval.",
@@ -34,6 +42,8 @@ TOOLS = [
             "required": ["path"]
         }
     },
+
+    # ── Profile ────────────────────────────────────────────────
     {
         "name": "update_profile",
         "description": "Propose an addition to the user profile context file.",
@@ -46,6 +56,8 @@ TOOLS = [
             "required": ["section", "content"]
         }
     },
+
+    # ── Web ────────────────────────────────────────────────────
     {
         "name": "web_fetch",
         "description": "Fetch the contents of a public HTTPS URL and return readable text. Use for looking up documentation, articles, or any public web page.",
@@ -57,6 +69,8 @@ TOOLS = [
             "required": ["url"]
         }
     },
+
+    # ── Calendar ───────────────────────────────────────────────
     {
         "name": "calendar_query",
         "description": "Query Google Calendar for upcoming events. Can filter by keyword and number of days ahead.",
@@ -70,6 +84,39 @@ TOOLS = [
         }
     },
     {
+        "name": "calendar_create",
+        "description": "Create a new Google Calendar event. Requires approval before execution.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "Event title"},
+                "start": {"type": "string", "description": "Start time in ISO 8601 format (e.g. '2026-06-10T09:00:00' for timed, '2026-06-10' for all-day)"},
+                "end": {"type": "string", "description": "End time in ISO 8601 format"},
+                "location": {"type": "string", "description": "Event location (optional)"},
+                "description": {"type": "string", "description": "Event description (optional)"}
+            },
+            "required": ["summary", "start", "end"]
+        }
+    },
+    {
+        "name": "calendar_update",
+        "description": "Update an existing Google Calendar event by ID. Requires approval.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "Google Calendar event ID to update"},
+                "summary": {"type": "string", "description": "New event title (optional)"},
+                "start": {"type": "string", "description": "New start time in ISO 8601 format (optional)"},
+                "end": {"type": "string", "description": "New end time in ISO 8601 format (optional)"},
+                "location": {"type": "string", "description": "New location (optional)"},
+                "description": {"type": "string", "description": "New description (optional)"}
+            },
+            "required": ["event_id"]
+        }
+    },
+
+    # ── Gmail ──────────────────────────────────────────────────
+    {
         "name": "gmail_search",
         "description": "Search Gmail inbox using Gmail search syntax. Returns email list with date, sender, and subject.",
         "parameters": {
@@ -79,6 +126,28 @@ TOOLS = [
                 "max_results": {"type": "integer", "description": "Max emails to return (default 10, max 10)"}
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "gmail_read_body",
+        "description": "Fetch the full body text of a specific email by message ID. Returns plain text truncated to 4000 chars. Use after gmail_search to read an email's content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Gmail message ID (from gmail_search results)"}
+            },
+            "required": ["message_id"]
+        }
+    },
+    {
+        "name": "gmail_priority_scan",
+        "description": "Scan for unread important emails and return a structured summary with sender, subject, date, and snippet.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_results": {"type": "integer", "description": "Max emails to scan (default 5, max 10)"}
+            },
+            "required": []
         }
     },
     {
@@ -92,6 +161,52 @@ TOOLS = [
                 "body": {"type": "string", "description": "Email body text"}
             },
             "required": ["to", "subject", "body"]
+        }
+    },
+
+    # ── Tasks ──────────────────────────────────────────────────
+    {
+        "name": "task_create",
+        "description": "Create a new task. Use when the user mentions something they need to do, a reminder, or a to-do item.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short, actionable task title"},
+                "category": {"type": "string", "description": "Category: 'work', 'personal', 'health', 'finance', or 'project' (default: personal)"},
+                "priority": {"type": "integer", "description": "Priority 1 (urgent) to 5 (someday). Default: 3"},
+                "due_date": {"type": "string", "description": "Due date in YYYY-MM-DD format (optional)"},
+                "description": {"type": "string", "description": "Longer description or notes (optional)"}
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "task_update",
+        "description": "Update an existing task's status, priority, due date, or other fields.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task UUID to update"},
+                "title": {"type": "string", "description": "New title (optional)"},
+                "status": {"type": "string", "description": "New status: 'open', 'in_progress', 'done', or 'cancelled' (optional)"},
+                "priority": {"type": "integer", "description": "New priority 1-5 (optional)"},
+                "due_date": {"type": "string", "description": "New due date YYYY-MM-DD (optional)"},
+                "category": {"type": "string", "description": "New category (optional)"}
+            },
+            "required": ["task_id"]
+        }
+    },
+    {
+        "name": "task_list",
+        "description": "List tasks, optionally filtered by status, category, and due date.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter by status: 'open', 'in_progress', 'done', 'cancelled', or 'all' (default: open)"},
+                "category": {"type": "string", "description": "Filter by category (optional)"},
+                "due_before": {"type": "string", "description": "Only tasks due on or before this date YYYY-MM-DD (optional)"}
+            },
+            "required": []
         }
     },
 ]

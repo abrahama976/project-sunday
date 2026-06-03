@@ -37,21 +37,24 @@ function LoginPageInner() {
   return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "center",
-      minHeight: "calc(100dvh - 56px)", padding: "1.5rem",
+      minHeight: "calc(100dvh - var(--nav-top-h))", padding: "var(--space-6)",
     }}>
       <div style={{
-        width: "100%", maxWidth: "360px",
-        background: "var(--color-surface)",
-        border: "1px solid var(--color-border)",
-        borderRadius: "var(--radius-lg)", padding: "2rem",
-        display: "flex", flexDirection: "column", gap: "1rem",
+        width: "100%", maxWidth: "340px",
+        display: "flex", flexDirection: "column", gap: "var(--space-4)",
       }}>
-        <h1 style={{ fontSize: "1.25rem", fontWeight: 500, margin: 0 }}>
-          Project Sunday
-        </h1>
-        <p style={{ fontSize: "0.875rem", color: "var(--color-text-muted)", margin: 0 }}>
-          Sign in to continue.
-        </p>
+        <div style={{ marginBottom: "var(--space-2)" }}>
+          <h1 style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: "1rem", fontWeight: 500, color: "var(--color-primary)",
+            marginBottom: "var(--space-1)",
+          }}>
+            Project Sunday
+          </h1>
+          <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
+            Sign in to continue.
+          </p>
+        </div>
 
         <input
           type="email"
@@ -76,10 +79,10 @@ function LoginPageInner() {
         {error && (
           <div style={{
             fontSize: "0.8125rem",
-            color: "var(--color-danger, #ef4444)",
-            background: "rgba(239,68,68,0.08)",
-            padding: "0.5rem 0.75rem",
-            borderRadius: "var(--radius-md, 0.5rem)",
+            color: "var(--color-danger)",
+            background: "rgba(196, 77, 77, 0.08)",
+            padding: "var(--space-3) var(--space-4)",
+            borderRadius: "var(--radius-md)",
           }}>
             {error}
           </div>
@@ -90,10 +93,11 @@ function LoginPageInner() {
           disabled={loading || !email || !password}
           style={{
             background: "var(--color-primary)", color: "#fff", border: "none",
-            borderRadius: "var(--radius-lg)", padding: "0.75rem 1rem",
+            borderRadius: "var(--radius-lg)", padding: "var(--space-3) var(--space-4)",
             fontSize: "0.9375rem", fontWeight: 500,
             cursor: loading || !email || !password ? "not-allowed" : "pointer",
             opacity: loading || !email || !password ? 0.5 : 1,
+            transition: "opacity 150ms",
           }}
         >
           {loading ? "Signing in…" : "Sign in"}
@@ -115,7 +119,7 @@ const inputStyle: React.CSSProperties = {
   background: "var(--color-surface-2)",
   border: "1px solid var(--color-border)",
   borderRadius: "var(--radius-lg)",
-  padding: "0.625rem 0.875rem",
+  padding: "var(--space-3) var(--space-4)",
   color: "var(--color-text)",
   fontSize: "0.9375rem",
   outline: "none",
