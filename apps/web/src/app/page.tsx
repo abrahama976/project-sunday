@@ -1,170 +1,149 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createClient } from "@/lib/supabase/client";
-import { MAX_MESSAGES_LOADED } from "@/lib/constants";
 
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  model_used: string | null;
-  created_at: string;
-};
+const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
+const POLL_INTERVAL_MS = 30 * 1000;
 
-function isMessage(x: unknown): x is Message {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
-  return (
-    typeof o.id === "string" &&
-    (o.role === "user" || o.role === "assistant") &&
-    typeof o.content === "string" &&
-    (o.model_used === null || typeof o.model_used === "string") &&
-    typeof o.created_at === "string"
-  );
+/* ── Time-aware greeting ─────────────────────────────────── */
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 5)  return "Good evening";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
 }
 
-/* ── Timestamp formatter ────────────────────────────────── */
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "";
-  }
-}
-
-/* ── Thinking indicator ─────────────────────────────────── */
-function ThinkingDot() {
+/* ── Progress Bar Component ──────────────────────────────── */
+function ProgressBar({ label, current, max, unit, colorVar }: { label: string, current: number, max: number, unit: string, colorVar: string }) {
+  const percentage = Math.min(100, Math.max(0, (current / max) * 100));
+  
   return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: "var(--space-3)",
-      padding: "var(--space-3) 0",
-    }}>
-      <span style={{
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: "var(--color-primary)",
-        animation: "pulse-dot 1.4s ease-in-out infinite",
-        flexShrink: 0,
-      }} />
-      <span style={{
-        fontSize: "0.8125rem",
-        color: "var(--color-text-faint)",
-      }}>
-        Thinking…
-      </span>
-      <style>{`
-        @keyframes pulse-dot {
-          0%, 100% { opacity: 0.3; transform: scale(0.85); }
-          50% { opacity: 1; transform: scale(1); }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-/* ── Message row ────────────────────────────────────────── */
-function MessageRow({ msg }: { msg: Message }) {
-  const [showTime, setShowTime] = useState(false);
-  const isUser = msg.role === "user";
-
-  return (
-    <div
-      onClick={() => setShowTime((v) => !v)}
-      style={{
-        display: "flex",
-        gap: "var(--space-3)",
-        padding: "var(--space-2) 0",
-        cursor: "default",
-      }}
-    >
-      {/* Accent bar for user messages */}
+    <div style={{ marginBottom: "var(--space-4)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "var(--space-2)", fontSize: "0.8125rem" }}>
+        <span style={{ fontWeight: 500, color: "var(--color-text)" }}>{label}</span>
+        <span style={{ color: "var(--color-text-muted)" }}>{current} / {max} {unit}</span>
+      </div>
       <div style={{
-        width: 2,
-        flexShrink: 0,
-        borderRadius: 1,
-        background: isUser ? "var(--color-primary)" : "transparent",
-        marginTop: 2,
-        marginBottom: 2,
-      }} />
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {/* Role label */}
+        height: "6px",
+        background: "var(--color-surface-2)",
+        borderRadius: "9999px",
+        overflow: "hidden"
+      }}>
         <div style={{
-          display: "flex",
-          alignItems: "baseline",
-          gap: "var(--space-2)",
-          marginBottom: "var(--space-1)",
-        }}>
-          <span style={{
-            fontSize: "0.75rem",
-            fontWeight: 600,
-            color: isUser ? "var(--color-primary)" : "var(--color-text-muted)",
-            letterSpacing: "0.02em",
-            textTransform: "uppercase",
-          }}>
-            {isUser ? "You" : "Sunday"}
-          </span>
-          {/* Timestamp — shown on tap (mobile) */}
-          <span style={{
-            fontSize: "0.6875rem",
-            color: "var(--color-text-faint)",
-            opacity: showTime ? 1 : 0,
-            transition: "opacity 150ms",
-          }}>
-            {formatTime(msg.created_at)}
-          </span>
-          {!isUser && msg.model_used && msg.model_used !== "system" && (
-            <span style={{
-              fontSize: "0.6875rem",
-              color: "var(--color-text-faint)",
-              marginLeft: "auto",
-              opacity: showTime ? 1 : 0,
-              transition: "opacity 150ms",
-            }}>
-              {msg.model_used}
-            </span>
-          )}
-        </div>
-
-        {/* Content */}
-        <div className="markdown-body" style={{
-          color: isUser ? "var(--color-text)" : "var(--color-text)",
-          fontSize: "0.9375rem",
-        }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {msg.content}
-          </ReactMarkdown>
-        </div>
+          height: "100%",
+          width: `${percentage}%`,
+          background: colorVar,
+          borderRadius: "9999px",
+          transition: "width 1s cubic-bezier(0.4, 0, 0.2, 1)",
+        }} />
       </div>
     </div>
   );
 }
 
-/* ── Chat page ──────────────────────────────────────────── */
-export default function ChatPage() {
-  // Stable client instance — avoids reconstructing on every render.
-  const supabase = useMemo(() => createClient(), []);
+/* ── Status dot ──────────────────────────────────────────── */
+function StatusDot({ online }: { online: boolean }) {
+  return (
+    <span style={{
+      display: "inline-block",
+      width: 6, height: 6,
+      borderRadius: "50%",
+      background: online ? "var(--color-success)" : "var(--color-text-faint)",
+      boxShadow: online ? "0 0 6px var(--color-success)" : "none",
+      flexShrink: 0,
+      transition: "background 0.3s ease, box-shadow 0.3s ease",
+    }} />
+  );
+}
 
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+/* ── Dashboard card ──────────────────────────────────────── */
+function Card({ title, action, children, href }: {
+  title: string;
+  action?: { label: string; href: string };
+  children: React.ReactNode;
+  href?: string;
+}) {
+  const content = (
+    <div style={{
+      background: "var(--color-surface)",
+      border: "1px solid var(--color-border)",
+      borderRadius: "var(--radius-xl)",
+      padding: "var(--space-5)",
+      boxShadow: "var(--shadow-sm)",
+      transition: "transform 150ms ease, background 150ms ease",
+      cursor: href ? "pointer" : "default",
+    }} className={href ? "hover:scale-[1.02] hover:bg-white/5" : ""}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: "var(--space-4)",
+      }}>
+        <h3 style={{
+          fontSize: "0.75rem",
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--color-text-faint)",
+        }}>{title}</h3>
+        {action && (
+          <Link href={action.href} style={{
+            fontSize: "0.75rem",
+            fontWeight: 500,
+            color: "var(--color-primary)",
+            textDecoration: "none",
+          }}>{action.label}</Link>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+
+  if (href) {
+    return <Link href={href} style={{ textDecoration: "none", color: "inherit" }}>{content}</Link>;
+  }
+  return content;
+}
+
+/* ── Types ───────────────────────────────────────────── */
+type Task = {
+  id: string;
+  title: string;
+  category: string | null;
+  priority: number;
+  due_date: string | null;
+  status: string;
+};
+
+type Briefing = {
+  id: string;
+  content: string;
+  briefing_date: string;
+};
+
+type HealthLog = {
+  metric: string;
+  value: number;
+  water_ml: number | null;
+};
+
+export default function DashboardPage() {
+  const supabase = useMemo(() => createClient(), []);
+  const [online, setOnline] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [userName, setUserName] = useState("");
 
+  /* Fetch display name */
   useEffect(() => {
     (async () => {
-      const { data: profile } = await supabase
-        .from("user_profile")
-        .select("content")
-        .limit(1)
-        .maybeSingle();
+      const { data: profile } = await supabase.from("user_profile").select("content").limit(1).maybeSingle();
       if (profile?.content) {
         const match = profile.content.match(/^#\s+(.+)/m);
         if (match) { setUserName(match[1].trim()); return; }
@@ -173,273 +152,224 @@ export default function ChatPage() {
       if (user?.email) setUserName(user.email.split("@")[0]);
     })();
   }, [supabase]);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  /* Worker heartbeat */
   useEffect(() => {
     let cancelled = false;
-    const seen = new Set<string>();
-
-    const mergeMessages = (rows: Message[]) => {
-      setMessages((prev) => {
-        const byId = new Map<string, Message>();
-        for (const m of prev) byId.set(m.id, m);
-        for (const m of rows) {
-          seen.add(m.id);
-          byId.set(m.id, m);
-        }
-        return Array.from(byId.values()).sort((a, b) =>
-          a.created_at.localeCompare(b.created_at)
-        );
-      });
-    };
-
-    const appendMessage = (row: Message) => {
-      if (seen.has(row.id)) return;
-      seen.add(row.id);
-      mergeMessages([row]);
-    };
-
-    const loadHistory = async () => {
-      const { data, error: loadErr } = await supabase
-        .from("messages")
-        .select("*")
-        .order("created_at", { ascending: true })
-        .limit(MAX_MESSAGES_LOADED);
-
+    const fetchHeartbeat = async () => {
+      const { data, error } = await supabase.from("mac_heartbeat").select("last_seen").eq("id", 1).maybeSingle();
       if (cancelled) return;
-      if (loadErr) {
-        setError(`Failed to load history: ${loadErr.message}`);
-        return;
+      if (error || !data || !data.last_seen) {
+        setOnline(false);
+      } else {
+        const age = Date.now() - new Date(data.last_seen).getTime();
+        setOnline(age >= 0 && age <= ONLINE_THRESHOLD_MS);
       }
-      if (data) mergeMessages(data.filter(isMessage));
+      setLoading(false);
     };
-
-    // RLS-filtered Realtime requires the user JWT on the socket.
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (session?.access_token) {
-          supabase.realtime.setAuth(session.access_token);
-        }
-      }
-    );
-
-    let channel: ReturnType<typeof supabase.channel> | null = null;
-    let pollInterval: number | undefined;
-
-    void (async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (cancelled) return;
-      if (session?.access_token) {
-        await supabase.realtime.setAuth(session.access_token);
-      }
-
-      channel = supabase
-        .channel("messages-realtime")
-        .on(
-          "postgres_changes",
-          { event: "INSERT", schema: "public", table: "messages" },
-          (payload) => {
-            const row = payload.new;
-            if (!isMessage(row)) return;
-            appendMessage(row);
-          }
-        )
-        .subscribe((status, err) => {
-          if (cancelled) return;
-          if (status === "SUBSCRIBED") {
-            void loadHistory();
-          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            setError(
-              `Realtime unavailable: ${err?.message ?? status}. Refresh to see new messages.`
-            );
-            void loadHistory();
-          }
-        });
-
-      // Polling fallback: re-fetch every 4s in case Realtime drops assistant messages
-      pollInterval = setInterval(() => {
-        void loadHistory();
-      }, 4000) as unknown as number;
-    })();
-
-    return () => {
-      cancelled = true;
-      clearInterval(pollInterval);
-      authListener.subscription.unsubscribe();
-      if (channel) supabase.removeChannel(channel);
-    };
+    void fetchHeartbeat();
+    const interval = setInterval(() => { void fetchHeartbeat(); }, POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [supabase]);
 
+  /* Pending approval count */
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    let cancelled = false;
+    const fetchPending = async () => {
+      const { count, error } = await supabase.from("action_queue").select("*", { count: "exact", head: true }).eq("status", "pending").is("approved", null).neq("tier", "auto");
+      if (!cancelled && !error && count !== null) setPendingCount(count);
+    };
+    void fetchPending();
+    const ch = supabase.channel("dash-approvals")
+      .on("postgres_changes", { event: "*", schema: "public", table: "action_queue" }, () => { void fetchPending(); })
+      .subscribe();
+    return () => { cancelled = true; supabase.removeChannel(ch); };
+  }, [supabase]);
 
-  /* Auto-resize textarea */
+  /* Tasks (completion stats and due tasks) */
   useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 120) + "px";
-  }, [input]);
+    let cancelled = false;
+    
+    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
+    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
+    const today = localISOTime.split("T")[0];
 
-  const send = async () => {
-    if (!input.trim() || loading) return;
-    const text = input.trim();
-    setInput("");
-    setLoading(true);
-    setError(null);
+    const fetchTasks = async () => {
+      const { data } = await supabase
+        .from("tasks")
+        .select("id,title,category,priority,due_date,status")
+        .lte("due_date", today)
+        .order("priority", { ascending: true });
+      if (!cancelled && data) setTasks(data as Task[]);
+    };
 
-    try {
-      const { data, error: insertErr } = await supabase
-        .from("messages")
-        .insert({ role: "user", content: text, model_used: "user" })
-        .select()
-        .single();
+    void fetchTasks();
+    const ch = supabase.channel("dash-tasks")
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => { void fetchTasks(); })
+      .subscribe();
+    return () => { cancelled = true; supabase.removeChannel(ch); };
+  }, [supabase]);
 
-      if (insertErr) throw insertErr;
-      // Show the user message immediately; worker reply arrives via Realtime.
-      if (data && isMessage(data)) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === data.id)) return prev;
-          return [...prev, data].sort((a, b) =>
-            a.created_at.localeCompare(b.created_at)
-          );
-        });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "unknown error";
-      setError(`Send failed: ${msg}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+  /* Health logs */
+  useEffect(() => {
+    let cancelled = false;
+    
+    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
+    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
+    const today = localISOTime.split("T")[0];
+
+    const fetchHealth = async () => {
+      const { data } = await supabase.from("health_logs").select("metric,value,water_ml").eq("log_date", today);
+      if (!cancelled && data) setHealthLogs(data as HealthLog[]);
+    };
+
+    void fetchHealth();
+    const ch = supabase.channel("dash-health")
+      .on("postgres_changes", { event: "*", schema: "public", table: "health_logs" }, () => { void fetchHealth(); })
+      .subscribe();
+    return () => { cancelled = true; supabase.removeChannel(ch); };
+  }, [supabase]);
+
+  /* Today's briefing */
+  useEffect(() => {
+    let cancelled = false;
+    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
+    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
+    const today = localISOTime.split("T")[0];
+
+    const fetchBriefing = async () => {
+      const { data } = await supabase.from("daily_briefings").select("id,content,briefing_date").eq("briefing_date", today).maybeSingle();
+      if (!cancelled && data) setBriefing(data as Briefing);
+    };
+
+    void fetchBriefing();
+    return () => { cancelled = true; };
+  }, [supabase]);
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
+
+  /* Calculate Stats */
+  const validTasks = tasks.filter(t => t.status !== "cancelled");
+  const completedTasks = validTasks.filter(t => t.status === "done").length;
+  const totalTasks = validTasks.length;
+  const dueTasks = validTasks.filter(t => t.status === "open" || t.status === "in_progress").slice(0, 4);
+
+  const totalWater = healthLogs.filter(l => l.metric === "water_ml" || l.metric === "water").reduce((acc, l) => acc + Number(l.value || l.water_ml || 0), 0);
+  const totalSleep = healthLogs.filter(l => l.metric === "sleep_hours").reduce((acc, l) => acc + Number(l.value || 0), 0);
 
   return (
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      height: "calc(100dvh - var(--nav-top-h))",
-      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
-    }}>
-      {/* Message stream */}
-      <div style={{
-        flex: 1,
-        overflowY: "auto",
-        padding: "var(--space-4) var(--space-5)",
-        display: "flex",
-        flexDirection: "column",
-      }}>
-        {messages.length === 0 && !error && (
-          <div style={{
-            margin: "auto",
-            textAlign: "center",
-            color: "var(--color-text-faint)",
-            paddingTop: "4rem",
-          }}>
-            <div style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "1.5rem",
-              color: "var(--color-primary)",
-              marginBottom: "var(--space-4)",
-              opacity: 0.7,
-            }}>◈</div>
-            <p style={{ fontSize: "1rem", color: "var(--color-text-muted)", fontWeight: 500 }}>
-              {userName ? `Hey, ${userName}.` : "Hey there."}
-            </p>
-            <p style={{ fontSize: "0.8125rem", marginTop: "var(--space-2)" }}>
-              What are we working on?
-            </p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <MessageRow key={msg.id} msg={msg} />
-        ))}
-
-        {loading && <ThinkingDot />}
-
-        <div ref={bottomRef} />
+    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-5)", paddingBottom: "100px" }}>
+      {/* Greeting */}
+      <div style={{ marginBottom: "var(--space-8)" }}>
+        <h1 style={{ fontSize: "1.75rem", fontWeight: 600, marginBottom: "var(--space-1)", letterSpacing: "-0.02em", color: "var(--color-text)" }}>
+          {getGreeting()}{userName ? `, ${userName}.` : "."}
+        </h1>
+        <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)" }}>
+          {dateStr}
+        </p>
       </div>
 
-      {/* Error bar */}
-      {error && (
-        <div style={{
-          padding: "var(--space-2) var(--space-5)",
-          background: "rgba(196, 77, 77, 0.08)",
-          color: "var(--color-danger)",
-          fontSize: "0.8125rem",
-          borderTop: "1px solid var(--color-border)",
-        }}>
-          {error}
-        </div>
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
 
-      {/* Input bar */}
-      <div style={{
-        padding: "var(--space-3) var(--space-5)",
-        borderTop: "1px solid var(--color-border)",
-        background: "var(--color-surface)",
-        display: "flex",
-        alignItems: "flex-end",
-        gap: "var(--space-3)",
-      }}>
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            // Guard IME composition (Japanese/Chinese/Korean input)
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder="Message Sunday…"
-          rows={1}
-          style={{
-            flex: 1,
-            background: "var(--color-surface-2)",
-            border: "1px solid var(--color-border)",
-            borderRadius: "var(--radius-lg)",
-            padding: "var(--space-3) var(--space-4)",
-            color: "var(--color-text)",
-            resize: "none",
-            lineHeight: 1.5,
-            fontSize: "0.9375rem",
-            outline: "none",
-            maxHeight: "120px",
-            overflowY: "auto",
-          }}
-        />
-        <button
-          onClick={send}
-          disabled={loading || !input.trim()}
-          aria-label="Send message"
-          style={{
-            width: 36,
-            height: 36,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: loading || !input.trim() ? "transparent" : "var(--color-primary)",
-            border: loading || !input.trim() ? "1px solid var(--color-border)" : "none",
-            borderRadius: "var(--radius-md)",
-            opacity: loading || !input.trim() ? 0.4 : 1,
-            transition: "opacity 150ms, background 150ms",
-            cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-            flexShrink: 0,
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-            stroke={loading || !input.trim() ? "var(--color-text-faint)" : "#fff"}
-            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        </button>
+        {/* Worker status & Approvals */}
+        <div style={{ display: "grid", gridTemplateColumns: pendingCount > 0 ? "1fr 1fr" : "1fr", gap: "var(--space-3)" }}>
+          <Card title="System">
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+              <StatusDot online={online} />
+              <span style={{ fontSize: "0.875rem", color: "var(--color-text)", fontWeight: 500 }}>
+                {loading ? "Checking worker…" : online ? "Mac worker online" : "Mac worker offline"}
+              </span>
+            </div>
+          </Card>
+
+          {pendingCount > 0 && (
+            <Card title="Action Required" href="/approvals">
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                <span style={{
+                  width: 24, height: 24, borderRadius: "9999px",
+                  background: "var(--color-danger)", color: "#fff",
+                  fontSize: "0.75rem", fontWeight: 700,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>{pendingCount}</span>
+                <span style={{ fontSize: "0.875rem", color: "var(--color-text)", fontWeight: 500 }}>
+                  Awaiting approval
+                </span>
+              </div>
+            </Card>
+          )}
+        </div>
+
+        {/* Visual Progress Dashboard */}
+        <Card title="Today's Progress">
+          <ProgressBar 
+            label="Tasks Completed" 
+            current={completedTasks} 
+            max={totalTasks === 0 ? 1 : totalTasks} 
+            unit="tasks" 
+            colorVar="var(--color-brand)" 
+          />
+          <ProgressBar 
+            label="Hydration" 
+            current={totalWater} 
+            max={3000} 
+            unit="ml" 
+            colorVar="#4f88a3" 
+          />
+          <ProgressBar 
+            label="Sleep" 
+            current={totalSleep} 
+            max={8} 
+            unit="hrs" 
+            colorVar="#8a7ba7" 
+          />
+        </Card>
+
+        {/* Due tasks */}
+        <Card title="Priority Tasks" action={{ label: "View all →", href: "/tasks" }}>
+          {dueTasks.length === 0 ? (
+            <p style={{ fontSize: "0.875rem", color: "var(--color-text-faint)", textAlign: "center", padding: "var(--space-4) 0" }}>
+              No tasks due right now. You're all caught up!
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+              {dueTasks.map((t) => (
+                <div key={t.id} style={{
+                  display: "flex", alignItems: "center", gap: "var(--space-3)",
+                  fontSize: "0.875rem",
+                  padding: "var(--space-2) 0",
+                  borderBottom: "1px solid var(--color-surface-offset)"
+                }}>
+                  <div style={{
+                    width: 16, height: 16, borderRadius: "50%", flexShrink: 0,
+                    border: `2px solid ${t.priority <= 2 ? 'var(--color-danger)' : 'var(--color-text-faint)'}`,
+                  }} />
+                  <span style={{ color: "var(--color-text)", flex: 1, fontWeight: 500 }}>{t.title}</span>
+                  {t.category && (
+                    <span style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)", background: "var(--color-surface-2)", padding: "2px 6px", borderRadius: "4px" }}>
+                      {t.category}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Morning briefing */}
+        {briefing && (
+          <Card title="Daily Briefing">
+            <div
+              className="markdown-body"
+              style={{ fontSize: "0.875rem", color: "var(--color-text)", lineHeight: 1.6 }}
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {briefing.content}
+              </ReactMarkdown>
+            </div>
+          </Card>
+        )}
+
       </div>
     </div>
   );

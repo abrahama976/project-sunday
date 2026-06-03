@@ -6,8 +6,8 @@ import { createClient } from "@/lib/supabase/client";
 
 /* ── Tab definitions ──────────────────────────────────────── */
 const TABS = [
-  { href: "/",          label: "Chat",    icon: "chat"    },
-  { href: "/dashboard", label: "Today",   icon: "today"   },
+  { href: "/",          label: "Today",   icon: "today"   },
+  { href: "/chat",      label: "Chat",    icon: "chat"    },
   { href: "/tasks",     label: "Tasks",   icon: "tasks"   },
   { href: "/approvals", label: "Approve", icon: "approve" },
   { href: "/more",      label: "More",    icon: "more"    },
