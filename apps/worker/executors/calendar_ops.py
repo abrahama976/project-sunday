@@ -192,6 +192,12 @@ def _sync_calendar_events_sync(client) -> str:
             
         location = event.get("location", "")
         
+        # Normalise all-day date strings to midnight UTC timestamptz
+        if start_str and "T" not in start_str:
+            start_str = f"{start_str}T00:00:00+00:00"
+        if end_str and "T" not in end_str:
+            end_str = f"{end_str}T00:00:00+00:00"
+        
         for user in users:
             uid = user.get("user_id")
             if not uid: continue

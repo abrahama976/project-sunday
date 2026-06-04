@@ -21,6 +21,12 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+function isAllDay(iso: string): boolean {
+  // Worker stores all-day events as midnight UTC
+  const d = new Date(iso);
+  return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+}
+
 function getWeekDates(current: Date): Date[] {
   const days: Date[] = [];
   const d = new Date(current);
@@ -65,18 +71,19 @@ function DaySelector({ selected, onChange }: {
               display: "flex", flexDirection: "column", alignItems: "center",
               padding: "var(--space-2) var(--space-3)",
               borderRadius: "var(--radius-lg)",
-              background: isSelected ? "var(--color-surface)" : "transparent",
-              border: isToday && !isSelected ? "1px solid var(--color-primary)" : "1px solid transparent",
+              background: isSelected ? "var(--color-primary)" : "transparent",
+              border: "1px solid transparent",
               cursor: "pointer",
               minWidth: 48,
               transition: "all 150ms",
+              position: "relative",
             }}
           >
             <span style={{
               fontSize: "0.6875rem",
               fontWeight: 600,
               textTransform: "uppercase",
-              color: isSelected ? "var(--color-primary)" : "var(--color-text-faint)",
+              color: isSelected ? "#fff" : "var(--color-text-faint)",
               letterSpacing: "0.05em",
             }}>
               {d.toLocaleDateString("en-US", { weekday: "short" })}
@@ -84,11 +91,21 @@ function DaySelector({ selected, onChange }: {
             <span style={{
               fontSize: "1.125rem",
               fontWeight: isToday ? 700 : 500,
-              color: isSelected ? "var(--color-primary)" : "var(--color-text)",
+              color: isSelected ? "#fff" : "var(--color-text)",
               marginTop: 4,
             }}>
               {d.getDate()}
             </span>
+            {isToday && !isSelected && (
+              <span style={{
+                position: "absolute",
+                bottom: 4,
+                width: 4,
+                height: 4,
+                borderRadius: "50%",
+                background: "var(--color-primary)",
+              }} />
+            )}
           </button>
         );
       })}
@@ -161,6 +178,15 @@ export default function SchedulePage() {
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-6)", paddingBottom: "100px" }}>
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        .skeleton {
+          animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+      `}</style>
       <h1 style={{ fontSize: "1.25rem", fontWeight: 600, marginBottom: "var(--space-1)" }}>
         Schedule
       </h1>
@@ -174,15 +200,29 @@ export default function SchedulePage() {
       <DaySelector selected={selectedDate} onChange={setSelectedDate} />
 
       {loading ? (
-        <p style={{ color: "var(--color-text-faint)", fontSize: "0.875rem" }}>Loading…</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="skeleton" style={{
+              height: "64px",
+              background: "var(--color-surface)",
+              borderRadius: "var(--radius-lg)",
+              border: "1px solid var(--color-border)",
+            }} />
+          ))}
+        </div>
       ) : events.length === 0 ? (
         <div style={{
           padding: "var(--space-6)", textAlign: "center",
           borderRadius: "var(--radius-lg)",
           border: "1px dashed var(--color-border)",
-          color: "var(--color-text-faint)", fontSize: "0.875rem",
+          display: "flex", flexDirection: "column", gap: "var(--space-1)",
         }}>
-          Nothing scheduled
+          <span style={{ color: "var(--color-text-muted)", fontSize: "0.875rem" }}>
+            Nothing scheduled
+          </span>
+          <span style={{ color: "var(--color-text-faint)", fontSize: "0.75rem" }}>
+            Events sync every 15 minutes from Google Calendar
+          </span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
@@ -192,6 +232,7 @@ export default function SchedulePage() {
               borderRadius: "var(--radius-lg)",
               padding: "var(--space-4) var(--space-5)",
               border: "1px solid var(--color-border)",
+              borderLeft: "3px solid var(--color-primary)",
               display: "flex",
               flexDirection: "column",
               gap: "var(--space-2)"
@@ -199,18 +240,21 @@ export default function SchedulePage() {
               <div style={{ fontSize: "1rem", fontWeight: 500, color: "var(--color-text)" }}>
                 {event.title}
               </div>
-              <div style={{ display: "flex", gap: "var(--space-4)", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                  🕒 {formatTime(event.start_time)} – {formatTime(event.end_time)}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-4)", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  {isAllDay(event.start_time) && isAllDay(event.end_time)
+                    ? <span>🗓 All day</span>
+                    : <span>{formatTime(event.start_time)} – {formatTime(event.end_time)}</span>
+                  }
                 </span>
                 {event.calendar_name && (
-                  <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                    📅 {event.calendar_name}
+                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {event.calendar_name}
                   </span>
                 )}
                 {event.location && (
-                  <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                    📍 {event.location}
+                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {event.location}
                   </span>
                 )}
               </div>
@@ -221,3 +265,4 @@ export default function SchedulePage() {
     </div>
   );
 }
+

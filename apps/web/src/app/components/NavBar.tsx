@@ -6,11 +6,11 @@ import { createClient } from "@/lib/supabase/client";
 
 /* ── Tab definitions ──────────────────────────────────────── */
 const TABS = [
-  { href: "/",          label: "Today",   icon: "today"   },
-  { href: "/chat",      label: "Chat",    icon: "chat"    },
-  { href: "/tasks",     label: "Tasks",   icon: "tasks"   },
-  { href: "/approvals", label: "Approve", icon: "approve" },
-  { href: "/more",      label: "More",    icon: "more"    },
+  { href: "/",          label: "Today",    icon: "today"    },
+  { href: "/schedule",  label: "Schedule", icon: "schedule" },
+  { href: "/chat",      label: "Chat",     icon: "chat"     },
+  { href: "/tasks",     label: "Tasks",    icon: "tasks"    },
+  { href: "/more",      label: "More",     icon: "more"     },
 ] as const;
 
 /* ── Minimal SVG icons (16×16, stroke-based) ──────────────── */
@@ -25,11 +25,20 @@ function TabIcon({ name, active }: { name: string; active: boolean }) {
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       );
+    case "schedule":
+      return (
+        <svg {...props}>
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+          <line x1="16" y1="2" x2="16" y2="6" />
+          <line x1="8" y1="2" x2="8" y2="6" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+        </svg>
+      );
     case "today":
       return (
         <svg {...props}>
-          <circle cx="12" cy="12" r="10" />
-          <polyline points="12 6 12 12 16 14" />
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <polyline points="9 22 9 12 15 12 15 22" />
         </svg>
       );
     case "tasks":
@@ -39,18 +48,12 @@ function TabIcon({ name, active }: { name: string; active: boolean }) {
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
         </svg>
       );
-    case "approve":
-      return (
-        <svg {...props}>
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-        </svg>
-      );
     case "more":
       return (
         <svg {...props}>
-          <line x1="3" y1="12" x2="21" y2="12" />
-          <line x1="3" y1="6" x2="21" y2="6" />
-          <line x1="3" y1="18" x2="21" y2="18" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="19" cy="12" r="1" />
+          <circle cx="5" cy="12" r="1" />
         </svg>
       );
     default:
@@ -139,14 +142,15 @@ export default function NavBar() {
         right: 0,
         zIndex: 50,
         background: "var(--color-surface)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
         borderTop: "1px solid var(--color-border)",
-        height: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
-        paddingBottom: "var(--safe-area-bottom)",
+        height: "calc(60px + env(safe-area-inset-bottom))",
+        paddingBottom: "env(safe-area-inset-bottom)",
         alignItems: "stretch",
       }}>
         {TABS.map(({ href, label, icon }) => {
           const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
-          const showBadge = icon === "approve" && pendingCount > 0;
 
           return (
             <Link
@@ -158,42 +162,32 @@ export default function NavBar() {
                 flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
-                gap: "2px",
+                gap: "4px",
                 textDecoration: "none",
                 color: active ? "var(--color-primary)" : "var(--color-text-faint)",
-                fontSize: "0.625rem",
-                fontWeight: active ? 600 : 400,
-                letterSpacing: "0.01em",
                 position: "relative",
                 transition: "color 150ms",
                 WebkitTapHighlightColor: "transparent",
               }}
             >
-              <span style={{ position: "relative", display: "flex" }}>
+              <span style={{
+                position: "relative",
+                display: "flex",
+                background: active ? "var(--color-primary-faint)" : "transparent",
+                borderRadius: "9999px",
+                padding: "4px 12px",
+                transition: "background 150ms",
+              }}>
                 <TabIcon name={icon} active={active} />
-                {showBadge && (
-                  <span style={{
-                    position: "absolute",
-                    top: -4,
-                    right: -6,
-                    minWidth: "15px",
-                    height: "15px",
-                    borderRadius: "9999px",
-                    background: "var(--color-danger)",
-                    color: "#fff",
-                    fontSize: "0.5625rem",
-                    fontWeight: 700,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "0 3px",
-                    lineHeight: 1,
-                  }}>
-                    {pendingCount > 9 ? "9+" : pendingCount}
-                  </span>
-                )}
               </span>
-              {label}
+              <span style={{
+                fontSize: "0.625rem",
+                fontWeight: active ? 600 : 400,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+              }}>
+                {label}
+              </span>
             </Link>
           );
         })}
