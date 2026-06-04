@@ -6,10 +6,54 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createClient } from "@/lib/supabase/client";
 
-const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
-const POLL_INTERVAL_MS = 30 * 1000;
+/* ── Type Guards ────────────────────────────────────────── */
+type Task = {
+  id: string;
+  title: string;
+  status: "open" | "done";
+  priority: 1 | 2 | 3;
+  due_date: string | null;
+  category: string | null;
+  is_archived: boolean;
+  created_at: string;
+};
 
-/* ── Time-aware greeting ─────────────────────────────────── */
+function isTask(x: unknown): x is Task {
+  if (!x || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.title === "string" &&
+    (o.status === "open" || o.status === "done") &&
+    (o.priority === 1 || o.priority === 2 || o.priority === 3) &&
+    (o.due_date === null || typeof o.due_date === "string") &&
+    (o.category === null || typeof o.category === "string") &&
+    typeof o.is_archived === "boolean" &&
+    typeof o.created_at === "string"
+  );
+}
+
+type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  model_used: string | null;
+  created_at: string;
+};
+
+function isMessage(x: unknown): x is Message {
+  if (!x || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    (o.role === "user" || o.role === "assistant") &&
+    typeof o.content === "string" &&
+    (o.model_used === null || typeof o.model_used === "string") &&
+    typeof o.created_at === "string"
+  );
+}
+
+/* ── Greeting ───────────────────────────────────────────── */
 function getGreeting(): string {
   const h = new Date().getHours();
   if (h < 5)  return "Good evening";
@@ -18,356 +62,304 @@ function getGreeting(): string {
   return "Good evening";
 }
 
-/* ── Progress Bar Component ──────────────────────────────── */
-function ProgressBar({ label, current, max, unit, colorVar }: { label: string, current: number, max: number, unit: string, colorVar: string }) {
-  const percentage = Math.min(100, Math.max(0, (current / max) * 100));
-  
-  return (
-    <div style={{ marginBottom: "var(--space-4)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "var(--space-2)", fontSize: "0.8125rem" }}>
-        <span style={{ fontWeight: 500, color: "var(--color-text)" }}>{label}</span>
-        <span style={{ color: "var(--color-text-muted)" }}>{current} / {max} {unit}</span>
-      </div>
-      <div style={{
-        height: "6px",
-        background: "var(--color-surface-2)",
-        borderRadius: "9999px",
-        overflow: "hidden"
-      }}>
-        <div style={{
-          height: "100%",
-          width: `${percentage}%`,
-          background: colorVar,
-          borderRadius: "9999px",
-          transition: "width 1s cubic-bezier(0.4, 0, 0.2, 1)",
-        }} />
-      </div>
-    </div>
-  );
-}
-
-/* ── Status dot ──────────────────────────────────────────── */
-function StatusDot({ online }: { online: boolean }) {
-  return (
-    <span style={{
-      display: "inline-block",
-      width: 6, height: 6,
-      borderRadius: "50%",
-      background: online ? "var(--color-success)" : "var(--color-text-faint)",
-      boxShadow: online ? "0 0 6px var(--color-success)" : "none",
-      flexShrink: 0,
-      transition: "background 0.3s ease, box-shadow 0.3s ease",
-    }} />
-  );
-}
-
-/* ── Dashboard card ──────────────────────────────────────── */
-function Card({ title, action, children, href }: {
-  title: string;
-  action?: { label: string; href: string };
-  children: React.ReactNode;
-  href?: string;
-}) {
+/* ── Components ─────────────────────────────────────────── */
+function Card({ children, href }: { children: React.ReactNode; href?: string }) {
   const content = (
     <div style={{
       background: "var(--color-surface)",
       border: "1px solid var(--color-border)",
-      borderRadius: "var(--radius-xl)",
-      padding: "var(--space-5)",
-      boxShadow: "var(--shadow-sm)",
-      transition: "transform 150ms ease, background 150ms ease",
+      borderRadius: "var(--radius-lg)",
+      padding: "var(--space-4) var(--space-5)",
       cursor: href ? "pointer" : "default",
-    }} className={href ? "hover:scale-[1.02] hover:bg-white/5" : ""}>
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        marginBottom: "var(--space-4)",
-      }}>
-        <h3 style={{
-          fontSize: "0.75rem",
-          fontWeight: 600,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--color-text-faint)",
-        }}>{title}</h3>
-        {action && (
-          <Link href={action.href} style={{
-            fontSize: "0.75rem",
-            fontWeight: 500,
-            color: "var(--color-primary)",
-            textDecoration: "none",
-          }}>{action.label}</Link>
-        )}
-      </div>
+    }}>
       {children}
     </div>
   );
-
   if (href) {
-    return <Link href={href} style={{ textDecoration: "none", color: "inherit" }}>{content}</Link>;
+    return <Link href={href} style={{ textDecoration: "none", color: "inherit", display: "block" }}>{content}</Link>;
   }
   return content;
 }
 
-/* ── Types ───────────────────────────────────────────── */
-type Task = {
-  id: string;
-  title: string;
-  category: string | null;
-  priority: number;
-  due_date: string | null;
-  status: string;
-};
-
-type Briefing = {
-  id: string;
-  content: string;
-  briefing_date: string;
-};
-
-type HealthLog = {
-  metric: string;
-  value: number;
-};
-
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
-  const [online, setOnline] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [pendingCount, setPendingCount] = useState(0);
+  
+  const [brief, setBrief] = useState<Message | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
-  const [userName, setUserName] = useState("");
+  const [approvalsCount, setApprovalsCount] = useState(0);
+  const [loadingTasks, setLoadingTasks] = useState<Set<string>>(new Set());
 
-  /* Fetch display name */
   useEffect(() => {
-    (async () => {
-      const { data: profile } = await supabase.from("user_profile").select("content").limit(1).maybeSingle();
-      if (profile?.content) {
-        const match = profile.content.match(/^#\s+(.+)/m);
-        if (match) { setUserName(match[1].trim()); return; }
-      }
+    let cancelled = false;
+    let pollInterval: number | undefined;
+
+    const loadData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (user?.email) setUserName(user.email.split("@")[0]);
-    })();
-  }, [supabase]);
+      if (!user || cancelled) return;
 
-  /* Worker heartbeat */
-  useEffect(() => {
-    let cancelled = false;
-    const fetchHeartbeat = async () => {
-      const { data, error } = await supabase.from("mac_heartbeat").select("last_seen").eq("id", 1).maybeSingle();
-      if (cancelled) return;
-      if (error || !data || !data.last_seen) {
-        setOnline(false);
-      } else {
-        const age = Date.now() - new Date(data.last_seen).getTime();
-        setOnline(age >= 0 && age <= ONLINE_THRESHOLD_MS);
-      }
-      setLoading(false);
-    };
-    void fetchHeartbeat();
-    const interval = setInterval(() => { void fetchHeartbeat(); }, POLL_INTERVAL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [supabase]);
+      const pBrief = supabase
+        .from("messages")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("role", "assistant")
+        .eq("model_used", "system")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-  /* Pending approval count */
-  useEffect(() => {
-    let cancelled = false;
-    const fetchPending = async () => {
-      const { count, error } = await supabase.from("action_queue").select("*", { count: "exact", head: true }).eq("status", "pending").is("approved", null).neq("tier", "auto");
-      if (!cancelled && !error && count !== null) setPendingCount(count);
-    };
-    void fetchPending();
-    const ch = supabase.channel("dash-approvals")
-      .on("postgres_changes", { event: "*", schema: "public", table: "action_queue" }, () => { void fetchPending(); })
-      .subscribe();
-    return () => { cancelled = true; supabase.removeChannel(ch); };
-  }, [supabase]);
-
-  /* Tasks (completion stats and due tasks) */
-  useEffect(() => {
-    let cancelled = false;
-    
-    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
-    const today = localISOTime.split("T")[0];
-
-    const fetchTasks = async () => {
-      const { data } = await supabase
+      const pTasks = supabase
         .from("tasks")
-        .select("id,title,category,priority,due_date,status")
-        .lte("due_date", today)
-        .order("priority", { ascending: true });
-      if (!cancelled && data) setTasks(data as Task[]);
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("status", "open")
+        .eq("is_archived", false)
+        .order("priority", { ascending: false })
+        .order("created_at", { ascending: true })
+        .limit(5);
+
+      const pApprovals = supabase
+        .from("action_queue")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("status", "awaiting_approval");
+
+      const [resBrief, resTasks, resApprovals] = await Promise.all([pBrief, pTasks, pApprovals]);
+
+      if (cancelled) return;
+
+      if (resBrief.data && isMessage(resBrief.data)) {
+        setBrief(resBrief.data);
+      } else {
+        setBrief(null);
+      }
+
+      if (resTasks.data) {
+        setTasks(resTasks.data.filter(isTask));
+      }
+
+      if (resApprovals.count !== null) {
+        setApprovalsCount(resApprovals.count);
+      }
     };
 
-    void fetchTasks();
-    const ch = supabase.channel("dash-tasks")
-      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => { void fetchTasks(); })
+    void loadData();
+
+    // Set up Realtime for brief updates
+    const channel = supabase.channel("today-messages")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        (payload) => {
+          if (cancelled) return;
+          const row = payload.new;
+          if (isMessage(row) && row.role === "assistant" && row.model_used === "system") {
+            // New brief arrived, set it
+            setBrief(row);
+          }
+        }
+      )
       .subscribe();
-    return () => { cancelled = true; supabase.removeChannel(ch); };
+
+    pollInterval = setInterval(() => {
+      void loadData();
+    }, 30000) as unknown as number;
+
+    return () => {
+      cancelled = true;
+      clearInterval(pollInterval);
+      supabase.removeChannel(channel);
+    };
   }, [supabase]);
 
-  /* Health logs */
-  useEffect(() => {
-    let cancelled = false;
+  const toggleTask = async (task: Task) => {
+    if (loadingTasks.has(task.id)) return;
     
-    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
-    const today = localISOTime.split("T")[0];
+    setLoadingTasks(prev => {
+      const next = new Set(prev);
+      next.add(task.id);
+      return next;
+    });
 
-    const fetchHealth = async () => {
-      const { data } = await supabase.from("health_logs").select("metric,value").eq("log_date", today);
-      if (!cancelled && data) setHealthLogs(data as HealthLog[]);
-    };
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
 
-    void fetchHealth();
-    const ch = supabase.channel("dash-health")
-      .on("postgres_changes", { event: "*", schema: "public", table: "health_logs" }, () => { void fetchHealth(); })
-      .subscribe();
-    return () => { cancelled = true; supabase.removeChannel(ch); };
-  }, [supabase]);
+      const { error } = await supabase
+        .from("tasks")
+        .update({ status: "done", completed_at: new Date().toISOString() })
+        .eq("id", task.id)
+        .eq("user_id", user.id);
 
-  /* Today's briefing */
-  useEffect(() => {
-    let cancelled = false;
-    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
-    const today = localISOTime.split("T")[0];
-
-    const fetchBriefing = async () => {
-      const { data } = await supabase.from("daily_briefings").select("id,content,briefing_date").eq("briefing_date", today).maybeSingle();
-      if (!cancelled && data) setBriefing(data as Briefing);
-    };
-
-    void fetchBriefing();
-    return () => { cancelled = true; };
-  }, [supabase]);
+      if (!error) {
+        setTasks(prev => prev.filter(t => t.id !== task.id));
+      }
+    } finally {
+      setLoadingTasks(prev => {
+        const next = new Set(prev);
+        next.delete(task.id);
+        return next;
+      });
+    }
+  };
 
   const now = new Date();
-  const dateStr = now.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
-
-  /* Calculate Stats */
-  const validTasks = tasks.filter(t => t.status !== "cancelled");
-  const completedTasks = validTasks.filter(t => t.status === "done").length;
-  const totalTasks = validTasks.length;
-  const dueTasks = validTasks.filter(t => t.status === "open" || t.status === "in_progress").slice(0, 4);
-
-  const totalWater = healthLogs.filter(l => l.metric === "water").reduce((acc, l) => acc + Number(l.value || 0), 0);
-  const totalSleep = healthLogs.filter(l => l.metric === "sleep_hours").reduce((acc, l) => acc + Number(l.value || 0), 0);
+  const dateStr = now.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" });
 
   return (
-    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-5)", paddingBottom: "100px" }}>
-      {/* Greeting */}
-      <div style={{ marginBottom: "var(--space-8)" }}>
-        <h1 style={{ fontSize: "1.75rem", fontWeight: 600, marginBottom: "var(--space-1)", letterSpacing: "-0.02em", color: "var(--color-text)" }}>
-          {getGreeting()}{userName ? `, ${userName}.` : "."}
-        </h1>
-        <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)" }}>
-          {dateStr}
-        </p>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-
-        {/* Worker status & Approvals */}
-        <div style={{ display: "grid", gridTemplateColumns: pendingCount > 0 ? "1fr 1fr" : "1fr", gap: "var(--space-3)" }}>
-          <Card title="System">
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-              <StatusDot online={online} />
-              <span style={{ fontSize: "0.875rem", color: "var(--color-text)", fontWeight: 500 }}>
-                {loading ? "Checking worker…" : online ? "Mac worker online" : "Mac worker offline"}
-              </span>
-            </div>
-          </Card>
-
-          {pendingCount > 0 && (
-            <Card title="Action Required" href="/approvals">
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-                <span style={{
-                  width: 24, height: 24, borderRadius: "9999px",
-                  background: "var(--color-danger)", color: "#fff",
-                  fontSize: "0.75rem", fontWeight: 700,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>{pendingCount}</span>
-                <span style={{ fontSize: "0.875rem", color: "var(--color-text)", fontWeight: 500 }}>
-                  Awaiting approval
-                </span>
-              </div>
-            </Card>
-          )}
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      minHeight: "calc(100dvh - var(--nav-top-h))",
+      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom) + var(--space-8))",
+    }}>
+      <div style={{
+        padding: "var(--space-6) var(--space-5)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-6)",
+        maxWidth: "800px",
+        margin: "0 auto",
+        width: "100%",
+      }}>
+        
+        {/* Date header */}
+        <div>
+          <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
+            {dateStr}
+          </h1>
+          <p style={{ fontSize: "1.125rem", color: "var(--color-text-faint)", marginTop: "2px" }}>
+            {getGreeting()}
+          </p>
         </div>
 
-        {/* Visual Progress Dashboard */}
-        <Card title="Today's Progress">
-          <ProgressBar 
-            label="Tasks Completed" 
-            current={completedTasks} 
-            max={totalTasks === 0 ? 1 : totalTasks} 
-            unit="tasks" 
-            colorVar="var(--color-brand)" 
-          />
-          <ProgressBar 
-            label="Hydration" 
-            current={totalWater} 
-            max={3000} 
-            unit="ml" 
-            colorVar="#4f88a3" 
-          />
-          <ProgressBar 
-            label="Sleep" 
-            current={totalSleep} 
-            max={8} 
-            unit="hrs" 
-            colorVar="#8a7ba7" 
-          />
-        </Card>
-
-        {/* Due tasks */}
-        <Card title="Priority Tasks" action={{ label: "View all →", href: "/tasks" }}>
-          {dueTasks.length === 0 ? (
-            <p style={{ fontSize: "0.875rem", color: "var(--color-text-faint)", textAlign: "center", padding: "var(--space-4) 0" }}>
-              No tasks due right now. You're all caught up!
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-              {dueTasks.map((t) => (
-                <div key={t.id} style={{
-                  display: "flex", alignItems: "center", gap: "var(--space-3)",
-                  fontSize: "0.875rem",
-                  padding: "var(--space-2) 0",
-                  borderBottom: "1px solid var(--color-surface-offset)"
-                }}>
-                  <div style={{
-                    width: 16, height: 16, borderRadius: "50%", flexShrink: 0,
-                    border: `2px solid ${t.priority <= 2 ? 'var(--color-danger)' : 'var(--color-text-faint)'}`,
-                  }} />
-                  <span style={{ color: "var(--color-text)", flex: 1, fontWeight: 500 }}>{t.title}</span>
-                  {t.category && (
-                    <span style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)", background: "var(--color-surface-2)", padding: "2px 6px", borderRadius: "4px" }}>
-                      {t.category}
-                    </span>
-                  )}
-                </div>
-              ))}
+        {/* Approvals Badge Row */}
+        {approvalsCount > 0 && (
+          <Link href="/approvals" style={{ textDecoration: "none" }}>
+            <div style={{
+              background: "var(--color-surface)",
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-lg)",
+              padding: "var(--space-3) var(--space-4)",
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-3)",
+            }}>
+              <span style={{ fontSize: "1.25rem" }}>⚡</span>
+              <span style={{ fontSize: "0.9375rem", fontWeight: 500, color: "var(--color-text)" }}>
+                {approvalsCount} action{approvalsCount === 1 ? "" : "s"} waiting for your approval
+              </span>
             </div>
-          )}
-        </Card>
-
-        {/* Morning briefing */}
-        {briefing && (
-          <Card title="Daily Briefing">
-            <div
-              className="markdown-body"
-              style={{ fontSize: "0.875rem", color: "var(--color-text)", lineHeight: 1.6 }}
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {briefing.content}
-              </ReactMarkdown>
-            </div>
-          </Card>
+          </Link>
         )}
+
+        {/* Daily brief card */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)", marginLeft: "2px" }}>
+            Daily Brief
+          </h2>
+          <Card>
+            {brief ? (
+              <div className="markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {brief.content}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <div style={{ color: "var(--color-text-faint)", fontSize: "0.9375rem" }}>
+                No brief yet — worker will send one at 8am.
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Open tasks strip */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginLeft: "2px", marginRight: "2px" }}>
+            <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
+              Open Tasks
+            </h2>
+          </div>
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {tasks.length > 0 ? (
+              tasks.map((task, idx) => {
+                const isFirst = idx === 0;
+                const isLast = idx === tasks.length - 1;
+                const isLoading = loadingTasks.has(task.id);
+                
+                return (
+                  <div key={task.id} style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-3)",
+                    padding: "var(--space-3) var(--space-4)",
+                    background: "var(--color-surface)",
+                    borderLeft: "1px solid var(--color-border)",
+                    borderRight: "1px solid var(--color-border)",
+                    borderTop: isFirst ? "1px solid var(--color-border)" : "none",
+                    borderBottom: isLast ? "1px solid var(--color-border)" : "none",
+                    borderTopLeftRadius: isFirst ? "var(--radius-lg)" : 0,
+                    borderTopRightRadius: isFirst ? "var(--radius-lg)" : 0,
+                    borderBottomLeftRadius: isLast ? "var(--radius-lg)" : 0,
+                    borderBottomRightRadius: isLast ? "var(--radius-lg)" : 0,
+                    opacity: isLoading ? 0.5 : 1,
+                  }}>
+                    <button
+                      onClick={() => void toggleTask(task)}
+                      disabled={isLoading}
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: "50%",
+                        border: "2px solid var(--color-border)",
+                        background: "transparent",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{
+                      flex: 1,
+                      minWidth: 0,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      fontSize: "0.9375rem",
+                      color: "var(--color-text)",
+                    }}>
+                      {task.title}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{
+                padding: "var(--space-4)",
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                borderRadius: "var(--radius-lg)",
+                color: "var(--color-text-faint)",
+                fontSize: "0.9375rem",
+                textAlign: "center",
+              }}>
+                All caught up for now.
+              </div>
+            )}
+            
+            <Link href="/tasks" style={{ 
+              display: "block", 
+              marginTop: "var(--space-2)", 
+              marginLeft: "2px",
+              fontSize: "0.875rem", 
+              color: "var(--color-primary)", 
+              textDecoration: "none",
+              fontWeight: 500,
+            }}>
+              View all →
+            </Link>
+          </div>
+        </div>
 
       </div>
     </div>
