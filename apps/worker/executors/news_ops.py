@@ -14,6 +14,7 @@ from google.genai import types
 from supabase import Client
 
 from config import GEMINI_MODEL
+from budget_gate import pick_model, check_and_increment
 
 # Default RSS feeds — configurable via scheduled_jobs config
 DEFAULT_FEEDS = [
@@ -81,6 +82,8 @@ async def _fetch_feed(url: str, timeout: float = 15.0) -> list[dict]:
 async def _score_articles(
     articles: list[dict],
     gemini_api_key: str,
+    db_client: Client | None = None,
+    user_id: str | None = None,
 ) -> list[dict]:
     """Use Gemini to score article relevance for the user.
     
@@ -106,14 +109,25 @@ Only include articles scoring >= 0.3. Headlines:
 Return ONLY the JSON array, nothing else."""
 
     try:
+        # Budget gate
+        model_id = GEMINI_MODEL
+        if db_client and user_id:
+            model_id = await pick_model(db_client, user_id)
+            if model_id == "ollama":
+                print("[news] LLM budget exhausted — skipping scoring")
+                return articles  # return unscored
+            await check_and_increment(db_client, user_id, model_id)
+
         client = genai.Client(api_key=gemini_api_key)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                max_output_tokens=2048,
-                temperature=0.2,
-            ),
+        response = await asyncio.to_thread(
+            lambda: client.models.generate_content(
+                model=model_id,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(
+                    max_output_tokens=2048,
+                    temperature=0.2,
+                ),
+            )
         )
 
         text = "".join(
@@ -179,8 +193,14 @@ async def news_fetch_and_store(
             unique.append(a)
     all_articles = unique
 
-    # Score with Gemini
-    scored = await _score_articles(all_articles, gemini_api_key)
+    # Discover user_id for budget gate
+    user_res = await asyncio.to_thread(
+        lambda: client.table("user_profile").select("user_id").limit(1).maybeSingle().execute()
+    )
+    news_uid = user_res.data.get("user_id") if user_res.data else None
+
+    # Score with Gemini (budget-gated)
+    scored = await _score_articles(all_articles, gemini_api_key, db_client=client, user_id=news_uid)
 
     # Filter to relevant articles (score >= 0.3)
     relevant = [a for a in scored if a.get("relevance", 0) >= 0.3]

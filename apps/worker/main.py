@@ -328,9 +328,7 @@ async def main():
                         history_list = list(reversed(history.data or []))
                         if await handle_message(client, latest, history_list, uid):
                             message_count += 1
-                            # maybe_summarise currently does not enforce user_id, 
-                            # but we leave it as is for now until Phase 4 completes
-                            await maybe_summarise(client, GEMINI_API_KEY, message_count)
+                            await maybe_summarise(client, GEMINI_API_KEY, message_count, uid)
                         last_processed_ids[uid] = latest["id"]
 
             await asyncio.sleep(2)

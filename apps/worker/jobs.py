@@ -16,6 +16,7 @@ import io
 from google import genai
 from google.genai import types
 from config import GEMINI_MODEL, GEMINI_MAX_TOKENS
+from budget_gate import pick_model, check_and_increment
 
 
 async def morning_briefing(client: Client, gemini_api_key: str) -> None:
@@ -128,22 +129,36 @@ Rules:
 - If a section has "(No data)" or "(unavailable)", skip it entirely.
 - Don't include the section headers if there's nothing to show."""
 
+    # Discover user_id for budget gate (first user in the system)
+    user_res = await asyncio.to_thread(
+        lambda: client.table("user_profile").select("user_id").limit(1).maybeSingle().execute()
+    )
+    uid = user_res.data.get("user_id") if user_res.data else None
+
     try:
         ai_client = genai.Client(api_key=gemini_api_key)
-        response = await asyncio.to_thread(
-            lambda: ai_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-                config=types.GenerateContentConfig(
-                    max_output_tokens=GEMINI_MAX_TOKENS,
-                    temperature=0.4,
-                ),
+        model_id = GEMINI_MODEL
+        if uid:
+            model_id = await pick_model(client, uid)
+            if model_id == "ollama":
+                content = "⚠️ Briefing generation skipped: LLM budget exhausted."
+            else:
+                await check_and_increment(client, uid, model_id)
+        if model_id != "ollama":
+            response = await asyncio.to_thread(
+                lambda: ai_client.models.generate_content(
+                    model=model_id,
+                    contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=GEMINI_MAX_TOKENS,
+                        temperature=0.4,
+                    ),
+                )
             )
-        )
-        content = "".join(
-            p.text for p in response.candidates[0].content.parts
-            if hasattr(p, "text") and p.text
-        ).strip()
+            content = "".join(
+                p.text for p in response.candidates[0].content.parts
+                if hasattr(p, "text") and p.text
+            ).strip()
     except Exception as e:
         content = f"⚠️ Briefing generation failed: {e}"
 
@@ -207,10 +222,24 @@ Schedule:
 
 Is there a free 15-minute window in the next 2 hours? Reply YES or NO only."""
 
+        # Discover user_id for budget gate
+        user_loc_res = await asyncio.to_thread(
+            lambda: client.table("user_location").select("user_id").limit(1).maybeSingle().execute()
+        )
+        meal_uid = user_loc_res.data.get("user_id") if user_loc_res.data else None
+
+        model_id = GEMINI_MODEL
+        if meal_uid:
+            model_id = await pick_model(client, meal_uid)
+            if model_id == "ollama":
+                print("[meal_checkin] LLM budget exhausted — skipping")
+                return
+            await check_and_increment(client, meal_uid, model_id)
+
         ai_client = genai.Client(api_key=gemini_api_key)
         response = await asyncio.to_thread(
             lambda: ai_client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                 config=types.GenerateContentConfig(max_output_tokens=10, temperature=0.1),
             )
@@ -294,15 +323,26 @@ async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
                 text_lines.append(f"{role} ({m['created_at']}): {m['content']}")
             prompt = "Summarise the following conversation into a single, concise paragraph capturing the key topics, tasks, and context discussed.\n\n" + "\n".join(text_lines)
             
-            ai_client = genai.Client(api_key=gemini_api_key)
-            response = await asyncio.to_thread(
-                lambda: ai_client.models.generate_content(
-                    model="gemini-2.5-flash-lite",
-                    contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-                    config=types.GenerateContentConfig(max_output_tokens=1000)
+            # Budget gate for nightly summarisation
+            nightly_uid = msgs[0].get("user_id") if msgs else None
+            model_id = "gemini-2.5-flash-lite"
+            if nightly_uid:
+                model_id = await pick_model(client, nightly_uid)
+                if model_id == "ollama":
+                    print("[nightly_maintenance] LLM budget exhausted — skipping summarisation")
+                else:
+                    await check_and_increment(client, nightly_uid, model_id)
+            
+            if model_id != "ollama":
+                ai_client = genai.Client(api_key=gemini_api_key)
+                response = await asyncio.to_thread(
+                    lambda: ai_client.models.generate_content(
+                        model=model_id,
+                        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                        config=types.GenerateContentConfig(max_output_tokens=1000)
+                    )
                 )
-            )
-            summary = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
+                summary = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
             
             await asyncio.to_thread(
                 lambda: client.table("message_summaries").insert({
@@ -338,6 +378,20 @@ async def calendar_prep(client: Client, gemini_api_key: str) -> None:
         origin_lat = loc_data.get("lat")
         origin_lng = loc_data.get("lng")
 
+        # Discover user_id for budget gate
+        cal_user_res = await asyncio.to_thread(
+            lambda: client.table("user_location").select("user_id").limit(1).maybeSingle().execute()
+        )
+        cal_uid = cal_user_res.data.get("user_id") if cal_user_res.data else None
+
+        model_id = GEMINI_MODEL
+        if cal_uid:
+            model_id = await pick_model(client, cal_uid)
+            if model_id == "ollama":
+                print("[calendar_prep] LLM budget exhausted — skipping")
+                return
+            await check_and_increment(client, cal_uid, model_id)
+
         ai_client = genai.Client(api_key=gemini_api_key)
         
         prompt_extract = f"""Extract a JSON array of events from this calendar string.
@@ -348,7 +402,7 @@ Return ONLY valid JSON (no markdown block)."""
         
         response_ext = await asyncio.to_thread(
             lambda: ai_client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt_extract)])],
                 config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.1),
             )
@@ -486,10 +540,17 @@ async def task_tracker(client: Client, gemini_api_key: str) -> None:
 Write a very short, casual 1-sentence nudge for the chat interface. Be friendly. No robotic language."""
 
         try:
+            # Budget gate for task_tracker (per-user)
+            model_id = await pick_model(client, uid)
+            if model_id == "ollama":
+                print(f"[task_tracker] LLM budget exhausted for user {uid} — skipping")
+                continue
+            await check_and_increment(client, uid, model_id)
+
             ai_client = genai.Client(api_key=gemini_api_key)
             response = await asyncio.to_thread(
                 lambda: ai_client.models.generate_content(
-                    model="gemini-2.5-flash-lite",
+                    model=model_id,
                     contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                     config=types.GenerateContentConfig(max_output_tokens=100, temperature=0.7)
                 )

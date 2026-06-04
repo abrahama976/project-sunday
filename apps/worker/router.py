@@ -8,6 +8,7 @@ from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_MAX_TOKENS, GEMINI_TE
 from context.loader import get_profile
 from tools.registry import TOOLS
 from supabase import Client
+from budget_gate import pick_model, check_and_increment
 
 def build_system_prompt() -> str:
     profile = get_profile()
@@ -57,36 +58,7 @@ async def _ask_ollama(message: str, history: list[dict]) -> dict:
     except Exception as e:
         return {"type": "text", "content": f"Ollama failed to respond: {e}", "model_used": "system"}
 
-async def record_llm_usage(client: Client, user_id: str, model: str):
-    if not user_id: return
-    try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        res = await asyncio.to_thread(
-            lambda: client.table("user_llm_ledger").select("*").eq("user_id", user_id).eq("ledger_date", today).maybeSingle().execute()
-        )
-        
-        is_flash = "flash" in model.lower()
-        if res.data:
-            updates = {}
-            if is_flash:
-                updates["flash_requests"] = res.data.get("flash_requests", 0) + 1
-            else:
-                updates["lite_requests"] = res.data.get("lite_requests", 0) + 1
-                
-            await asyncio.to_thread(
-                lambda: client.table("user_llm_ledger").update(updates).eq("id", res.data["id"]).execute()
-            )
-        else:
-            await asyncio.to_thread(
-                lambda: client.table("user_llm_ledger").insert({
-                    "user_id": user_id,
-                    "ledger_date": today,
-                    "flash_requests": 1 if is_flash else 0,
-                    "lite_requests": 0 if is_flash else 1
-                }).execute()
-            )
-    except Exception as e:
-        print(f"[router] Failed to record usage for {user_id}: {e}")
+# record_llm_usage removed — all recording is now via budget_gate.check_and_increment
 
 async def route(client: Client, message: str, history: list[dict], gemini_api_key: str, user_id: str) -> dict:
     if message.strip().startswith("/private"):
@@ -130,7 +102,10 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         }
         
         try:
-            model_id = "gemini-2.5-flash"
+            model_id = await pick_model(client, user_id)
+            if model_id == "ollama":
+                return {"type": "text", "content": "Budget exhausted — brain-dump parsing requires a cloud model. Please try again tomorrow.", "model_used": "system"}
+            await check_and_increment(client, user_id, model_id)
             response = await asyncio.to_thread(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
@@ -145,8 +120,6 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                     )
                 )
             )
-            
-            await record_llm_usage(client, user_id, model_id)
             
             raw_json = response.candidates[0].content.parts[0].text
             data = json.loads(raw_json)
@@ -197,11 +170,22 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    models_to_try = [GEMINI_MODEL, GEMINI_LITE_MODEL]
+    # Budget-aware model selection: pick the best available tier
+    budget_model = await pick_model(client, user_id)
+    if budget_model == "ollama":
+        print("[router] All Gemini tiers exhausted for user. Falling back to Ollama.")
+        return await _ask_ollama(message, history)
+
+    # Build cascade: start from the budget-allowed tier downward
+    if budget_model == GEMINI_MODEL:
+        models_to_try = [GEMINI_MODEL, GEMINI_LITE_MODEL]
+    else:
+        models_to_try = [GEMINI_LITE_MODEL]
 
     for model_id in models_to_try:
         try:
             print(f"[router] Attempting generation with {model_id}...")
+            await check_and_increment(client, user_id, model_id)
             response = await asyncio.to_thread(
                 lambda: client_genai.models.generate_content(
                     model=model_id,
@@ -214,8 +198,6 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                     )
                 )
             )
-
-            await record_llm_usage(client, user_id, model_id)
 
             candidate = response.candidates[0].content
             for part in candidate.parts:
