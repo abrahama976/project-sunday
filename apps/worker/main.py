@@ -71,7 +71,12 @@ async def execute_action(client: Client, action: dict):
         elif tool == "file_write":
             result = await file_write(**args)
         elif tool == "update_profile":
-            result = await update_profile(client, user_id=user_id, **args)
+            section = args.get("section", "General")
+            content = args.get("content", "")
+            if not section or not content:
+                result = "Error: section and content are required."
+            else:
+                result = await update_profile(client, user_id, section, content)
         elif tool == "web_fetch":
             result = await web_fetch(**args)
         elif tool == "web_search":
@@ -326,11 +331,14 @@ async def main():
     last_processed_ids = {} # per user_id
     message_count = 0
 
+    # Record startup time — only process messages created after this point
+    startup_watermark = datetime.now(timezone.utc).isoformat()
+
     while True:
         try:
             # Poll latest 10 messages across all users
             all_msgs = await asyncio.to_thread(
-                lambda: client.table("messages").select("*").order("created_at", desc=True).limit(10).execute()
+                lambda: client.table("messages").select("*").gte("created_at", startup_watermark).order("created_at", desc=True).limit(10).execute()
             )
 
             if all_msgs.data:
