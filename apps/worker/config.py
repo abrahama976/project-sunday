@@ -7,6 +7,14 @@ load_dotenv()
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_LITE_MODEL = "gemini-2.5-flash-lite"
 GEMINI_PRO_MODEL = "gemini-2.5-pro"
+# Extended free-tier cascade models
+GEMINI_FLASH2_MODEL = "gemini-2.0-flash"     # 1,500 RPD free
+GEMINI_FLASH15_MODEL = "gemini-1.5-flash"    # 1,500 RPD free
+# Per-user daily limits for new tiers
+DAILY_FLASH2_LIMIT = 500
+GLOBAL_FLASH2_CEILING = 1000
+DAILY_FLASH15_LIMIT = 500
+GLOBAL_FLASH15_CEILING = 1000
 GEMINI_MAX_TOKENS = 2048
 GEMINI_TEMPERATURE = 0.3
 
@@ -34,6 +42,8 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 TFNSW_API_KEY = os.environ.get("TFNSW_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.3-70b-versatile"
 TOOL_TIER_MAP = {
     # File operations
     "file_read":            "auto",
