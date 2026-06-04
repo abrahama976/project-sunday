@@ -88,8 +88,7 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
                 news_lines = []
                 for item in news_result.data:
                     news_lines.append(f"- {item['title']} ({item.get('source', 'unknown')})")
-                sections["news"] = "
-".join(news_lines)
+                sections["news"] = "\n".join(news_lines)
 
                 ids = [item["id"] for item in news_result.data if "id" in item]
                 if ids:
@@ -108,14 +107,10 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
             for q in search_queries:
                 try:
                     res = await web_search(q)
-                    search_results.append(f"### {q}
-{res}")
+                    search_results.append(f"### {q}\n{res}")
                 except Exception as e:
-                    search_results.append(f"### {q}
-Failed: {e}")
-            sections["web_news"] = "
-
-".join(search_results)
+                    search_results.append(f"### {q}\nFailed: {e}")
+            sections["web_news"] = "\n\n".join(search_results)
         except Exception as e:
             sections["web_news"] = f"(Web news unavailable: {e})"
 
@@ -184,9 +179,7 @@ Rules:
             lambda: client.table("messages").insert({
                 "user_id": uid,
                 "role": "assistant",
-                "content": f"☀️ **Morning Briefing — {today.strftime('%A, %d %B')}**
-
-{content}",
+                "content": f"☀️ **Morning Briefing — {today.strftime('%A, %d %B')}**\n\n{content}",
                 "model_used": "gemini",
             }).execute()
         )
@@ -346,10 +339,7 @@ async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
                 for m in msgs:
                     role = "User" if m["role"] == "user" else "Assistant"
                     text_lines.append(f"{role} ({m['created_at']}): {m['content']}")
-                prompt = "Summarise the following conversation into a single, concise paragraph capturing the key topics, tasks, and context discussed.
-
-" + "
-".join(text_lines)
+                prompt = "Summarise the following conversation into a single, concise paragraph capturing the key topics, tasks, and context discussed.\n\n" + "\n".join(text_lines)
                 
                 # Budget gate for nightly summarisation
                 model_id = await pick_model(client, uid, allow_flash=False)
