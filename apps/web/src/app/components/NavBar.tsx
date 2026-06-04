@@ -70,8 +70,7 @@ function usePendingCount() {
       const { count: c, error } = await supabase
         .from("action_queue")
         .select("*", { count: "exact", head: true })
-        .eq("status", "pending")
-        .is("approved", null)
+        .eq("status", "awaiting_approval")
         .neq("tier", "auto");
       if (!cancelled && !error && c !== null) setCount(c);
     };

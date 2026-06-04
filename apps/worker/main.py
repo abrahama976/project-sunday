@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from auth import get_service_role_key
 from config import (
@@ -40,27 +41,26 @@ async def execute_action(client: Client, action: dict):
         print(f"[worker] skipping already-executed {action_id}")
         return
 
-    # Atomic claim: update to 'processing' only if 'pending' or 'approved'
+    # Atomic claim: update to 'processing' ONLY if status is 'approved'.
+    # Auto-tier rows are inserted as status='pending', approved=True — they get
+    # set to 'approved' by the insert path in handle_message before reaching here.
+    # Approve-tier rows arrive here only after the user clicks Approve in the UI
+    # which sets status='approved'.
     claim = await asyncio.to_thread(
         lambda: client.table("action_queue")
         .update({"status": "processing"})
         .eq("id", action_id)
-        .in_("status", ["pending", "approved"])
+        .eq("status", "approved")
         .execute()
     )
 
     if not claim.data:
-        print(f"[worker] {action_id} could not be claimed (already processing/executed) — skipping")
+        print(f"[worker] {action_id} could not be claimed (not in 'approved' state) — skipping")
         return
 
-    db_approved = claim.data[0].get("approved")
-    db_tier = claim.data[0].get("tier", "approve")
-
-    if db_tier != "auto" and not db_approved:
-        print(f"[worker] {action_id} not approved — unclaiming")
-        await set_status(client, action_id, "pending")
-        return
-
+    # Only mark the idempotency key AFTER we've confirmed the row is approved
+    # and we've atomically claimed it. This prevents burning the key on
+    # unapproved or already-claimed rows.
     mark_executed(idempotency_key)
 
     try:
@@ -164,7 +164,7 @@ async def handle_message(client: Client, message: dict, history: list, user_id: 
                 "action_type": tool,
                 "payload": result["args"],
                 "tier": tier,
-                "status": "pending",
+                "status": "approved" if tier == "auto" else "awaiting_approval",
                 "approved": True if tier == "auto" else None
             }).execute()
         )
@@ -190,7 +190,7 @@ async def poll_approved(client: Client):
         try:
             await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
             rows = await asyncio.to_thread(
-                lambda: client.table("action_queue").select("*").eq("approved", True).in_("status", ["pending", "approved"]).execute()
+                lambda: client.table("action_queue").select("*").eq("status", "approved").execute()
             )
             found = rows.data or []
             print(f"[poll] checking approved queue — {len(found)} rows")
@@ -198,6 +198,26 @@ async def poll_approved(client: Client):
                 await execute_action(client, row)
         except Exception as e:
             print(f"[poll] error: {e}", flush=True)
+
+async def reap_stale_processing(client: Client):
+    """Every 5 minutes, find action_queue rows stuck in 'processing' for >10 min
+    and reset them to 'approved' so the worker can retry via idempotency key."""
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            stale = await asyncio.to_thread(
+                lambda: client.table("action_queue")
+                .update({"status": "approved"})
+                .eq("status", "processing")
+                .lt("updated_at", cutoff)
+                .execute()
+            )
+            reaped = len(stale.data) if stale.data else 0
+            if reaped > 0:
+                print(f"[reaper] Reset {reaped} stale processing row(s) back to 'approved'")
+        except Exception as e:
+            print(f"[reaper] error: {e}", flush=True)
 
 async def poll_profile_updates(client: Client):
     last_updated_at = None
@@ -258,6 +278,13 @@ async def main():
             print(f"[poll] task died: {task.exception()}", flush=True)
     poll_task = asyncio.create_task(poll_approved(client))
     poll_task.add_done_callback(_on_poll_done)
+
+    # Start stale processing reaper (Fix 4)
+    def _on_reaper_done(task):
+        if task.exception():
+            print(f"[reaper] task died: {task.exception()}", flush=True)
+    reaper_task = asyncio.create_task(reap_stale_processing(client))
+    reaper_task.add_done_callback(_on_reaper_done)
 
     # Start scheduler
     sched = Scheduler(client, GEMINI_API_KEY)

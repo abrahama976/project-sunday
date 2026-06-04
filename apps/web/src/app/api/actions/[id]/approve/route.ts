@@ -17,7 +17,7 @@ export async function POST(
   // 2. Use the service-role client to UPDATE — guarded by our auth check above.
   const admin = createServiceRoleClient();
 
-  // 3. Only allow approving rows currently in 'pending'. Prevents replay/upgrade.
+  // 3. Only allow approving rows currently in 'awaiting_approval'. Prevents replay/upgrade.
   const { data, error } = await admin
     .from("action_queue")
     .update({
@@ -27,7 +27,7 @@ export async function POST(
       approved_by: user.id,
     })
     .eq("id", id)
-    .eq("status", "pending")
+    .eq("status", "awaiting_approval")
     .select()
     .single();
 

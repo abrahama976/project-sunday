@@ -46,9 +46,11 @@ function statusBadge(a: Action): { text: string; bg: string; color: string } {
   if (a.status === "executed")  return { text: "Executed", bg: "var(--color-success)", color: "#fff" };
   if (a.status === "failed")    return { text: "Failed",   bg: "var(--color-danger)",  color: "#fff" };
   if (a.status === "denied")    return { text: "Denied",   bg: "var(--color-text-faint)", color: "var(--color-bg)" };
-  if (a.status === "approved" || a.status === "executing")
+  if (a.status === "approved" || a.status === "processing")
     return { text: "Running", bg: "var(--color-primary)", color: "#fff" };
-  return { text: "Pending", bg: "var(--color-surface-offset)", color: "var(--color-text-muted)" };
+  if (a.status === "awaiting_approval")
+    return { text: "Pending", bg: "var(--color-surface-offset)", color: "var(--color-text-muted)" };
+  return { text: a.status, bg: "var(--color-surface-offset)", color: "var(--color-text-muted)" };
 }
 
 /* ── Collapsible payload viewer ────────────────────────── */
@@ -239,8 +241,8 @@ export default function ApprovalsPage() {
     }
   }
 
-  const pending = actions.filter((a) => a.status === "pending" && a.approved === null);
-  const resolved = actions.filter((a) => a.status !== "pending" || a.approved !== null);
+  const pending = actions.filter((a) => a.status === "awaiting_approval");
+  const resolved = actions.filter((a) => a.status !== "awaiting_approval");
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-5)" }}>

@@ -401,14 +401,31 @@ Return ONLY valid JSON (no markdown block)."""
 async def task_tracker(client: Client, gemini_api_key: str) -> None:
     print("[task_tracker] starting")
     now_utc = datetime.now(timezone.utc)
-    
+
+    # ── Fix 5: Quiet hours check FIRST — before any DB queries or LLM calls ──
+    # Fetch all distinct user timezones and check each user individually below.
+    # For the global gate, we check if ALL known users are in quiet hours.
+    # If no users have a timezone set, default to Australia/Sydney.
+    loc_res = await asyncio.to_thread(
+        lambda: client.table("user_location")
+        .select("user_id, timezone")
+        .execute()
+    )
+    user_tz_map: dict[str, str] = {}
+    if loc_res.data:
+        for row in loc_res.data:
+            uid = row.get("user_id")
+            tz = row.get("timezone")
+            if uid and tz:
+                user_tz_map[uid] = tz
+
     res = await asyncio.to_thread(
         lambda: client.table("tasks")
         .select("id, title, user_id, last_nudged_at")
         .eq("status", "open")
         .execute()
     )
-    
+
     tasks = res.data or []
     tasks_to_nudge = []
     for t in tasks:
@@ -422,17 +439,47 @@ async def task_tracker(client: Client, gemini_api_key: str) -> None:
                 tasks_to_nudge.append(t)
         except ValueError:
             tasks_to_nudge.append(t)
-            
+
     from collections import defaultdict
     user_tasks = defaultdict(list)
     for t in tasks_to_nudge:
         user_tasks[t.get("user_id")].append(t)
-        
+
     for uid, utasks in user_tasks.items():
-        if not uid: continue
+        if not uid:
+            continue
+
+        # ── Fix 5: Per-user quiet hours check ──
+        tz_str = user_tz_map.get(uid, "Australia/Sydney")
+        try:
+            local_now = datetime.now(ZoneInfo(tz_str))
+        except Exception:
+            local_now = datetime.now(ZoneInfo("Australia/Sydney"))
+
+        local_hour = local_now.hour
+        if local_hour >= 23 or local_hour < 8:
+            print(f"[task_tracker] quiet hours for user {uid} (local {local_now.strftime('%H:%M')}) — skipping")
+            continue
+
+        # ── Fix 2: Daily per-user nudge cap (max 3) ──
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        nudge_count_res = await asyncio.to_thread(
+            lambda: client.table("messages")
+            .select("*", count="exact", head=True)
+            .eq("user_id", uid)
+            .eq("role", "assistant")
+            .eq("model_used", "task_tracker")
+            .gte("created_at", today_start.isoformat())
+            .execute()
+        )
+        daily_nudge_count = nudge_count_res.count or 0
+        if daily_nudge_count >= 3:
+            print(f"[task_tracker] daily nudge cap reached for user {uid} ({daily_nudge_count}/3) — skipping")
+            continue
+
         sample = utasks[:2]
         task_titles = [t["title"] for t in sample]
-        
+
         prompt = f"""You are Project Sunday. The user has these open tasks they haven't been nudged about in a while:
 {json.dumps(task_titles)}
 
@@ -442,22 +489,22 @@ Write a very short, casual 1-sentence nudge for the chat interface. Be friendly.
             ai_client = genai.Client(api_key=gemini_api_key)
             response = await asyncio.to_thread(
                 lambda: ai_client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-flash-lite",
                     contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                     config=types.GenerateContentConfig(max_output_tokens=100, temperature=0.7)
                 )
             )
             msg_content = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
-            
+
             await asyncio.to_thread(
                 lambda: client.table("messages").insert({
                     "user_id": uid,
                     "role": "assistant",
                     "content": "👋 " + msg_content,
-                    "model_used": "gemini"
+                    "model_used": "task_tracker"
                 }).execute()
             )
-            
+
             for t in sample:
                 await asyncio.to_thread(
                     lambda: client.table("tasks").update({"last_nudged_at": now_utc.isoformat()}).eq("id", t["id"]).execute()
@@ -470,9 +517,9 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
     print("[cold_storage_archive] starting")
     now_utc = datetime.now(timezone.utc)
     cutoff_30 = (now_utc - timedelta(days=30)).isoformat()
-    
+
     try:
-        # 1. Archive Messages
+        # 1. Fetch candidates
         msg_res = await asyncio.to_thread(
             lambda: client.table("messages")
             .select("*")
@@ -481,8 +528,7 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
             .execute()
         )
         msgs = msg_res.data or []
-        
-        # 2. Archive Tasks
+
         task_res = await asyncio.to_thread(
             lambda: client.table("tasks")
             .select("*")
@@ -491,23 +537,29 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
             .execute()
         )
         tasks = task_res.data or []
-        
+
         if not msgs and not tasks:
             print("[cold_storage_archive] Nothing to archive.")
             return
-            
+
+        # Snapshot exact IDs before any mutation
+        msg_ids = [m["id"] for m in msgs]
+        task_ids = [t["id"] for t in tasks]
+        expected_msg_count = len(msgs)
+        expected_task_count = len(tasks)
+
         archive_data = {
             "archived_at": now_utc.isoformat(),
             "messages": msgs,
             "tasks": tasks
         }
-        
+
         json_bytes = json.dumps(archive_data).encode('utf-8')
         compressed = gzip.compress(json_bytes)
-        
+
         filename = f"archive_{now_utc.strftime('%Y%m%d_%H%M%S')}.json.gz"
-        
-        # Upload to cold_archive
+
+        # 2. Upload to cold_archive
         await asyncio.to_thread(
             lambda: client.storage.from_("cold_archive").upload(
                 path=filename,
@@ -516,24 +568,46 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
             )
         )
         print(f"[cold_storage_archive] Uploaded {filename} to Storage")
-        
-        # Hard delete
-        if msgs:
-            msg_ids = [m["id"] for m in msgs]
-            # Delete in chunks of 100
+
+        # 3. VERIFY — download the file back and validate integrity
+        try:
+            downloaded_bytes = await asyncio.to_thread(
+                lambda: client.storage.from_("cold_archive").download(filename)
+            )
+
+            decompressed = gzip.decompress(downloaded_bytes)
+            verified_data = json.loads(decompressed)
+
+            verified_msg_count = len(verified_data.get("messages", []))
+            verified_task_count = len(verified_data.get("tasks", []))
+
+            if verified_msg_count != expected_msg_count:
+                print(f"[cold_storage_archive] ABORT — message count mismatch: uploaded {expected_msg_count}, verified {verified_msg_count}")
+                return
+            if verified_task_count != expected_task_count:
+                print(f"[cold_storage_archive] ABORT — task count mismatch: uploaded {expected_task_count}, verified {verified_task_count}")
+                return
+
+            print(f"[cold_storage_archive] Verification passed: {verified_msg_count} messages, {verified_task_count} tasks")
+
+        except Exception as verify_err:
+            print(f"[cold_storage_archive] ABORT — verification failed: {verify_err}")
+            return
+
+        # 4. Hard delete ONLY using the exact IDs captured before upload
+        if msg_ids:
             for i in range(0, len(msg_ids), 100):
                 chunk = msg_ids[i:i+100]
                 await asyncio.to_thread(
                     lambda: client.table("messages").delete().in_("id", chunk).execute()
                 )
-        if tasks:
-            task_ids = [t["id"] for t in tasks]
+        if task_ids:
             for i in range(0, len(task_ids), 100):
                 chunk = task_ids[i:i+100]
                 await asyncio.to_thread(
                     lambda: client.table("tasks").delete().in_("id", chunk).execute()
                 )
-                
-        print(f"[cold_storage_archive] Hard deleted {len(msgs)} messages and {len(tasks)} tasks")
+
+        print(f"[cold_storage_archive] Hard deleted {len(msg_ids)} messages and {len(task_ids)} tasks")
     except Exception as e:
         print(f"[cold_storage_archive] error: {e}")

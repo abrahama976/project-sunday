@@ -23,7 +23,7 @@ export async function POST(
       approved_by: user.id,
     })
     .eq("id", id)
-    .eq("status", "pending")
+    .eq("status", "awaiting_approval")
     .select()
     .single();
 
