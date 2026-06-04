@@ -1,134 +1,80 @@
-"""Task management executors: create, update, list.
-
-Tasks are stored in the Supabase `tasks` table and managed
-entirely through these executors. The AI can create tasks from
-conversation, and the user can view/manage them in the Tasks screen.
-"""
 import json
-from datetime import date
 from supabase import Client
+from datetime import datetime, timezone
 
+async def task_list(client: Client, user_id: str, **kwargs) -> str:
+    args = kwargs
+    status_filter = args.get("status")
+    query = (
+        client.table("tasks")
+        .select("id, title, status, priority, due_date, category, is_archived")
+        .eq("user_id", user_id)
+        .eq("is_archived", False)
+        .order("created_at", desc=True)
+        .limit(50)
+    )
+    if status_filter:
+        query = query.eq("status", status_filter)
+    result = query.execute()
+    if not result.data:
+        return "No tasks found."
+    priority_label = {1: "low", 2: "normal", 3: "high"}
+    lines = []
+    for t in result.data:
+        due = f" (due {t['due_date']})" if t.get("due_date") else ""
+        pri = priority_label.get(t.get("priority", 2), "normal")
+        cat = f" [{t['category']}]" if t.get("category") else ""
+        lines.append(f"[{t['status'].upper()}][{pri}]{cat} {t['title']}{due} — id:{t['id'][:8]}")
+    return "\n".join(lines)
 
-async def task_create(
-    client: Client,
-    user_id: str,
-    title: str,
-    category: str = "personal",
-    priority: int = 3,
-    due_date: str = "",
-    description: str = "",
-    source: str = "chat",
-    source_message_id: str = "",
-) -> str:
-    """Create a new task."""
-    row: dict = {
+async def task_create(client: Client, user_id: str, **kwargs) -> str:
+    args = kwargs
+    title = args.get("title", "").strip()
+    if not title:
+        return "Error: title is required."
+    priority_map = {"low": 1, "normal": 2, "high": 3}
+    priority_raw = args.get("priority", "normal")
+    priority_int = priority_map.get(str(priority_raw).lower(), 2) if isinstance(priority_raw, str) else int(priority_raw)
+    row = {
         "user_id": user_id,
         "title": title,
-        "category": category,
-        "priority": max(1, min(priority, 5)),
         "status": "open",
-        "source": source,
+        "priority": priority_int,
+        "due_date": args.get("due_date"),
+        "category": args.get("category"),
+        "description": args.get("description"),
+        "is_archived": False,
+        "flexibility_score": 0,
     }
-    if due_date:
-        row["due_date"] = due_date
-    if description:
-        row["description"] = description
-    if source_message_id:
-        row["source_message_id"] = source_message_id
-
     result = client.table("tasks").insert(row).execute()
-    if result.data:
-        return f"Task created: '{title}' (priority {priority}, category: {category})"
-    return f"Failed to create task: '{title}'"
+    if not result.data:
+        return "Error: failed to create task."
+    return f"Task created: \"{title}\" (id:{result.data['id'][:8]})"
 
-
-async def task_update(
-    client: Client,
-    user_id: str,
-    task_id: str,
-    title: str = "",
-    status: str = "",
-    priority: int = 0,
-    due_date: str = "",
-    category: str = "",
-    description: str = "",
-) -> str:
-    """Update an existing task's fields."""
-    update: dict = {}
-    if title:
-        update["title"] = title
-    if status and status in ("open", "in_progress", "done", "cancelled"):
-        update["status"] = status
-        if status == "done":
-            from datetime import datetime, timezone
-            update["completed_at"] = datetime.now(timezone.utc).isoformat()
-    if priority:
-        update["priority"] = max(1, min(priority, 5))
-    if due_date:
-        update["due_date"] = due_date
-    if category:
-        update["category"] = category
-    if description:
-        update["description"] = description
-
-    if not update:
-        return "No fields to update."
-
+async def task_update(client: Client, user_id: str, **kwargs) -> str:
+    args = kwargs
+    task_id = args.get("id", args.get("task_id", "")).strip()
+    if not task_id:
+        return "Error: task id is required."
+    allowed = ("status", "title", "due_date", "category", "description", "is_archived")
+    updates = {k: v for k, v in args.items() if k in allowed and v is not None}
+    # Convert priority string to int if provided
+    if "priority" in args and args["priority"] is not None:
+        priority_map = {"low": 1, "normal": 2, "high": 3}
+        p = args["priority"]
+        updates["priority"] = priority_map.get(str(p).lower(), 2) if isinstance(p, str) else int(p)
+    # Set completed_at when marking done
+    if updates.get("status") == "done":
+        updates["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if not updates:
+        return "Error: no valid fields to update."
     result = (
         client.table("tasks")
-        .update(update)
+        .update(updates)
         .eq("id", task_id)
         .eq("user_id", user_id)
         .execute()
     )
-
-    if result.data:
-        task_title = result.data[0].get("title", task_id)
-        return f"Task updated: '{task_title}'"
-    return f"Task not found: {task_id}"
-
-
-async def task_list(
-    client: Client,
-    user_id: str,
-    status: str = "open",
-    category: str = "",
-    due_before: str = "",
-    limit: int = 20,
-) -> str:
-    """List tasks filtered by status, category, and due date."""
-    query = client.table("tasks").select("*").eq("user_id", user_id)
-
-    if status and status != "all":
-        query = query.eq("status", status)
-    if category:
-        query = query.eq("category", category)
-    if due_before:
-        query = query.lte("due_date", due_before)
-
-    query = query.order("priority", desc=False).order("due_date", desc=False)
-    result = query.limit(min(limit, 50)).execute()
-
-    tasks = result.data or []
-    if not tasks:
-        filters = []
-        if status and status != "all":
-            filters.append(f"status={status}")
-        if category:
-            filters.append(f"category={category}")
-        filter_str = f" ({', '.join(filters)})" if filters else ""
-        return f"No tasks found{filter_str}."
-
-    lines = []
-    for t in tasks:
-        p = t.get("priority", 3)
-        prefix = "!" * min(p, 3) if p <= 2 else ""
-        due = f" (due {t['due_date']})" if t.get("due_date") else ""
-        cat = f" [{t['category']}]" if t.get("category") else ""
-        status_icon = {"open": "○", "in_progress": "◐", "done": "●", "cancelled": "✗"}.get(
-            t.get("status", "open"), "○"
-        )
-        lines.append(f"{status_icon} {prefix}{t['title']}{cat}{due}")
-
-    header = f"{len(tasks)} task(s):"
-    return f"{header}\n" + "\n".join(lines)
+    if not result.data:
+        return f"Error: task {task_id[:8]} not found or not yours."
+    return f"Task updated: {task_id[:8]} → {list(updates.keys())}"

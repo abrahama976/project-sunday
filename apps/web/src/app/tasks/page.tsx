@@ -1,418 +1,343 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 type Task = {
   id: string;
   title: string;
-  description: string | null;
-  category: string | null;
-  priority: number;
-  status: string;
+  status: "open" | "done";
+  priority: 1 | 2 | 3;
   due_date: string | null;
+  category: string | null;
+  is_archived: boolean;
   created_at: string;
-  completed_at: string | null;
 };
 
-const PRIORITY_COLORS: Record<number, string> = {
-  1: "var(--color-danger)",
-  2: "var(--color-warning)",
-  3: "transparent",
-  4: "transparent",
-  5: "transparent",
-};
-
-const STATUS_ICONS: Record<string, string> = {
-  open: "○",
-  in_progress: "◐",
-  done: "●",
-  cancelled: "✗",
-};
-
-const FILTERS = ["open", "all", "done"] as const;
-
-/* ── Add Task Modal ────────────────────────────────────────── */
-function AddTaskForm({ onSubmit, onCancel }: {
-  onSubmit: (title: string, category: string, priority: number, dueDate: string) => void;
-  onCancel: () => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState("personal");
-  const [priority, setPriority] = useState(3);
-  const [dueDate, setDueDate] = useState("");
-
+function isTask(x: unknown): x is Task {
+  if (!x || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
   return (
-    <div style={{
-      background: "var(--color-surface)",
-      border: "1px solid var(--color-border)",
-      borderRadius: "var(--radius-lg)",
-      padding: "var(--space-5)",
-      marginBottom: "var(--space-4)",
-    }}>
-      <input
-        type="text"
-        placeholder="Task title…"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        autoFocus
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && title.trim()) {
-            onSubmit(title.trim(), category, priority, dueDate);
-          }
-          if (e.key === "Escape") onCancel();
-        }}
-        style={{
-          width: "100%",
-          background: "var(--color-surface-2)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "var(--radius-md)",
-          padding: "var(--space-3) var(--space-4)",
-          fontSize: "0.9375rem",
-          color: "var(--color-text)",
-          outline: "none",
-          marginBottom: "var(--space-3)",
-        }}
-      />
-      <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          style={selectStyle}
-        >
-          <option value="personal">Personal</option>
-          <option value="work">Work</option>
-          <option value="health">Health</option>
-          <option value="finance">Finance</option>
-          <option value="project">Project</option>
-        </select>
-        <select
-          value={priority}
-          onChange={(e) => setPriority(Number(e.target.value))}
-          style={selectStyle}
-        >
-          <option value={1}>P1 Urgent</option>
-          <option value={2}>P2 High</option>
-          <option value={3}>P3 Normal</option>
-          <option value={4}>P4 Low</option>
-          <option value={5}>P5 Someday</option>
-        </select>
-        <input
-          type="date"
-          value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
-          style={{ ...selectStyle, minWidth: 130 }}
-        />
-        <div style={{ flex: 1 }} />
-        <button onClick={onCancel} style={cancelBtnStyle}>Cancel</button>
-        <button
-          onClick={() => { if (title.trim()) onSubmit(title.trim(), category, priority, dueDate); }}
-          disabled={!title.trim()}
-          style={{
-            ...primaryBtnStyle,
-            opacity: title.trim() ? 1 : 0.4,
-            cursor: title.trim() ? "pointer" : "not-allowed",
-          }}
-        >Add</button>
-      </div>
-    </div>
+    typeof o.id === "string" &&
+    typeof o.title === "string" &&
+    (o.status === "open" || o.status === "done") &&
+    (o.priority === 1 || o.priority === 2 || o.priority === 3) &&
+    (o.due_date === null || typeof o.due_date === "string") &&
+    (o.category === null || typeof o.category === "string") &&
+    typeof o.is_archived === "boolean" &&
+    typeof o.created_at === "string"
   );
 }
 
-/* ── Task Row ──────────────────────────────────────────────── */
-function TaskRow({ task, onToggle }: { task: Task; onToggle: (id: string, done: boolean) => void }) {
-  const isDone = task.status === "done" || task.status === "cancelled";
+const PRIORITY_LABELS: Record<1 | 2 | 3, string> = { 1: "Low", 2: "Normal", 3: "High" };
+const PRIORITY_COLORS: Record<1 | 2 | 3, string> = {
+  1: "var(--color-text-faint)",
+  2: "var(--color-primary)",
+  3: "var(--color-danger)",
+};
+
+export default function TasksPage() {
+  const supabase = useMemo(() => createClient(), []);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let pollInterval: number | undefined;
+
+    const loadTasks = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+
+      const { data, error: loadErr } = await supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("is_archived", false)
+        .order("created_at", { ascending: false });
+
+      if (cancelled) return;
+      if (loadErr) {
+        setError(`Failed to load tasks: ${loadErr.message}`);
+        return;
+      }
+      if (data) {
+        setTasks(data.filter(isTask));
+      }
+    };
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.access_token) {
+          supabase.realtime.setAuth(session.access_token);
+        }
+      }
+    );
+
+    void (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (session?.access_token) {
+        await supabase.realtime.setAuth(session.access_token);
+      }
+
+      channel = supabase
+        .channel("tasks-realtime")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "tasks" },
+          () => {
+            void loadTasks();
+          }
+        )
+        .subscribe((status, err) => {
+          if (cancelled) return;
+          if (status === "SUBSCRIBED") {
+            void loadTasks();
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            setError(`Realtime unavailable: ${err?.message ?? status}. Refresh to see updates.`);
+            void loadTasks();
+          }
+        });
+
+      pollInterval = setInterval(() => {
+        void loadTasks();
+      }, 5000) as unknown as number;
+    })();
+
+    return () => {
+      cancelled = true;
+      clearInterval(pollInterval);
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [supabase]);
+
+  const addTask = async () => {
+    if (!input.trim() || loading) return;
+    const text = input.trim();
+    setInput("");
+    setLoading(true);
+    setError(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not authenticated");
+
+      const { error: insertErr } = await supabase
+        .from("tasks")
+        .insert({
+          user_id: user.id,
+          title: text,
+          priority: 2,
+          status: "open",
+          is_archived: false,
+          flexibility_score: 0,
+        });
+
+      if (insertErr) throw insertErr;
+    } catch (e) {
+      setError(`Failed to create task: ${e instanceof Error ? e.message : "unknown error"}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleTask = async (task: Task) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not authenticated");
+
+      const newStatus = task.status === "open" ? "done" : "open";
+      const completedAt = newStatus === "done" ? new Date().toISOString() : null;
+
+      const { error: updateErr } = await supabase
+        .from("tasks")
+        .update({
+          status: newStatus,
+          completed_at: completedAt,
+        })
+        .eq("id", task.id)
+        .eq("user_id", user.id);
+
+      if (updateErr) throw updateErr;
+    } catch (e) {
+      setError(`Failed to update task: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  };
 
   return (
     <div style={{
       display: "flex",
-      alignItems: "flex-start",
-      gap: "var(--space-3)",
-      padding: "var(--space-3) var(--space-4)",
-      borderLeft: `3px solid ${PRIORITY_COLORS[task.priority] ?? "transparent"}`,
-      background: "var(--color-surface)",
-      border: "1px solid var(--color-border)",
-      borderLeftWidth: 3,
-      borderLeftColor: PRIORITY_COLORS[task.priority] ?? "transparent",
-      borderRadius: "var(--radius-md)",
-      opacity: isDone ? 0.5 : 1,
-      transition: "opacity 200ms",
+      flexDirection: "column",
+      height: "calc(100dvh - var(--nav-top-h))",
+      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
     }}>
-      {/* Checkbox */}
-      <button
-        onClick={() => onToggle(task.id, !isDone)}
-        aria-label={isDone ? "Mark as open" : "Mark as done"}
-        style={{
-          width: 20, height: 20,
-          borderRadius: "var(--radius-sm)",
-          border: isDone ? "none" : "2px solid var(--color-border-strong)",
-          background: isDone ? "var(--color-success)" : "transparent",
-          color: "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "pointer",
-          flexShrink: 0,
-          marginTop: 2,
-          fontSize: "0.75rem",
-          transition: "background 150ms",
-        }}
-      >
-        {isDone && "✓"}
-      </button>
-
-      {/* Content */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontSize: "0.9375rem",
-          fontWeight: 450,
-          textDecoration: isDone ? "line-through" : "none",
-          color: isDone ? "var(--color-text-faint)" : "var(--color-text)",
-        }}>
-          {task.title}
-        </div>
-        <div style={{
-          display: "flex",
-          gap: "var(--space-2)",
-          marginTop: "var(--space-1)",
-          flexWrap: "wrap",
-        }}>
-          {task.category && (
-            <span style={tagStyle}>{task.category}</span>
-          )}
-          {task.due_date && (
-            <span style={{
-              ...tagStyle,
-              color: isOverdue(task.due_date) && !isDone ? "var(--color-danger)" : "var(--color-text-faint)",
-            }}>
-              {formatDue(task.due_date)}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Helpers ───────────────────────────────────────────────── */
-function isOverdue(dateStr: string): boolean {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return new Date(dateStr) < today;
-}
-
-function formatDue(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((d.getTime() - today.getTime()) / (86400 * 1000));
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Tomorrow";
-  if (diff === -1) return "Yesterday";
-  if (diff < 0) return `${Math.abs(diff)}d overdue`;
-  if (diff < 7) return d.toLocaleDateString("en-AU", { weekday: "short" });
-  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-}
-
-/* ── Main Page ─────────────────────────────────────────────── */
-export default function TasksPage() {
-  const supabase = useMemo(() => createClient(), []);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("open");
-  const [showAdd, setShowAdd] = useState(false);
-
-  const fetchTasks = useCallback(async () => {
-    let query = supabase.from("tasks").select("*");
-
-    if (filter === "open") {
-      query = query.in("status", ["open", "in_progress"]);
-    } else if (filter === "done") {
-      query = query.in("status", ["done", "cancelled"]);
-    }
-
-    query = query.order("priority", { ascending: true }).order("due_date", { ascending: true, nullsFirst: false });
-    const { data } = await query.limit(100);
-    setTasks((data || []) as Task[]);
-    setLoading(false);
-  }, [supabase, filter]);
-
-  useEffect(() => {
-    void fetchTasks();
-  }, [fetchTasks]);
-
-  // Realtime subscription for task changes
-  useEffect(() => {
-    const channel = supabase
-      .channel("tasks-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "tasks" },
-        () => { void fetchTasks(); }
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [supabase, fetchTasks]);
-
-  const handleToggle = async (id: string, markDone: boolean) => {
-    const update: Record<string, unknown> = {
-      status: markDone ? "done" : "open",
-    };
-    if (markDone) {
-      update.completed_at = new Date().toISOString();
-    } else {
-      update.completed_at = null;
-    }
-
-    // Optimistic update
-    setTasks((prev) => prev.map((t) =>
-      t.id === id ? { ...t, status: markDone ? "done" : "open", completed_at: markDone ? new Date().toISOString() : null } : t
-    ));
-
-    await supabase.from("tasks").update(update).eq("id", id);
-  };
-
-  const handleAdd = async (title: string, category: string, priority: number, dueDate: string) => {
-    const row: Record<string, unknown> = {
-      title,
-      category,
-      priority,
-      status: "open",
-      source: "manual",
-    };
-    if (dueDate) row.due_date = dueDate;
-
-    await supabase.from("tasks").insert(row);
-    setShowAdd(false);
-    void fetchTasks();
-  };
-
-  const openCount = tasks.filter((t) => t.status === "open" || t.status === "in_progress").length;
-
-  return (
-    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-6) var(--space-5)" }}>
-      {/* Header */}
       <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        marginBottom: "var(--space-5)",
+        flex: 1,
+        overflowY: "auto",
+        padding: "var(--space-4) var(--space-5)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-2)",
       }}>
-        <div>
-          <h1 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "var(--space-1)" }}>
-            Tasks
-          </h1>
-          <p style={{ fontSize: "0.75rem", color: "var(--color-text-faint)" }}>
-            {openCount} open
-          </p>
-        </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          style={{
-            width: 36, height: 36,
-            borderRadius: "var(--radius-md)",
-            background: "var(--color-primary)",
-            color: "#fff",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "1.125rem",
-            fontWeight: 300,
-            cursor: "pointer",
-            border: "none",
-            transition: "opacity 150ms",
-          }}
-          aria-label="Add task"
-        >+</button>
-      </div>
+        {tasks.length === 0 && !error && (
+          <div style={{
+            margin: "auto",
+            textAlign: "center",
+            color: "var(--color-text-faint)",
+            paddingTop: "4rem",
+          }}>
+            <p style={{ fontSize: "1rem", color: "var(--color-text-muted)", fontWeight: 500 }}>
+              No open tasks.
+            </p>
+            <p style={{ fontSize: "0.8125rem", marginTop: "var(--space-2)" }}>
+              Enjoy the clear day!
+            </p>
+          </div>
+        )}
 
-      {/* Filters */}
-      <div style={{
-        display: "flex", gap: "var(--space-1)",
-        marginBottom: "var(--space-4)",
-      }}>
-        {FILTERS.map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
+        {tasks.map((task) => (
+          <div
+            key={task.id}
             style={{
-              padding: "var(--space-2) var(--space-4)",
-              borderRadius: "9999px",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "var(--space-3)",
+              padding: "var(--space-3)",
+              background: "var(--color-surface-2)",
+              borderRadius: "var(--radius-lg)",
               border: "1px solid var(--color-border)",
-              background: filter === f ? "var(--color-primary-faint)" : "transparent",
-              color: filter === f ? "var(--color-primary)" : "var(--color-text-muted)",
-              fontSize: "0.75rem",
-              fontWeight: filter === f ? 600 : 400,
-              cursor: "pointer",
-              textTransform: "capitalize",
-              transition: "all 150ms",
+              opacity: task.status === "done" ? 0.6 : 1,
             }}
-          >{f}</button>
+          >
+            <button
+              onClick={() => void toggleTask(task)}
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: "50%",
+                border: `2px solid ${task.status === "done" ? "var(--color-primary)" : "var(--color-border)"}`,
+                background: task.status === "done" ? "var(--color-primary)" : "transparent",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                flexShrink: 0,
+                marginTop: 2,
+              }}
+            >
+              {task.status === "done" && (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              )}
+            </button>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: "0.9375rem",
+                color: "var(--color-text)",
+                textDecoration: task.status === "done" ? "line-through" : "none",
+                wordBreak: "break-word",
+              }}>
+                {task.title}
+              </div>
+              <div style={{
+                display: "flex",
+                gap: "var(--space-3)",
+                marginTop: "var(--space-1)",
+                fontSize: "0.75rem",
+              }}>
+                <span style={{ color: PRIORITY_COLORS[task.priority] }}>
+                  {PRIORITY_LABELS[task.priority]} Priority
+                </span>
+                {task.category && (
+                  <span style={{ color: "var(--color-text-faint)" }}>
+                    {task.category}
+                  </span>
+                )}
+                {task.due_date && (
+                  <span style={{ color: "var(--color-text-faint)" }}>
+                    Due {task.due_date}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
         ))}
       </div>
 
-      {/* Add form */}
-      {showAdd && (
-        <AddTaskForm onSubmit={handleAdd} onCancel={() => setShowAdd(false)} />
+      {error && (
+        <div style={{
+          padding: "var(--space-2) var(--space-5)",
+          background: "rgba(196, 77, 77, 0.08)",
+          color: "var(--color-danger)",
+          fontSize: "0.8125rem",
+          borderTop: "1px solid var(--color-border)",
+        }}>
+          {error}
+        </div>
       )}
 
-      {/* Task list */}
-      {loading ? (
-        <p style={{ color: "var(--color-text-faint)", fontSize: "0.8125rem" }}>Loading…</p>
-      ) : tasks.length === 0 ? (
-        <div style={{
-          padding: "var(--space-8)", textAlign: "center",
-          borderRadius: "var(--radius-lg)",
-          border: "1px dashed var(--color-border)",
-          color: "var(--color-text-faint)", fontSize: "0.8125rem",
-        }}>
-          {filter === "open" ? "No open tasks. Add one above or tell Sunday in chat." : "No tasks found."}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          {tasks.map((task) => (
-            <TaskRow key={task.id} task={task} onToggle={handleToggle} />
-          ))}
-        </div>
-      )}
+      <div style={{
+        padding: "var(--space-3) var(--space-5)",
+        borderTop: "1px solid var(--color-border)",
+        background: "var(--color-surface)",
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--space-3)",
+      }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void addTask();
+            }
+          }}
+          placeholder="Add a new task..."
+          style={{
+            flex: 1,
+            background: "var(--color-surface-2)",
+            border: "1px solid var(--color-border)",
+            borderRadius: "var(--radius-lg)",
+            padding: "var(--space-3) var(--space-4)",
+            color: "var(--color-text)",
+            fontSize: "0.9375rem",
+            outline: "none",
+          }}
+        />
+        <button
+          onClick={() => void addTask()}
+          disabled={loading || !input.trim()}
+          style={{
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: loading || !input.trim() ? "transparent" : "var(--color-primary)",
+            border: loading || !input.trim() ? "1px solid var(--color-border)" : "none",
+            borderRadius: "var(--radius-md)",
+            opacity: loading || !input.trim() ? 0.4 : 1,
+            transition: "opacity 150ms, background 150ms",
+            cursor: loading || !input.trim() ? "not-allowed" : "pointer",
+            flexShrink: 0,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke={loading || !input.trim() ? "var(--color-text-faint)" : "#fff"}
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }
-
-/* ── Shared styles ─────────────────────────────────────────── */
-const selectStyle: React.CSSProperties = {
-  background: "var(--color-surface-2)",
-  border: "1px solid var(--color-border)",
-  borderRadius: "var(--radius-md)",
-  padding: "var(--space-2) var(--space-3)",
-  fontSize: "0.75rem",
-  color: "var(--color-text)",
-  outline: "none",
-};
-
-const tagStyle: React.CSSProperties = {
-  fontSize: "0.6875rem",
-  color: "var(--color-text-faint)",
-  letterSpacing: "0.02em",
-};
-
-const cancelBtnStyle: React.CSSProperties = {
-  padding: "var(--space-2) var(--space-4)",
-  borderRadius: "var(--radius-md)",
-  border: "1px solid var(--color-border)",
-  background: "transparent",
-  fontSize: "0.8125rem",
-  color: "var(--color-text-muted)",
-  cursor: "pointer",
-};
-
-const primaryBtnStyle: React.CSSProperties = {
-  padding: "var(--space-2) var(--space-5)",
-  borderRadius: "var(--radius-md)",
-  border: "none",
-  background: "var(--color-primary)",
-  fontSize: "0.8125rem",
-  fontWeight: 500,
-  color: "#fff",
-  cursor: "pointer",
-  transition: "opacity 150ms",
-};

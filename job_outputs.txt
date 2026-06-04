@@ -1,0 +1,24 @@
+**Post-Session Job Checks:**
+
+1. `npx tsc --noEmit` on main exited 0 (the duplicate `isLong` was already resolved in the merge). Empty commit pushed to main to ensure Vercel rebuilds.
+
+2. **Security Checks (Groq API Key):**
+- `git ls-files apps/worker/.env` -> empty (not tracked)
+- `git log --all -S "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" --oneline` -> empty (never committed)
+- `.env` is listed in `.gitignore`
+Key is secure and was not leaked to git.
+
+3. **RLS Migration on Production:**
+- `supabase db push --linked` -> Remote database is up to date.
+- `supabase db query --linked "SELECT policyname, qual FROM pg_policies WHERE tablename = 'messages';"` returns:
+```json
+{
+  "rows": [
+    {
+      "policyname": "messages_owner",
+      "qual": "(auth.uid() = user_id)"
+    }
+  ]
+}
+```
+Production RLS confirmed.

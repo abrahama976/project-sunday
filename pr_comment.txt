@@ -1,0 +1,48 @@
+### Phase 5.5 Final Checklist Results
+#### 1. python -m py_compile apps/worker/config.py
+```
+Exit Code: 0
+```
+#### 2. python -m py_compile apps/worker/budget_gate.py
+```
+Exit Code: 0
+```
+#### 3. python -m py_compile apps/worker/router.py
+```
+Exit Code: 0
+```
+#### 4. PYTHONPATH=apps/worker .venv/bin/python apps/worker/tests/test_budget_gate_exhausted.py
+```
+✓ EXHAUSTED sentinel fires correctly
+```
+#### 5. grep -n 'GROQ_API_KEY' apps/worker/config.py
+```
+45:GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+```
+#### 6. grep -n 'groq' apps/worker/requirements.txt
+```
+14:groq>=0.9.0
+```
+#### 7. git diff --stat
+```
+ M apps/worker/budget_gate.py
+ M apps/worker/config.py
+ M apps/worker/requirements.txt
+ M apps/worker/router.py
+ M apps/worker/tests/test_budget_gate_exhausted.py
+?? apps/worker/.env.example
+?? fix_newlines.py
+?? pr_comment.txt
+?? pr_comment_final.txt
+?? rls_check.txt
+?? rls_check_linked.json
+?? run_checks.sh
+?? run_checks_final.sh
+?? update_jobs.py
+ apps/worker/budget_gate.py                      | 62 ++++++++++++++++---------
+ apps/worker/config.py                           | 10 ++++
+ apps/worker/requirements.txt                    |  1 +
+ apps/worker/router.py                           | 49 ++++++++++++++++---
+ apps/worker/tests/test_budget_gate_exhausted.py |  3 +-
+ 5 files changed, 94 insertions(+), 31 deletions(-)
+```

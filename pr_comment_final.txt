@@ -1,0 +1,28 @@
+**Verification Steps Passed:**
+
+#### 1. `npx tsc --noEmit` from `apps/web/`
+```
+Exit Code: 0
+```
+
+#### 2. `python -m py_compile apps/worker/router.py`
+```
+Exit Code: 0
+```
+
+#### 3. `python apps/worker/tests/test_budget_gate_exhausted.py`
+```
+✓ EXHAUSTED sentinel fires correctly
+```
+
+#### 4. `SELECT policyname, qual FROM pg_policies WHERE tablename = 'messages';`
+```json
+{
+  "rows": [
+    {
+      "policyname": "messages_owner",
+      "qual": "(auth.uid() = user_id)"
+    }
+  ]
+}
+```
