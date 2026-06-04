@@ -226,7 +226,7 @@ TOOLS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task UUID to update"},
                 "title": {"type": "string", "description": "New title (optional)"},
-                "status": {"type": "string", "description": "New status: 'open', 'in_progress', 'done', or 'cancelled' (optional)"},
+                "status": {"type": "string", "enum": ["open", "done"], "description": "New status: 'open' or 'done' (optional)"},
                 "priority": {"type": "string", "enum": ["low", "normal", "high"], "description": "New priority (optional)"},
                 "due_date": {"type": "string", "description": "New due date YYYY-MM-DD (optional)"},
                 "category": {"type": "string", "description": "New category (optional)"}

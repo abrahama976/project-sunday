@@ -49,7 +49,7 @@ async def task_create(client: Client, user_id: str, **kwargs) -> str:
     result = client.table("tasks").insert(row).execute()
     if not result.data:
         return "Error: failed to create task."
-    return f"Task created: \"{title}\" (id:{result.data['id'][:8]})"
+    return f"Task created: \"{title}\" (id:{result.data[0]['id'][:8]})"
 
 async def task_update(client: Client, user_id: str, **kwargs) -> str:
     args = kwargs

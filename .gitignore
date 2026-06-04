@@ -40,3 +40,12 @@ supabase/Credentials/
 apps/worker/credentials.json
 apps/worker/token_calendar.json
 apps/worker/token_gmail.json
+
+# Scratch files
+/*.txt
+fix_*.py
+update_*.py
+run_checks*.sh
+pr_*.txt
+rls_*.txt
+rls_*.json
