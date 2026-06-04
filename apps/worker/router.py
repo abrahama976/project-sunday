@@ -134,10 +134,13 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                         lambda: client.table("tasks").insert({
                             "user_id": user_id,
                             "title": t["title"],
-                            "tags": t["tags"],
-                            "flexibility_score": t["flexibility_score"],
+                            "tags": t.get("tags", []),
+                            "flexibility_score": t.get("flexibility_score", 3),
                             "category": "personal",
-                            "source": "chat"
+                            "source": "chat",
+                            "priority": 2,
+                            "status": "open",
+                            "is_archived": False,
                         }).execute()
                     )
                     inserted += 1
