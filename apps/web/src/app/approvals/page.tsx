@@ -77,12 +77,12 @@ function PayloadView({ action_type, payload }: { action_type: string; payload: R
         <div style={{ color: "var(--color-text-muted)", marginBottom: "var(--space-1)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
           <span>🗓️</span> <span>{new Date(String(payload.start || "")).toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'})}</span>
         </div>
-        {payload.location && <div style={{ color: "var(--color-text-muted)", marginBottom: "var(--space-1)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}><span>📍</span> <span>{String(payload.location)}</span></div>}
-        {payload.description && <div style={{ color: "var(--color-text-muted)", whiteSpace: "pre-wrap", marginTop: "var(--space-3)", fontSize: "0.8125rem", borderTop: "1px dashed var(--color-border)", paddingTop: "var(--space-2)" }}>{String(payload.description)}</div>}
+        {!!payload.location && <div style={{ color: "var(--color-text-muted)", marginBottom: "var(--space-1)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}><span>📍</span> <span>{String(payload.location)}</span></div>}
+        {!!payload.description && <div style={{ color: "var(--color-text-muted)", whiteSpace: "pre-wrap", marginTop: "var(--space-3)", fontSize: "0.8125rem", borderTop: "1px dashed var(--color-border)", paddingTop: "var(--space-2)" }}>{String(payload.description)}</div>}
       </div>
     );
   }
-  const isLong = preview.length > 80;
+
 
   return (
     <div style={{ marginBottom: "var(--space-3)" }}>
