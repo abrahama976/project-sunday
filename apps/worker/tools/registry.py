@@ -211,7 +211,7 @@ TOOLS = [
             "properties": {
                 "title": {"type": "string", "description": "Short, actionable task title"},
                 "category": {"type": "string", "description": "Category: 'work', 'personal', 'health', 'finance', or 'project' (default: personal)"},
-                "priority": {"type": "integer", "description": "Priority 1 (urgent) to 5 (someday). Default: 3"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high"], "description": "Priority: low, normal, or high. Default: normal"},
                 "due_date": {"type": "string", "description": "Due date in YYYY-MM-DD format (optional)"},
                 "description": {"type": "string", "description": "Longer description or notes (optional)"}
             },
@@ -226,8 +226,8 @@ TOOLS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task UUID to update"},
                 "title": {"type": "string", "description": "New title (optional)"},
-                "status": {"type": "string", "description": "New status: 'open', 'in_progress', 'done', or 'cancelled' (optional)"},
-                "priority": {"type": "integer", "description": "New priority 1-5 (optional)"},
+                "status": {"type": "string", "enum": ["open", "done"], "description": "New status: 'open' or 'done' (optional)"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high"], "description": "New priority (optional)"},
                 "due_date": {"type": "string", "description": "New due date YYYY-MM-DD (optional)"},
                 "category": {"type": "string", "description": "New category (optional)"}
             },

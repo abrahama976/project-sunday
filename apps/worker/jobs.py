@@ -686,3 +686,31 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
         print(f"[cold_storage_archive] Hard deleted {len(msg_ids)} messages and {len(task_ids)} tasks")
     except Exception as e:
         print(f"[cold_storage_archive] error: {e}")
+
+async def send_daily_brief(client: Client, user_id: str) -> None:
+    import datetime
+    today = datetime.date.today().isoformat()
+    from executors.task_ops import task_list
+    tasks_text = await task_list(client, user_id, status="open")
+    content = "\n".join([
+        f"**Good morning — your brief for {today}**\n",
+        "**Open Tasks:**",
+        tasks_text if tasks_text != "No tasks found." else "_No open tasks — enjoy the clear day._",
+        "\n_Calendar and email summary coming in Step 3._",
+    ])
+    client.table("messages").insert({
+        "user_id": user_id,
+        "role": "assistant",
+        "content": content,
+        "model_used": "system",
+    }).execute()
+    print(f"[jobs] Daily brief sent for {user_id[:8]}")
+
+async def send_daily_brief_for_all_users(client: Client, gemini_api_key: str) -> None:
+    result = client.table("user_profile").select("user_id").execute()
+    for row in (result.data or []):
+        try:
+            await send_daily_brief(client, row["user_id"])
+        except Exception as e:
+            print(f"[jobs] Brief failed for {row['user_id'][:8]}: {e}")
+

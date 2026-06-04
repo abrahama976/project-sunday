@@ -16,7 +16,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive
+from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users
 from executors.base import already_executed, mark_executed, set_status
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
@@ -296,6 +296,7 @@ async def main():
     sched.register_handler("calendar_prep", calendar_prep)
     sched.register_handler("task_tracker", task_tracker)
     sched.register_handler("cold_storage_archive", cold_storage_archive)
+    sched.register_handler("daily_brief", send_daily_brief_for_all_users)
     asyncio.create_task(sched.run())
 
     print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")
