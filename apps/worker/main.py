@@ -16,7 +16,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users
+from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief
 from executors.base import already_executed, mark_executed, set_status
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
@@ -300,6 +300,27 @@ async def main():
     asyncio.create_task(sched.run())
 
     print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")
+
+    # On startup: send today's brief if not already sent
+    import datetime as dt
+    try:
+        today = dt.date.today().isoformat()
+        profiles = await asyncio.to_thread(lambda: client.table("user_profile").select("user_id").execute())
+        for row in (profiles.data or []):
+            user_id = row.get("user_id")
+            if user_id:
+                existing = await asyncio.to_thread(
+                    lambda u=user_id: client.table("messages")
+                    .select("id")
+                    .eq("user_id", u)
+                    .eq("model_used", "system")
+                    .gte("created_at", today)
+                    .limit(1).execute()
+                )
+                if not existing.data:
+                    await send_daily_brief(client, user_id)
+    except Exception as e:
+        print(f"[worker] Failed startup brief check: {e}")
 
     retries = 0
     last_processed_ids = {} # per user_id

@@ -689,22 +689,68 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
 
 async def send_daily_brief(client: Client, user_id: str) -> None:
     import datetime
-    today = datetime.date.today().isoformat()
-    from executors.task_ops import task_list
-    tasks_text = await task_list(client, user_id, status="open")
+    import json
+    import asyncio
+    
+    today = datetime.date.today()
+    formatted_date = today.strftime("%A, %d %B")
+
+    # Calendar
+    try:
+        from executors.calendar_ops import calendar_query
+        cal_res = await calendar_query(query="", days_ahead=1)
+        cal_text = "Nothing scheduled today." if "No events found" in cal_res else cal_res
+    except Exception as e:
+        cal_text = f"Nothing scheduled today. (Error: {e})"
+
+    # Tasks
+    try:
+        from executors.task_ops import task_list
+        tasks_res = await task_list(client, user_id, status="open")
+        tasks_text = "Clear — enjoy the day." if tasks_res == "No tasks found." else tasks_res
+    except Exception as e:
+        tasks_text = f"Clear — enjoy the day. (Error: {e})"
+
+    # Inbox
+    try:
+        from executors.gmail_ops import gmail_priority_scan
+        email_res = await gmail_priority_scan(max_results=5)
+        if "No unread" in email_res:
+            email_text = "Nothing urgent."
+        else:
+            try:
+                emails = json.loads(email_res)
+                if not emails:
+                    email_text = "Nothing urgent."
+                else:
+                    email_text = "\n".join([f"- **{e.get('from', 'Unknown')}**: {e.get('subject', '(No subject)')}" for e in emails])
+            except Exception:
+                email_text = email_res
+    except Exception as e:
+        email_text = f"Nothing urgent. (Error: {e})"
+
     content = "\n".join([
-        f"**Good morning — your brief for {today}**\n",
-        "**Open Tasks:**",
-        tasks_text if tasks_text != "No tasks found." else "_No open tasks — enjoy the clear day._",
-        "\n_Calendar and email summary coming in Step 3._",
+        f"☀️ **Good morning — {formatted_date}**",
+        "**Your day:**",
+        cal_text,
+        "**Open tasks:**",
+        tasks_text,
+        "**Inbox:**",
+        email_text
     ])
-    client.table("messages").insert({
-        "user_id": user_id,
-        "role": "assistant",
-        "content": content,
-        "model_used": "system",
-    }).execute()
-    print(f"[jobs] Daily brief sent for {user_id[:8]}")
+
+    try:
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "user_id": user_id,
+                "role": "assistant",
+                "content": content,
+                "model_used": "system",
+            }).execute()
+        )
+        print(f"[jobs] Daily brief sent for {user_id[:8]}")
+    except Exception as e:
+        print(f"[jobs] Failed to save daily brief for {user_id[:8]}: {e}")
 
 async def send_daily_brief_for_all_users(client: Client, gemini_api_key: str) -> None:
     result = client.table("user_profile").select("user_id").execute()
