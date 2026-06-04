@@ -149,6 +149,78 @@ def _calendar_update_sync(
     return f"Event updated: '{updated.get('summary')}'"
 
 
+
+# ── Sync ───────────────────────────────────────────────────────
+def _sync_calendar_events_sync(client) -> str:
+    service = _get_calendar_service()
+    now = datetime.now(timezone.utc)
+    time_min = now.isoformat()
+    time_max = (now + timedelta(days=14)).isoformat()
+    
+    result = service.events().list(
+        calendarId="primary",
+        timeMin=time_min,
+        timeMax=time_max,
+        maxResults=200,
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+    
+    events = result.get("items", [])
+    if not events:
+        return "No events to sync."
+        
+    cal_name = "Primary"
+    try:
+        cal = service.calendars().get(calendarId="primary").execute()
+        cal_name = cal.get("summary", cal_name)
+    except Exception:
+        pass
+        
+    users_res = client.table("user_profile").select("user_id").execute()
+    users = users_res.data or []
+    
+    upserted = 0
+    for event in events:
+        g_event_id = event.get("id")
+        summary = event.get("summary") or "(No title)"
+        start_str = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+        end_str = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date")
+        
+        if not start_str or not end_str or not g_event_id:
+            continue
+            
+        location = event.get("location", "")
+        
+        for user in users:
+            uid = user.get("user_id")
+            if not uid: continue
+            
+            # Using uid + g_event_id for event_id to ensure both users get a row without conflict overwrites
+            # if event_id is the unique column as per instructions.
+            actual_event_id = f"{uid}_{g_event_id}"
+            
+            try:
+                client.table("calendar_events").upsert({
+                    "user_id": uid,
+                    "event_id": actual_event_id,
+                    "title": summary,
+                    "start_time": start_str,
+                    "end_time": end_str,
+                    "calendar_name": cal_name,
+                    "location": location,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }, on_conflict="event_id").execute()
+                upserted += 1
+            except Exception as e:
+                print(f"[calendar_sync] failed for {uid} event {g_event_id}: {e}")
+            
+    return f"Synced {upserted} calendar events."
+
+async def sync_calendar_events(client) -> str:
+    return await asyncio.to_thread(_sync_calendar_events_sync, client)
+
+
 # ── Async wrappers ─────────────────────────────────────────────
 async def calendar_query(query: str = "", days_ahead: int = 7) -> str:
     return await asyncio.to_thread(_calendar_query_sync, query, days_ahead)

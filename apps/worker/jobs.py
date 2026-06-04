@@ -760,3 +760,14 @@ async def send_daily_brief_for_all_users(client: Client, gemini_api_key: str) ->
         except Exception as e:
             print(f"[jobs] Brief failed for {row['user_id'][:8]}: {e}")
 
+
+
+async def sync_calendar_job(client: Client, gemini_api_key: str) -> None:
+    print("[sync_calendar] starting")
+    try:
+        from executors.calendar_ops import sync_calendar_events
+        result = await sync_calendar_events(client)
+        print(f"[sync_calendar] {result}")
+    except Exception as e:
+        print(f"[sync_calendar] failed: {e}")
+
