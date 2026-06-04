@@ -157,6 +157,16 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
+  const [workerOffline, setWorkerOffline] = useState(false);
+  const offlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearOfflineTimer = () => {
+    if (offlineTimerRef.current) {
+      clearTimeout(offlineTimerRef.current);
+      offlineTimerRef.current = null;
+    }
+    setWorkerOffline(false);
+  };
 
   useEffect(() => {
     (async () => {
@@ -201,9 +211,12 @@ export default function ChatPage() {
     };
 
     const loadHistory = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
       const { data, error: loadErr } = await supabase
         .from("messages")
         .select("*")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: true })
         .limit(MAX_MESSAGES_LOADED);
 
@@ -212,7 +225,13 @@ export default function ChatPage() {
         setError(`Failed to load history: ${loadErr.message}`);
         return;
       }
-      if (data) mergeMessages(data.filter(isMessage));
+      if (data) {
+        mergeMessages(data.filter(isMessage));
+        // Clear offline warning if new assistant messages arrived via poll
+        if (data?.some((m: unknown) => isMessage(m) && (m as Message).role === "assistant")) {
+          clearOfflineTimer();
+        }
+      }
     };
 
     // RLS-filtered Realtime requires the user JWT on the socket.
@@ -245,6 +264,7 @@ export default function ChatPage() {
             const row = payload.new;
             if (!isMessage(row)) return;
             appendMessage(row);
+            if (row.role === "assistant") clearOfflineTimer();
           }
         )
         .subscribe((status, err) => {
@@ -309,6 +329,7 @@ export default function ChatPage() {
           );
         });
       }
+      offlineTimerRef.current = setTimeout(() => setWorkerOffline(true), 12000);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       setError(`Send failed: ${msg}`);
@@ -360,6 +381,17 @@ export default function ChatPage() {
         ))}
 
         {loading && <ThinkingDot />}
+        
+        {workerOffline && (
+          <div style={{
+            fontSize: "0.8125rem",
+            color: "var(--color-text-faint)",
+            padding: "var(--space-2) 0",
+            textAlign: "center",
+          }}>
+            Worker appears offline — message queued, will respond when reconnected.
+          </div>
+        )}
 
         <div ref={bottomRef} />
       </div>

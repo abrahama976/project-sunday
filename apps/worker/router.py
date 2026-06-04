@@ -107,7 +107,6 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                 return {"type": "text", "content": "You've hit today's free-tier LLM limit. Please try again later.", "model_used": "system"}
             if model_id == "ollama":
                 return {"type": "text", "content": "Budget exhausted — brain-dump parsing requires a cloud model. Please try again tomorrow.", "model_used": "system"}
-            await check_and_increment(client, user_id, model_id)
             response = await asyncio.to_thread(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
@@ -122,6 +121,7 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                     )
                 )
             )
+            await check_and_increment(client, user_id, model_id)
             
             raw_json = response.candidates[0].content.parts[0].text
             data = json.loads(raw_json)
@@ -190,7 +190,6 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
     for model_id in models_to_try:
         try:
             print(f"[router] Attempting generation with {model_id}...")
-            await check_and_increment(client, user_id, model_id)
             response = await asyncio.to_thread(
                 lambda: client_genai.models.generate_content(
                     model=model_id,
@@ -203,6 +202,7 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                     )
                 )
             )
+            await check_and_increment(client, user_id, model_id)
 
             candidate = response.candidates[0].content
             for part in candidate.parts:
