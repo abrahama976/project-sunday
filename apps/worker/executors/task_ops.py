@@ -11,6 +11,7 @@ from supabase import Client
 
 async def task_create(
     client: Client,
+    user_id: str,
     title: str,
     category: str = "personal",
     priority: int = 3,
@@ -21,6 +22,7 @@ async def task_create(
 ) -> str:
     """Create a new task."""
     row: dict = {
+        "user_id": user_id,
         "title": title,
         "category": category,
         "priority": max(1, min(priority, 5)),
@@ -42,6 +44,7 @@ async def task_create(
 
 async def task_update(
     client: Client,
+    user_id: str,
     task_id: str,
     title: str = "",
     status: str = "",
@@ -75,6 +78,7 @@ async def task_update(
         client.table("tasks")
         .update(update)
         .eq("id", task_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
@@ -86,13 +90,14 @@ async def task_update(
 
 async def task_list(
     client: Client,
+    user_id: str,
     status: str = "open",
     category: str = "",
     due_before: str = "",
     limit: int = 20,
 ) -> str:
     """List tasks filtered by status, category, and due date."""
-    query = client.table("tasks").select("*")
+    query = client.table("tasks").select("*").eq("user_id", user_id)
 
     if status and status != "all":
         query = query.eq("status", status)

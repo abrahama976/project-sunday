@@ -127,7 +127,6 @@ type Briefing = {
 type HealthLog = {
   metric: string;
   value: number;
-  water_ml: number | null;
 };
 
 export default function DashboardPage() {
@@ -219,7 +218,7 @@ export default function DashboardPage() {
     const today = localISOTime.split("T")[0];
 
     const fetchHealth = async () => {
-      const { data } = await supabase.from("health_logs").select("metric,value,water_ml").eq("log_date", today);
+      const { data } = await supabase.from("health_logs").select("metric,value").eq("log_date", today);
       if (!cancelled && data) setHealthLogs(data as HealthLog[]);
     };
 
@@ -255,7 +254,7 @@ export default function DashboardPage() {
   const totalTasks = validTasks.length;
   const dueTasks = validTasks.filter(t => t.status === "open" || t.status === "in_progress").slice(0, 4);
 
-  const totalWater = healthLogs.filter(l => l.metric === "water_ml" || l.metric === "water").reduce((acc, l) => acc + Number(l.value || l.water_ml || 0), 0);
+  const totalWater = healthLogs.filter(l => l.metric === "water").reduce((acc, l) => acc + Number(l.value || 0), 0);
   const totalSleep = healthLogs.filter(l => l.metric === "sleep_hours").reduce((acc, l) => acc + Number(l.value || 0), 0);
 
   return (

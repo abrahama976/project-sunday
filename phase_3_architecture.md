@@ -146,3 +146,25 @@ SUNDAY_LOCATION_SECRET=your-random-secret-here
 - ❌ Travel calendar blocking is prohibited — AI may suggest, never book
 - ❌ Hard deletes prohibited on tasks or messages — soft-delete only
 - ✅ All new UI must follow existing dark-mode, mobile-first design at 390px
+
+---
+
+## Phase 3: UI/UX Polish & Proactive Tracking
+
+### ⏳ Step 1: The Route Swap
+- [ ] Swap `/` and `/dashboard` (Dashboard becomes the home screen)
+- [ ] Update `NavBar.tsx` to map Dashboard -> `/` and Chat -> `/chat`
+
+### ⏳ Step 2: Dashboard Overhaul
+- [ ] Replace text dumps with Tailwind-powered visually rich stat cards
+- [ ] Add progress bars (e.g., Tasks completed vs total, Water logged vs goal)
+- [ ] Enhance mobile typography and padding
+
+### ⏳ Step 3: Approvals Redesign
+- [ ] Redesign `/approvals` with rich preview cards
+- [ ] Add payload parsers (e.g., render drafted emails with subject/body)
+
+### ⏳ Step 4: Proactive Chat Reminders
+- [ ] Implement `task_tracker` job in Python worker
+- [ ] Check looming deadlines or stale tasks
+- [ ] Autonomously insert check-in messages directly into the `messages` table

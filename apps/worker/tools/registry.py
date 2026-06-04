@@ -69,6 +69,44 @@ TOOLS = [
             "required": ["url"]
         }
     },
+    {
+        "name": "web_search",
+        "description": "Search the web for information using a search engine. Returns top results with titles, URLs, and snippets.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query"},
+                "max_results": {"type": "integer", "description": "Max results to return (default 3, max 5)"}
+            },
+            "required": ["query"]
+        }
+    },
+
+    # ── Travel ─────────────────────────────────────────────────
+    {
+        "name": "travel_directions",
+        "description": "Get routing, distance, and ETA using Google Maps API.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Starting location (e.g. 'Bondi', 'Central Station')"},
+                "destination": {"type": "string", "description": "Ending location"},
+                "mode": {"type": "string", "description": "Travel mode: 'driving', 'transit', 'walking', 'bicycling'"}
+            },
+            "required": ["origin", "destination"]
+        }
+    },
+    {
+        "name": "transit_departures",
+        "description": "Get real-time upcoming transit departures for a stop in Sydney using TfNSW API.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stop_keyword": {"type": "string", "description": "Name of the station or stop (e.g., 'Town Hall Station', 'Coogee Beach')"}
+            },
+            "required": ["stop_keyword"]
+        }
+    },
 
     # ── Calendar ───────────────────────────────────────────────
     {

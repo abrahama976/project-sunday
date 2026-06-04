@@ -10,6 +10,8 @@ from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import Client
 import json
+import gzip
+import io
 
 from google import genai
 from google.genai import types
@@ -392,5 +394,146 @@ Return ONLY valid JSON (no markdown block)."""
                         )
                         print(f"[calendar_prep] added travel task to {dest}")
                         
+                        
     except Exception as e:
         print(f"[calendar_prep] failed: {e}")
+
+async def task_tracker(client: Client, gemini_api_key: str) -> None:
+    print("[task_tracker] starting")
+    now_utc = datetime.now(timezone.utc)
+    
+    res = await asyncio.to_thread(
+        lambda: client.table("tasks")
+        .select("id, title, user_id, last_nudged_at")
+        .eq("status", "open")
+        .execute()
+    )
+    
+    tasks = res.data or []
+    tasks_to_nudge = []
+    for t in tasks:
+        nudged_at = t.get("last_nudged_at")
+        if not nudged_at:
+            tasks_to_nudge.append(t)
+            continue
+        try:
+            nudged_dt = datetime.fromisoformat(nudged_at.replace("Z", "+00:00"))
+            if nudged_dt < (now_utc - timedelta(hours=2)):
+                tasks_to_nudge.append(t)
+        except ValueError:
+            tasks_to_nudge.append(t)
+            
+    from collections import defaultdict
+    user_tasks = defaultdict(list)
+    for t in tasks_to_nudge:
+        user_tasks[t.get("user_id")].append(t)
+        
+    for uid, utasks in user_tasks.items():
+        if not uid: continue
+        sample = utasks[:2]
+        task_titles = [t["title"] for t in sample]
+        
+        prompt = f"""You are Project Sunday. The user has these open tasks they haven't been nudged about in a while:
+{json.dumps(task_titles)}
+
+Write a very short, casual 1-sentence nudge for the chat interface. Be friendly. No robotic language."""
+
+        try:
+            ai_client = genai.Client(api_key=gemini_api_key)
+            response = await asyncio.to_thread(
+                lambda: ai_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                    config=types.GenerateContentConfig(max_output_tokens=100, temperature=0.7)
+                )
+            )
+            msg_content = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
+            
+            await asyncio.to_thread(
+                lambda: client.table("messages").insert({
+                    "user_id": uid,
+                    "role": "assistant",
+                    "content": "👋 " + msg_content,
+                    "model_used": "gemini"
+                }).execute()
+            )
+            
+            for t in sample:
+                await asyncio.to_thread(
+                    lambda: client.table("tasks").update({"last_nudged_at": now_utc.isoformat()}).eq("id", t["id"]).execute()
+                )
+            print(f"[task_tracker] Nudged user {uid} about {len(sample)} tasks")
+        except Exception as e:
+            print(f"[task_tracker] failed for user {uid}: {e}")
+
+async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
+    print("[cold_storage_archive] starting")
+    now_utc = datetime.now(timezone.utc)
+    cutoff_30 = (now_utc - timedelta(days=30)).isoformat()
+    
+    try:
+        # 1. Archive Messages
+        msg_res = await asyncio.to_thread(
+            lambda: client.table("messages")
+            .select("*")
+            .eq("is_deleted", True)
+            .lt("created_at", cutoff_30)
+            .execute()
+        )
+        msgs = msg_res.data or []
+        
+        # 2. Archive Tasks
+        task_res = await asyncio.to_thread(
+            lambda: client.table("tasks")
+            .select("*")
+            .eq("is_archived", True)
+            .lt("completed_at", cutoff_30)
+            .execute()
+        )
+        tasks = task_res.data or []
+        
+        if not msgs and not tasks:
+            print("[cold_storage_archive] Nothing to archive.")
+            return
+            
+        archive_data = {
+            "archived_at": now_utc.isoformat(),
+            "messages": msgs,
+            "tasks": tasks
+        }
+        
+        json_bytes = json.dumps(archive_data).encode('utf-8')
+        compressed = gzip.compress(json_bytes)
+        
+        filename = f"archive_{now_utc.strftime('%Y%m%d_%H%M%S')}.json.gz"
+        
+        # Upload to cold_archive
+        await asyncio.to_thread(
+            lambda: client.storage.from_("cold_archive").upload(
+                path=filename,
+                file=compressed,
+                file_options={"content-type": "application/gzip"}
+            )
+        )
+        print(f"[cold_storage_archive] Uploaded {filename} to Storage")
+        
+        # Hard delete
+        if msgs:
+            msg_ids = [m["id"] for m in msgs]
+            # Delete in chunks of 100
+            for i in range(0, len(msg_ids), 100):
+                chunk = msg_ids[i:i+100]
+                await asyncio.to_thread(
+                    lambda: client.table("messages").delete().in_("id", chunk).execute()
+                )
+        if tasks:
+            task_ids = [t["id"] for t in tasks]
+            for i in range(0, len(task_ids), 100):
+                chunk = task_ids[i:i+100]
+                await asyncio.to_thread(
+                    lambda: client.table("tasks").delete().in_("id", chunk).execute()
+                )
+                
+        print(f"[cold_storage_archive] Hard deleted {len(msgs)} messages and {len(tasks)} tasks")
+    except Exception as e:
+        print(f"[cold_storage_archive] error: {e}")

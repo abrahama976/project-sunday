@@ -28,6 +28,8 @@
   --color-danger:          #c44d4d;
   --color-error:           #c44d4d;
   --color-info:            #4f98a3;
+  --color-brand:           #4f98a3;
+  --color-surface-hover:   #2a2928;
 
   /* Typography */
   --font-body:  var(--font-inter), system-ui, -apple-system, sans-serif;

@@ -15,7 +15,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep
+from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive
 from executors.base import already_executed, mark_executed, set_status
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
@@ -31,6 +31,7 @@ def get_client() -> Client:
 
 async def execute_action(client: Client, action: dict):
     action_id = action["id"]
+    user_id = action.get("user_id")
     idempotency_key = str(action.get("idempotency_key", action_id))
     tool = action["action_type"]
     args = action.get("payload", {})
@@ -39,25 +40,27 @@ async def execute_action(client: Client, action: dict):
         print(f"[worker] skipping already-executed {action_id}")
         return
 
-    row = await asyncio.to_thread(
-        lambda: client.table("action_queue").select("approved,status,tier").eq("id", action_id).single().execute()
+    # Atomic claim: update to 'processing' only if 'pending' or 'approved'
+    claim = await asyncio.to_thread(
+        lambda: client.table("action_queue")
+        .update({"status": "processing"})
+        .eq("id", action_id)
+        .in_("status", ["pending", "approved"])
+        .execute()
     )
-    if not row.data:
-        print(f"[worker] action {action_id} not found — skipping")
+
+    if not claim.data:
+        print(f"[worker] {action_id} could not be claimed (already processing/executed) — skipping")
         return
 
-    db_approved = row.data.get("approved")
-    db_status = row.data.get("status")
-    db_tier = row.data.get("tier", "approve")
+    db_approved = claim.data[0].get("approved")
+    db_tier = claim.data[0].get("tier", "approve")
 
     if db_tier != "auto" and not db_approved:
-        print(f"[worker] {action_id} not approved — skipping")
-        return
-    if db_status in ("executed", "failed", "denied"):
-        print(f"[worker] {action_id} already {db_status} — skipping")
+        print(f"[worker] {action_id} not approved — unclaiming")
+        await set_status(client, action_id, "pending")
         return
 
-    await set_status(client, action_id, "executing")
     mark_executed(idempotency_key)
 
     try:
@@ -68,7 +71,7 @@ async def execute_action(client: Client, action: dict):
         elif tool == "file_write":
             result = await file_write(**args)
         elif tool == "update_profile":
-            result = await update_profile(client, **args)
+            result = await update_profile(client, user_id=user_id, **args)
         elif tool == "web_fetch":
             result = await web_fetch(**args)
         elif tool == "web_search":
@@ -92,17 +95,18 @@ async def execute_action(client: Client, action: dict):
         elif tool == "gmail_priority_scan":
             result = await gmail_priority_scan(**args)
         elif tool == "task_create":
-            result = await task_create(client, **args)
+            result = await task_create(client, user_id=user_id, **args)
         elif tool == "task_update":
-            result = await task_update(client, **args)
+            result = await task_update(client, user_id=user_id, **args)
         elif tool == "task_list":
-            result = await task_list(client, **args)
+            result = await task_list(client, user_id=user_id, **args)
         else:
             raise NotImplementedError(f"Executor for '{tool}' not yet implemented")
 
         await set_status(client, action_id, "executed")
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
+                "user_id": user_id,
                 "role": "assistant",
                 "content": str(result),
                 "model_used": "gemini"
@@ -113,13 +117,13 @@ async def execute_action(client: Client, action: dict):
         print(f"[worker] executor error {action_id}: {e}")
         await set_status(client, action_id, "failed", {"error": str(e)})
 
-async def handle_message(client: Client, message: dict, history: list) -> bool:
+async def handle_message(client: Client, message: dict, history: list, user_id: str) -> bool:
     content = message.get("content", "")
     if not content or message.get("role") != "user":
         return False
     print(f"[router] routing: {content[:60]}")
     try:
-        result = await route(client, content, history, GEMINI_API_KEY)
+        result = await route(client, content, history, GEMINI_API_KEY, user_id)
     except Exception as e:
         print(f"[router] error: {e}")
         error_msg = str(e)
@@ -130,6 +134,7 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
             
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
+                "user_id": user_id,
                 "role": "assistant",
                 "content": friendly_msg,
                 "model_used": "system",
@@ -137,12 +142,15 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         )
         return False
 
+    model_used = result.get("model_used", "system")
+
     if result["type"] == "text":
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
+                "user_id": user_id,
                 "role": "assistant",
                 "content": result["content"],
-                "model_used": "gemini"
+                "model_used": model_used
             }).execute()
         )
         return True
@@ -152,6 +160,7 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         tier = result["tier"]
         inserted = await asyncio.to_thread(
             lambda: client.table("action_queue").insert({
+                "user_id": user_id,
                 "action_type": tool,
                 "payload": result["args"],
                 "tier": tier,
@@ -163,6 +172,7 @@ async def handle_message(client: Client, message: dict, history: list) -> bool:
         if tier == "approve":
             await asyncio.to_thread(
                 lambda: client.table("messages").insert({
+                    "user_id": user_id,
                     "role": "assistant",
                     "content": f"I've suggested an action for your approval: {tool}. Check the Approvals tab.",
                     "model_used": "system"
@@ -257,31 +267,44 @@ async def main():
     sched.register_handler("meal_checkin", meal_checkin)
     sched.register_handler("nightly_maintenance", nightly_maintenance)
     sched.register_handler("calendar_prep", calendar_prep)
+    sched.register_handler("task_tracker", task_tracker)
+    sched.register_handler("cold_storage_archive", cold_storage_archive)
     asyncio.create_task(sched.run())
 
     print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")
 
     retries = 0
-    last_processed_id = None
+    last_processed_ids = {} # per user_id
     message_count = 0
 
     while True:
         try:
+            # Poll latest 10 messages across all users
             all_msgs = await asyncio.to_thread(
-                lambda: client.table("messages").select("*").order("created_at", desc=True).limit(2).execute()
+                lambda: client.table("messages").select("*").order("created_at", desc=True).limit(10).execute()
             )
 
-            if all_msgs.data and all_msgs.data[0]["role"] == "user":
-                latest = all_msgs.data[0]
-                if latest["id"] != last_processed_id:
-                    history = await asyncio.to_thread(
-                        lambda: client.table("messages").select("role,content").order("created_at", desc=True).limit(20).execute()
-                    )
-                    history_list = list(reversed(history.data or []))
-                    if await handle_message(client, latest, history_list):
-                        message_count += 1
-                        await maybe_summarise(client, GEMINI_API_KEY, message_count)
-                    last_processed_id = latest["id"]
+            if all_msgs.data:
+                # Process oldest to newest among the newly found
+                for latest in reversed(all_msgs.data):
+                    if latest["role"] != "user":
+                        continue
+                    
+                    uid = latest.get("user_id")
+                    if not uid:
+                        continue
+                        
+                    if latest["id"] != last_processed_ids.get(uid):
+                        history = await asyncio.to_thread(
+                            lambda: client.table("messages").select("role,content").eq("user_id", uid).order("created_at", desc=True).limit(20).execute()
+                        )
+                        history_list = list(reversed(history.data or []))
+                        if await handle_message(client, latest, history_list, uid):
+                            message_count += 1
+                            # maybe_summarise currently does not enforce user_id, 
+                            # but we leave it as is for now until Phase 4 completes
+                            await maybe_summarise(client, GEMINI_API_KEY, message_count)
+                        last_processed_ids[uid] = latest["id"]
 
             await asyncio.sleep(2)
             retries = 0

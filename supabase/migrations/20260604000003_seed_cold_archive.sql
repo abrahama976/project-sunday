@@ -1,0 +1,1 @@
+INSERT INTO scheduled_jobs (id, job_name, cron_expr, timezone, config) VALUES (gen_random_uuid(), 'cold_storage_archive', '0 3 * * 0', 'UTC', '{"description": "Weekly cold storage archive on Sunday 3am"}') ON CONFLICT (job_name) DO NOTHING;

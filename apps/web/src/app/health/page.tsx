@@ -13,7 +13,6 @@ type HealthLog = {
   created_at: string;
   meal_type: string | null;
   description: string | null;
-  water_ml: number | null;
 };
 
 export default function HealthPage() {
@@ -68,12 +67,12 @@ export default function HealthPage() {
     fetchLogs(); // Optimistic refresh, though realtime will also catch it
   };
 
-  const addWater = () => addLog("water_ml", 250);
+  const addWater = () => addLog("water", 250);
   const logMeal = (meal_type: string) => addLog("meal", 0, { meal_type });
 
   const totalWater = logs
-    .filter((l) => l.metric === "water_ml" || l.metric === "water")
-    .reduce((acc, l) => acc + Number(l.value || l.water_ml || 0), 0);
+    .filter((l) => l.metric === "water")
+    .reduce((acc, l) => acc + Number(l.value || 0), 0);
 
   const meals = logs.filter((l) => l.metric === "meal");
 
@@ -138,7 +137,7 @@ export default function HealthPage() {
               const time = new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               let label = log.metric;
               let icon = "📝";
-              if (log.metric === "water_ml" || log.metric === "water") {
+              if (log.metric === "water") {
                 label = `Water (${log.value}ml)`;
                 icon = "💧";
               }

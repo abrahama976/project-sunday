@@ -3,22 +3,13 @@ import asyncio
 from supabase import Client
 from context.loader import fetch_and_cache_profile
 
-async def update_profile(client: Client, section: str, content: str) -> str:
-    res = await asyncio.to_thread(lambda: client.table("user_profile").select("user_id, content").limit(1).execute())
+async def update_profile(client: Client, user_id: str, section: str, content: str) -> str:
+    res = await asyncio.to_thread(lambda: client.table("user_profile").select("content").eq("user_id", user_id).maybeSingle().execute())
     
     if not res.data:
-        try:
-            users = await asyncio.to_thread(lambda: client.auth.admin.list_users())
-            if not users:
-                return "Error: No users found in the system. Cannot attach profile."
-            user_id = users[0].id
-        except Exception as e:
-            return f"Error fetching users: {e}"
         text = ""
     else:
-        row = res.data[0]
-        text = row.get("content", "")
-        user_id = row.get("user_id")
+        text = res.data.get("content", "")
         
     section_pattern = re.compile(rf"^(#+)\s+{re.escape(section)}\s*$", re.MULTILINE | re.IGNORECASE)
     match = section_pattern.search(text)

@@ -1,10 +1,13 @@
 import asyncio
+import json
+from datetime import datetime
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL
 from context.loader import get_profile
 from tools.registry import TOOLS
+from supabase import Client
 
 def build_system_prompt() -> str:
     profile = get_profile()
@@ -50,13 +53,42 @@ async def _ask_ollama(message: str, history: list[dict]) -> dict:
             messages=messages
         )
         reply = response.message.content or "No response from Ollama."
-        return {"type": "text", "content": f"[Ollama] {reply}"}
+        return {"type": "text", "content": f"[Ollama] {reply}", "model_used": "ollama"}
     except Exception as e:
-        return {"type": "text", "content": f"Ollama failed to respond: {e}"}
+        return {"type": "text", "content": f"Ollama failed to respond: {e}", "model_used": "system"}
 
-from supabase import Client
+async def record_llm_usage(client: Client, user_id: str, model: str):
+    if not user_id: return
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        res = await asyncio.to_thread(
+            lambda: client.table("user_llm_ledger").select("*").eq("user_id", user_id).eq("ledger_date", today).maybeSingle().execute()
+        )
+        
+        is_flash = "flash" in model.lower()
+        if res.data:
+            updates = {}
+            if is_flash:
+                updates["flash_requests"] = res.data.get("flash_requests", 0) + 1
+            else:
+                updates["lite_requests"] = res.data.get("lite_requests", 0) + 1
+                
+            await asyncio.to_thread(
+                lambda: client.table("user_llm_ledger").update(updates).eq("id", res.data["id"]).execute()
+            )
+        else:
+            await asyncio.to_thread(
+                lambda: client.table("user_llm_ledger").insert({
+                    "user_id": user_id,
+                    "ledger_date": today,
+                    "flash_requests": 1 if is_flash else 0,
+                    "lite_requests": 0 if is_flash else 1
+                }).execute()
+            )
+    except Exception as e:
+        print(f"[router] Failed to record usage for {user_id}: {e}")
 
-async def route(client: Client, message: str, history: list[dict], gemini_api_key: str) -> dict:
+async def route(client: Client, message: str, history: list[dict], gemini_api_key: str, user_id: str) -> dict:
     if message.strip().startswith("/private"):
         clean_msg = message.replace("/private", "", 1).strip()
         print(f"[router] explicit private routing triggered")
@@ -98,9 +130,10 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         }
         
         try:
+            model_id = "gemini-2.5-flash"
             response = await asyncio.to_thread(
                 lambda: ai_client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model=model_id,
                     contents=[
                         types.Content(role="user", parts=[types.Part(text=message)])
                     ],
@@ -113,8 +146,9 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                 )
             )
             
+            await record_llm_usage(client, user_id, model_id)
+            
             raw_json = response.candidates[0].content.parts[0].text
-            import json
             data = json.loads(raw_json)
             tasks = data.get("tasks", [])
             
@@ -123,6 +157,7 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                 for t in tasks:
                     await asyncio.to_thread(
                         lambda: client.table("tasks").insert({
+                            "user_id": user_id,
                             "title": t["title"],
                             "tags": t["tags"],
                             "flexibility_score": t["flexibility_score"],
@@ -137,12 +172,12 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                     tags_str = ", ".join(t.get("tags", []))
                     reply += f"- **{t['title']}** (Tags: {tags_str}, Flex: {t.get('flexibility_score', 3)})\n"
                 
-                return {"type": "text", "content": reply}
+                return {"type": "text", "content": reply, "model_used": model_id}
             else:
-                return {"type": "text", "content": "I couldn't detect any tasks in your brain-dump."}
+                return {"type": "text", "content": "I couldn't detect any tasks in your brain-dump.", "model_used": model_id}
                 
         except Exception as e:
-            return {"type": "text", "content": f"Failed to parse brain-dump: {e}"}
+            return {"type": "text", "content": f"Failed to parse brain-dump: {e}", "model_used": "system"}
 
     client_genai = genai.Client(api_key=gemini_api_key)
 
@@ -180,6 +215,8 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                 )
             )
 
+            await record_llm_usage(client, user_id, model_id)
+
             candidate = response.candidates[0].content
             for part in candidate.parts:
                 if part.function_call:
@@ -190,20 +227,21 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                         "type": "tool_call",
                         "tool": tool_name,
                         "args": dict(fn.args),
-                        "tier": tier
+                        "tier": tier,
+                        "model_used": model_id
                     }
 
             text = "".join(p.text for p in candidate.parts if hasattr(p, "text") and p.text)
-            return {"type": "text", "content": text}
+            return {"type": "text", "content": text, "model_used": model_id}
 
         except APIError as e:
             if e.code in [429, 503]:
                 print(f"[router] {model_id} exhausted or unavailable (Error {e.code}). Cascading to next model...")
                 continue
             else:
-                return {"type": "text", "content": f"Google API Error: {e.message}"}
+                return {"type": "text", "content": f"Google API Error: {e.message}", "model_used": "system"}
         except Exception as e:
-            return {"type": "text", "content": f"Unexpected Error: {e}"}
+            return {"type": "text", "content": f"Unexpected Error: {e}", "model_used": "system"}
 
     print("[router] Google models exhausted. Failing over to local Ollama...")
     return await _ask_ollama(message, history)

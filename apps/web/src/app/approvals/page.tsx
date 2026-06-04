@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { APPROVAL_HOLD_SECONDS, ACTION_TIER_COLORS } from "@/lib/constants";
 
@@ -52,10 +52,34 @@ function statusBadge(a: Action): { text: string; bg: string; color: string } {
 }
 
 /* ── Collapsible payload viewer ────────────────────────── */
-function PayloadView({ payload }: { payload: Record<string, unknown> }) {
+function PayloadView({ action_type, payload }: { action_type: string; payload: Record<string, unknown> }) {
   const [open, setOpen] = useState(false);
   const json = JSON.stringify(payload, null, 2);
   const preview = JSON.stringify(payload);
+  const isLong = preview.length > 80;
+
+  if (action_type === "gmail_draft") {
+    return (
+      <div style={{ background: "var(--color-surface-2)", borderRadius: "var(--radius-md)", padding: "var(--space-3) var(--space-4)", fontSize: "0.875rem", color: "var(--color-text)", border: "1px solid var(--color-border)", marginBottom: "var(--space-3)" }}>
+        <div style={{ marginBottom: "var(--space-2)" }}><strong style={{color:"var(--color-text-muted)"}}>To:</strong> {String(payload.to || "")}</div>
+        <div style={{ marginBottom: "var(--space-3)" }}><strong style={{color:"var(--color-text-muted)"}}>Subject:</strong> {String(payload.subject || "")}</div>
+        <div style={{ whiteSpace: "pre-wrap", color: "var(--color-text-muted)", fontSize: "0.8125rem", background: "var(--color-surface)", padding: "var(--space-3)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-subtle)" }}>{String(payload.body || "")}</div>
+      </div>
+    );
+  }
+  
+  if (action_type === "calendar_create") {
+    return (
+      <div style={{ background: "var(--color-surface-2)", borderRadius: "var(--radius-md)", padding: "var(--space-3) var(--space-4)", fontSize: "0.875rem", color: "var(--color-text)", border: "1px solid var(--color-border)", marginBottom: "var(--space-3)" }}>
+        <div style={{ marginBottom: "var(--space-2)", fontSize: "1rem", fontWeight: 600 }}>{String(payload.summary || "")}</div>
+        <div style={{ color: "var(--color-text-muted)", marginBottom: "var(--space-1)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+          <span>🗓️</span> <span>{new Date(String(payload.start || "")).toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'})}</span>
+        </div>
+        {payload.location && <div style={{ color: "var(--color-text-muted)", marginBottom: "var(--space-1)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}><span>📍</span> <span>{String(payload.location)}</span></div>}
+        {payload.description && <div style={{ color: "var(--color-text-muted)", whiteSpace: "pre-wrap", marginTop: "var(--space-3)", fontSize: "0.8125rem", borderTop: "1px dashed var(--color-border)", paddingTop: "var(--space-2)" }}>{String(payload.description)}</div>}
+      </div>
+    );
+  }
   const isLong = preview.length > 80;
 
   return (
@@ -170,16 +194,7 @@ export default function ApprovalsPage() {
     return () => clearInterval(i);
   }, [armed]);
 
-  useEffect(() => {
-    if (!armed) return;
-    if (now >= armed.expiresAt) {
-      const id = armed.id;
-      setArmed(null);
-      void approveById(id);
-    }
-  }, [armed, now]);
-
-  async function approveById(id: string) {
+  const approveById = useCallback(async (id: string) => {
     setActing(id);
     setError(null);
     try {
@@ -191,7 +206,16 @@ export default function ApprovalsPage() {
     } finally {
       setActing(null);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!armed) return;
+    if (now >= armed.expiresAt) {
+      const id = armed.id;
+      setArmed(null);
+      void approveById(id);
+    }
+  }, [armed, now, approveById]);
 
   async function denyById(id: string) {
     setActing(id);
@@ -299,7 +323,7 @@ export default function ApprovalsPage() {
                 </div>
 
                 {/* Payload */}
-                <PayloadView payload={action.payload} />
+                <PayloadView action_type={action.action_type} payload={action.payload} />
 
                 {/* Actions */}
                 <div style={{ display: "flex", gap: "var(--space-2)", justifyContent: "flex-end" }}>
