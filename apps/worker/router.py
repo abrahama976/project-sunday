@@ -103,6 +103,8 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         
         try:
             model_id = await pick_model(client, user_id)
+            if model_id == "EXHAUSTED":
+                return {"type": "text", "content": "You've hit today's free-tier LLM limit. Please try again later.", "model_used": "system"}
             if model_id == "ollama":
                 return {"type": "text", "content": "Budget exhausted — brain-dump parsing requires a cloud model. Please try again tomorrow.", "model_used": "system"}
             await check_and_increment(client, user_id, model_id)
@@ -170,8 +172,11 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    # Budget-aware model selection: pick the best available tier
+    # Budget-aware model selection: pick the best available tier (defaults to allow_flash=True)
     budget_model = await pick_model(client, user_id)
+    if budget_model == "EXHAUSTED":
+        print("[router] All LLMs exhausted for user.")
+        return {"type": "text", "content": "You've hit today's free-tier LLM limit. Please try again later.", "model_used": "system"}
     if budget_model == "ollama":
         print("[router] All Gemini tiers exhausted for user. Falling back to Ollama.")
         return await _ask_ollama(message, history)

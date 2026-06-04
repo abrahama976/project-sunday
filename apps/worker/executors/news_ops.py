@@ -109,11 +109,10 @@ Only include articles scoring >= 0.3. Headlines:
 Return ONLY the JSON array, nothing else."""
 
     try:
-        # Budget gate
         model_id = GEMINI_MODEL
         if db_client and user_id:
-            model_id = await pick_model(db_client, user_id)
-            if model_id == "ollama":
+            model_id = await pick_model(db_client, user_id, allow_flash=False)
+            if model_id == "EXHAUSTED" or model_id == "ollama":
                 print("[news] LLM budget exhausted — skipping scoring")
                 return articles  # return unscored
             await check_and_increment(db_client, user_id, model_id)

@@ -36,8 +36,8 @@ def _fetch_transcript(client, user_id: str, limit: int = 20) -> str:
 
 async def _summarise_with_budget(client_db, transcript: str, gemini_api_key: str, user_id: str) -> str:
     """Summarise using the budget gate to pick and record the model."""
-    model_id = await pick_model(client_db, user_id)
-    if model_id == "ollama":
+    model_id = await pick_model(client_db, user_id, allow_flash=False)
+    if model_id == "EXHAUSTED" or model_id == "ollama":
         print("[summariser] LLM budget exhausted — skipping summarisation")
         return "NOTHING_NEW"
     

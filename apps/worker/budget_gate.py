@@ -15,12 +15,17 @@ never double-count or produce stale reads.
 import asyncio
 from datetime import date
 
+import httpx
+
 from supabase import Client
 from config import (
     GEMINI_MODEL,
     GEMINI_LITE_MODEL,
     DAILY_FLASH_LIMIT,
+    GLOBAL_FLASH_CEILING,
     DAILY_LITE_LIMIT,
+    GLOBAL_LITE_CEILING,
+    OLLAMA_HOST,
 )
 
 # Canonical model tier names stored in the ledger
@@ -35,10 +40,11 @@ def _model_to_tier(model: str) -> str:
     # Everything else from Gemini counts as flash
     return TIER_FLASH
 
-def _tier_limit(tier: str) -> int:
+def _tier_limits(tier: str) -> tuple[int, int]:
+    """Return (daily_cap, global_ceiling) for a tier."""
     if tier == TIER_LITE:
-        return DAILY_LITE_LIMIT
-    return DAILY_FLASH_LIMIT
+        return DAILY_LITE_LIMIT, GLOBAL_LITE_CEILING
+    return DAILY_FLASH_LIMIT, GLOBAL_FLASH_CEILING
 
 
 async def get_usage(client: Client, user_id: str, tier: str) -> int:
@@ -57,13 +63,11 @@ async def get_usage(client: Client, user_id: str, tier: str) -> int:
 async def check_and_increment(client: Client, user_id: str, model: str) -> bool:
     """Atomically increment the ledger and return True if within budget.
 
-    If the increment would exceed the daily cap, the increment still lands
-    (so the count reflects the attempt), but False is returned to signal
-    the caller to downgrade.  This is safe: the next call to pick_model()
-    will see the over-budget tier and skip it.
+    Passes the daily and global caps directly to the Postgres RPC, which
+    enforces them transactionally and returns -1 if a cap is reached.
     """
     tier = _model_to_tier(model)
-    limit = _tier_limit(tier)
+    daily_cap, global_cap = _tier_limits(tier)
     today = date.today().isoformat()
 
     res = await asyncio.to_thread(
@@ -71,25 +75,40 @@ async def check_and_increment(client: Client, user_id: str, model: str) -> bool:
             "p_user_id": user_id,
             "p_date": today,
             "p_model": tier,
+            "p_daily_cap": daily_cap,
+            "p_global_cap": global_cap,
         }).execute()
     )
-    new_count = res.data if isinstance(res.data, int) else 0
-    return new_count <= limit
+    new_count = res.data if isinstance(res.data, int) else -1
+    return new_count > 0
 
 
-async def pick_model(client: Client, user_id: str) -> str:
+async def _probe_ollama() -> bool:
+    """Check if Ollama is running and responsive."""
+    try:
+        async with httpx.AsyncClient() as hc:
+            r = await hc.get(f"{OLLAMA_HOST}/api/version", timeout=1.0)
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+async def pick_model(client: Client, user_id: str, allow_flash: bool = True) -> str:
     """Return the best available model for this user right now.
 
-    Cascade: Flash → Lite → 'ollama'.
-    Does NOT increment — the caller must call check_and_increment() after
-    choosing, or use call_with_budget() for a convenient wrapper.
+    Cascade: Flash (if allow_flash) → Lite → 'ollama' (if online) → 'EXHAUSTED'.
+    Does NOT increment — the caller must call check_and_increment() after choosing.
     """
-    flash_usage = await get_usage(client, user_id, TIER_FLASH)
-    if flash_usage < DAILY_FLASH_LIMIT:
-        return GEMINI_MODEL  # "gemini-2.5-flash"
+    if allow_flash:
+        flash_usage = await get_usage(client, user_id, TIER_FLASH)
+        if flash_usage < DAILY_FLASH_LIMIT:
+            return GEMINI_MODEL  # "gemini-2.5-flash"
 
     lite_usage = await get_usage(client, user_id, TIER_LITE)
     if lite_usage < DAILY_LITE_LIMIT:
         return GEMINI_LITE_MODEL  # "gemini-2.5-flash-lite"
 
-    return "ollama"
+    if await _probe_ollama():
+        return "ollama"
+
+    return "EXHAUSTED"
