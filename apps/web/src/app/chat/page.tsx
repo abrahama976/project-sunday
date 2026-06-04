@@ -313,9 +313,11 @@ export default function ChatPage() {
     setError(null);
 
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not authenticated");
       const { data, error: insertErr } = await supabase
         .from("messages")
-        .insert({ role: "user", content: text, model_used: "user" })
+        .insert({ role: "user", content: text, model_used: "user", user_id: user.id })
         .select()
         .single();
 
