@@ -157,6 +157,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
   const [workerOffline, setWorkerOffline] = useState(false);
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "error">("reconnecting");
   const offlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -172,6 +173,9 @@ export default function ChatPage() {
 
   useEffect(() => {
     (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) setUserId(user.id);
+
       const { data: profile } = await supabase
         .from("user_profile")
         .select("content")
@@ -181,7 +185,6 @@ export default function ChatPage() {
         const match = profile.content.match(/^#\s+(.+)/m);
         if (match) { setUserName(match[1].trim()); return; }
       }
-      const { data: { user } } = await supabase.auth.getUser();
       if (user?.email) setUserName(user.email.split("@")[0]);
     })();
   }, [supabase]);
@@ -367,21 +370,51 @@ export default function ChatPage() {
       {/* Header with status */}
       <div style={{
         display: "flex",
-        justifyContent: "flex-end",
+        justifyContent: "space-between",
         alignItems: "center",
         padding: "var(--space-2) var(--space-4)",
-        fontSize: "0.6875rem",
-        color: "var(--color-text-faint)",
-        gap: "6px",
       }}>
-        {connStatus === "reconnecting" ? "Reconnecting..." : connStatus === "connected" ? "Connected" : "Offline"}
-        <span style={{
-          width: 6,
-          height: 6,
-          borderRadius: "50%",
-          background: connStatus === "connected" ? "var(--color-success, #6daa45)" : connStatus === "reconnecting" ? "var(--color-warning, #e8a020)" : "var(--color-danger, #c44d4d)",
-          display: "inline-block"
-        }} />
+        <button
+          onClick={async () => {
+            if (userId) {
+              await supabase.from("messages").delete().eq("user_id", userId);
+              setMessages([]);
+            }
+          }}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--color-text-faint)",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "var(--space-1)",
+          }}
+          title="Clear Chat"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </button>
+        
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          fontSize: "0.6875rem",
+          color: "var(--color-text-faint)",
+          gap: "6px",
+        }}>
+          {connStatus === "reconnecting" ? "Reconnecting..." : connStatus === "connected" ? "Connected" : "Offline"}
+          <span style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: connStatus === "connected" ? "var(--color-success, #6daa45)" : connStatus === "reconnecting" ? "var(--color-warning, #e8a020)" : "var(--color-danger, #c44d4d)",
+            display: "inline-block"
+          }} />
+        </div>
       </div>
 
       {/* Message stream */}

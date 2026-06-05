@@ -331,9 +331,9 @@ export default function DashboardPage() {
           </div>
           
           <div className="grouped-list">
-            {tasks.length > 0 ? (
-              tasks.map((task) => {
-                const isLoading = loadingTasks.has(task.id);
+            {(tasks?.length ?? 0) > 0 ? (
+              (tasks || []).map((task) => {
+                const isLoading = loadingTasks?.has(task.id);
                 
                 return (
                   <div key={task.id} className="grouped-list-item" style={{
