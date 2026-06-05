@@ -1,3 +1,4 @@
+import asyncio
 from supabase import Client
 
 _executed: set[str] = set()
@@ -12,4 +13,4 @@ async def set_status(client: Client, action_id: str, status: str, error: dict = 
     update = {"status": status}
     if error:
         update["error"] = error
-    client.table("action_queue").update(update).eq("id", action_id).execute()
+    await asyncio.to_thread(lambda: client.table("action_queue").update(update).eq("id", action_id).execute())

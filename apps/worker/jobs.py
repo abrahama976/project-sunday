@@ -813,7 +813,9 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
         print(f"[jobs] Failed to save daily brief for {user_id[:8]}: {e}")
 
 async def send_daily_brief_for_all_users(client: Client, gemini_api_key: str) -> None:
-    result = client.table("user_profile").select("user_id").execute()
+    result = await asyncio.to_thread(
+        lambda: client.table("user_profile").select("user_id").execute()
+    )
     for row in (result.data or []):
         try:
             await send_daily_brief(client, row["user_id"])
