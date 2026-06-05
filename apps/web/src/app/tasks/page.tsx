@@ -7,7 +7,7 @@ type Task = {
   id: string;
   title: string;
   status: "open" | "done";
-  priority: 1 | 2 | 3;
+  priority: 0 | 1 | 2 | 3;
   due_date: string | null;
   category: string | null;
   is_archived: boolean;
@@ -21,7 +21,7 @@ function isTask(x: unknown): x is Task {
     typeof o.id === "string" &&
     typeof o.title === "string" &&
     (o.status === "open" || o.status === "done") &&
-    (o.priority === 1 || o.priority === 2 || o.priority === 3) &&
+    (o.priority === 0 || o.priority === 1 || o.priority === 2 || o.priority === 3) &&
     (o.due_date === null || typeof o.due_date === "string") &&
     (o.category === null || typeof o.category === "string") &&
     typeof o.is_archived === "boolean" &&
@@ -29,8 +29,9 @@ function isTask(x: unknown): x is Task {
   );
 }
 
-const PRIORITY_LABELS: Record<1 | 2 | 3, string> = { 1: "Low", 2: "Normal", 3: "High" };
-const PRIORITY_COLORS: Record<1 | 2 | 3, string> = {
+const PRIORITY_LABELS: Record<0 | 1 | 2 | 3, string> = { 0: "None", 1: "Low", 2: "Normal", 3: "High" };
+const PRIORITY_COLORS: Record<0 | 1 | 2 | 3, string> = {
+  0: "var(--color-text-faint)",
   1: "var(--color-text-faint)",
   2: "var(--color-primary)",
   3: "var(--color-danger)",
@@ -186,17 +187,10 @@ export default function TasksPage() {
       }}>
         {tasks.length === 0 && !error && (
           <div style={{
-            margin: "auto",
-            textAlign: "center",
-            color: "var(--color-text-faint)",
-            paddingTop: "4rem",
+            padding: "var(--space-8)", textAlign: "center",
+            color: "var(--color-text-faint)", fontSize: "0.875rem",
           }}>
-            <p style={{ fontSize: "1rem", color: "var(--color-text-muted)", fontWeight: 500 }}>
-              No open tasks.
-            </p>
-            <p style={{ fontSize: "0.8125rem", marginTop: "var(--space-2)" }}>
-              Enjoy the clear day!
-            </p>
+            No open tasks. Add one from the Schedule page.
           </div>
         )}
 

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import NotificationPanel from "./NotificationPanel";
 
 /* ── Tab definitions ──────────────────────────────────────── */
 const TABS = [
@@ -131,6 +132,9 @@ export default function NavBar() {
         }}>
           Project Sunday
         </span>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <NotificationPanel />
+        </div>
       </header>
 
       {/* Bottom tab bar */}
