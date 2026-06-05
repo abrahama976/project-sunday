@@ -9,7 +9,7 @@ GEMINI_LITE_MODEL = "gemini-2.5-flash-lite"
 GEMINI_PRO_MODEL = "gemini-2.5-pro"
 # Extended free-tier cascade models
 GEMINI_FLASH2_MODEL = "gemini-2.0-flash"     # 1,500 RPD free
-GEMINI_FLASH15_MODEL = "gemini-1.5-flash"    # 1,500 RPD free
+GEMINI_FLASH15_MODEL = "gemini-2.0-flash-lite"    # 1,500 RPD free
 # Per-user daily limits for new tiers
 DAILY_FLASH2_LIMIT = 500
 GLOBAL_FLASH2_CEILING = 1000
