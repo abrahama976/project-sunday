@@ -1,24 +1,52 @@
+"""Web search — Tavily primary, DuckDuckGo fallback.
+Preserves existing function signature: web_search(query, max_results) -> str
+All callers continue to work without changes.
+"""
 import asyncio
-from ddgs import DDGS
-
+from config import TAVILY_API_KEY
 async def web_search(query: str, max_results: int = 3) -> str:
-    """Perform a web search using duckduckgo-search and return a clean text summary."""
+    """Search the web. Returns formatted string of results.
+    Uses Tavily if TAVILY_API_KEY is set, otherwise DuckDuckGo.
+    """
+    results = []
+    if TAVILY_API_KEY:
+        results = await _tavily_search(query, max_results)
+    if not results:
+        results = await _ddgs_search(query, max_results)
+    if not results:
+        return f"No search results found for query: '{query}'."
+    output = [f"Search Results for '{query}':\n"]
+    for idx, r in enumerate(results, start=1):
+        output.append(
+            f"{idx}. {r['title']}\n"
+            f"   URL: {r['url']}\n"
+            f"   Snippet: {r['content']}\n"
+        )
+    return "\n".join(output)
+async def _tavily_search(query: str, max_results: int) -> list[dict]:
     try:
-        def do_search():
-            return list(DDGS().text(query, max_results=max_results))
-            
-        results = await asyncio.to_thread(do_search)
-        
-        if not results:
-            return f"No search results found for query: '{query}'."
-            
-        output = [f"Search Results for '{query}':\n"]
-        for idx, res in enumerate(results, start=1):
-            title = res.get("title", "No Title")
-            url = res.get("href", "No URL")
-            snippet = res.get("body", "No description available.")
-            output.append(f"{idx}. {title}\n   URL: {url}\n   Snippet: {snippet}\n")
-            
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error performing web search for '{query}': {e}"
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        resp = await asyncio.to_thread(
+            lambda: client.search(query, max_results=max_results, search_depth="basic")
+        )
+        return [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
+            for r in resp.get("results", [])
+        ]
+    except Exception as exc:
+        print(f"[search] Tavily error: {exc} — falling back to DuckDuckGo")
+        return []
+async def _ddgs_search(query: str, max_results: int) -> list[dict]:
+    try:
+        from duckduckgo_search import DDGS
+        results = await asyncio.to_thread(
+            lambda: list(DDGS().text(query, max_results=max_results))
+        )
+        return [
+            {"title": r.get("title", ""), "url": r.get("href", ""), "content": r.get("body", "")}
+            for r in results
+        ]
+    except Exception as exc:
+        print(f"[search] DuckDuckGo error: {exc}")
+        return []
