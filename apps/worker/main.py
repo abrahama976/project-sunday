@@ -11,7 +11,7 @@ from config import (
     APPROVAL_POLL_INTERVAL_SECONDS,
 )
 from heartbeat import run_heartbeat
-from router import route, _generate_with_retry
+from router import route
 from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
@@ -80,7 +80,7 @@ async def _llm_confirmation(gemini_api_key: str, tool: str, args: dict, result) 
             "Maximum 2 sentences. Start directly — no preamble."
         )
         ai_client = genai.Client(api_key=gemini_api_key)
-        response = await _generate_with_retry(
+        response = await asyncio.to_thread(
             lambda: ai_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
