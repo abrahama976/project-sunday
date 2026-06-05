@@ -28,6 +28,34 @@ from executors.calendar_ops import calendar_query, calendar_create, calendar_upd
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
 
+# ── Tool executor registry ─────────────────────────────────────────────────
+# Maps action_type string → async callable.
+# To add a new tool: import the function and add one line here.
+# Args are unpacked as kwargs: await TOOL_REGISTRY[tool](**args)
+# For tools that need (client, user_id, **args), wrap them in a lambda below.
+def _make_registry(client_ref: list, user_id_ref: list) -> dict:
+    """Build registry with late-bound client/user_id refs for tools that need them."""
+    return {
+        "file_read":           file_read,
+        "file_list":           file_list,
+        "file_write":          file_write,
+        "web_fetch":           web_fetch,
+        "web_search":          web_search,
+        "travel_directions":   travel_directions,
+        "transit_departures":  transit_departures,
+        "calendar_query":      calendar_query,
+        "calendar_create":     calendar_create,
+        "calendar_update":     calendar_update,
+        "gmail_search":        gmail_search,
+        "gmail_draft":         gmail_draft,
+        "gmail_read_body":     gmail_read_body,
+        "gmail_priority_scan": gmail_priority_scan,
+        "update_profile":      lambda **kw: update_profile(client_ref[0], user_id_ref[0], **kw),
+        "task_create":         lambda **kw: task_create(client_ref[0], user_id=user_id_ref[0], **kw),
+        "task_update":         lambda **kw: task_update(client_ref[0], user_id=user_id_ref[0], **kw),
+        "task_list":           lambda **kw: task_list(client_ref[0], user_id=user_id_ref[0], **kw),
+    }
+
 def get_client() -> Client:
     return create_client(SUPABASE_URL, get_service_role_key())
 
@@ -65,49 +93,24 @@ async def execute_action(client: Client, action: dict):
     mark_executed(idempotency_key)
 
     try:
-        if tool == "file_read":
-            result = await file_read(**args)
-        elif tool == "file_list":
-            result = await file_list(**args)
-        elif tool == "file_write":
-            result = await file_write(**args)
-        elif tool == "update_profile":
+        # Build registry with this action's client and user_id bound
+        _c = [client]
+        _u = [user_id]
+        registry = _make_registry(_c, _u)
+        
+        if tool not in registry:
+            raise NotImplementedError(f"Executor for '{tool}' not yet implemented")
+            
+        # Special-case: update_profile needs section + content validated
+        if tool == "update_profile":
             section = args.get("section", "General")
             content = args.get("content", "")
             if not section or not content:
                 result = "Error: section and content are required."
             else:
-                result = await update_profile(client, user_id, section, content)
-        elif tool == "web_fetch":
-            result = await web_fetch(**args)
-        elif tool == "web_search":
-            result = await web_search(**args)
-        elif tool == "travel_directions":
-            result = await travel_directions(**args)
-        elif tool == "transit_departures":
-            result = await transit_departures(**args)
-        elif tool == "calendar_query":
-            result = await calendar_query(**args)
-        elif tool == "calendar_create":
-            result = await calendar_create(**args)
-        elif tool == "calendar_update":
-            result = await calendar_update(**args)
-        elif tool == "gmail_search":
-            result = await gmail_search(**args)
-        elif tool == "gmail_draft":
-            result = await gmail_draft(**args)
-        elif tool == "gmail_read_body":
-            result = await gmail_read_body(**args)
-        elif tool == "gmail_priority_scan":
-            result = await gmail_priority_scan(**args)
-        elif tool == "task_create":
-            result = await task_create(client, user_id=user_id, **args)
-        elif tool == "task_update":
-            result = await task_update(client, user_id=user_id, **args)
-        elif tool == "task_list":
-            result = await task_list(client, user_id=user_id, **args)
+                result = await registry[tool](section=section, content=content)
         else:
-            raise NotImplementedError(f"Executor for '{tool}' not yet implemented")
+            result = await registry[tool](**args)
 
         await set_status(client, action_id, "executed")
         await asyncio.to_thread(
