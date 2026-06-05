@@ -59,9 +59,14 @@ async def _summarise_with_budget(client_db, transcript: str, gemini_api_key: str
             ),
         )
     )
-    return "".join(
-        p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text
-    ).strip()
+    return (
+        "".join(
+            p.text for p in response.candidates[0].content.parts
+            if hasattr(p, "text") and p.text
+        ).strip()
+        if response and response.candidates and response.candidates[0].content
+        else "NOTHING_NEW"
+    )
 
 
 async def maybe_summarise(client, gemini_api_key: str, message_count: int, user_id: str) -> None:

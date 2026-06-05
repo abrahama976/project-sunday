@@ -358,7 +358,14 @@ async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
                             config=types.GenerateContentConfig(max_output_tokens=1000)
                         )
                     )
-                    summary = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
+                    summary = (
+                        "".join(
+                            p.text for p in response.candidates[0].content.parts
+                            if hasattr(p, "text") and p.text
+                        ).strip()
+                        if response and response.candidates and response.candidates[0].content
+                        else ""
+                    )
                 
                     await asyncio.to_thread(
                         lambda: client.table("message_summaries").insert({
