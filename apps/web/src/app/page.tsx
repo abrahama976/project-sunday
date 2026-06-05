@@ -88,6 +88,28 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [approvalsCount, setApprovalsCount] = useState(0);
   const [loadingTasks, setLoadingTasks] = useState<Set<string>>(new Set());
+  const [refreshingBrief, setRefreshingBrief] = useState(false);
+
+  const refreshBrief = async () => {
+    setRefreshingBrief(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { data } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("role", "assistant")
+        .eq("model_used", "system")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data && isMessage(data)) {
+        setBrief(data);
+      }
+    }
+    setRefreshingBrief(false);
+  };
+
 
   useEffect(() => {
     let cancelled = false;
@@ -254,9 +276,32 @@ export default function DashboardPage() {
 
         {/* Daily brief card */}
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)", marginLeft: "2px" }}>
-            Daily Brief
-          </h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginLeft: "2px", marginRight: "2px" }}>
+            <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
+              Daily Brief
+            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+              {brief && (
+                <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
+                  Updated at {new Date(brief.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                </span>
+              )}
+              <button
+                onClick={refreshBrief}
+                disabled={refreshingBrief}
+                style={{
+                  fontSize: "0.75rem",
+                  color: "var(--color-primary)",
+                  background: "none",
+                  border: "none",
+                  cursor: refreshingBrief ? "default" : "pointer",
+                  opacity: refreshingBrief ? 0.5 : 1,
+                }}
+              >
+                {refreshingBrief ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+          </div>
           <Card>
             {brief ? (
               <div className="markdown-body">
