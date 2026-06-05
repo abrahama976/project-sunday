@@ -247,4 +247,16 @@ TOOLS = [
             "required": []
         }
     },
+    {
+        "name": "schedule_reminder",
+        "description": "Schedule a one-off reminder for the user at a specific time. Use this when the user says things like 'remind me in 2 hours', 'remind me at 3pm', 'don't let me forget X'. Always confirm the remind_at time back to the user in their local timezone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The reminder text"},
+                "remind_at_iso": {"type": "string", "description": "ISO 8601 datetime with timezone"}
+            },
+            "required": ["message", "remind_at_iso"]
+        }
+    },
 ]
