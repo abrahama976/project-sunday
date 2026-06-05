@@ -36,6 +36,18 @@ def build_system_prompt() -> str:
     )
     if profile:
         base += f"\n\n--- USER PROFILE ---\n{profile}\n--- END PROFILE ---\n"
+        
+    base += (
+        "\n\nFORMATTING RULES:\n"
+        "- Always respond in clean markdown.\n"
+        "- Use **bold** for key terms and names.\n"
+        "- Use bullet lists (- item) for multiple items, steps, or options.\n"
+        "- Use ### headers only for long structured responses (>4 paragraphs).\n"
+        "- For simple conversational replies, use plain prose — no headers.\n"
+        "- Never output raw Python dicts, JSON objects, or code unless explicitly asked.\n"
+        "- Keep replies concise. If the user wants more detail, they will ask.\n"
+        "- You are a personal assistant named Sunday. Always refer to yourself as Sunday.\n"
+    )
     return base
 
 async def _ask_ollama(message: str, history: list[dict]) -> dict:
