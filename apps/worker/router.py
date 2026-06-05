@@ -95,7 +95,7 @@ async def _ask_groq(message: str, history: list[dict]) -> dict:
             max_tokens=GEMINI_MAX_TOKENS,
             temperature=GEMINI_TEMPERATURE,
         )
-        reply = response.choices.message.content or "No response from Groq."
+        reply = response.choices[0].message.content or "No response from Groq."
         return {"type": "text", "content": reply, "model_used": "groq"}
     except Exception as e:
         print(f"[router] Groq failed: {e}")
