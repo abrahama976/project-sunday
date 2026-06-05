@@ -154,14 +154,16 @@ def _calendar_update_sync(
 def _sync_calendar_events_sync(client) -> str:
     service = _get_calendar_service()
     now = datetime.now(timezone.utc)
-    time_min = now.isoformat()
-    time_max = (now + timedelta(days=14)).isoformat()
+    # Start from beginning of today UTC so past events today are included
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    time_min = today_start.isoformat()
+    time_max = (now + timedelta(days=30)).isoformat()
     
     result = service.events().list(
         calendarId="primary",
         timeMin=time_min,
         timeMax=time_max,
-        maxResults=200,
+        maxResults=500,
         singleEvents=True,
         orderBy="startTime",
     ).execute()

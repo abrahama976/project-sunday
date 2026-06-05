@@ -36,8 +36,28 @@ def build_system_prompt() -> str:
     )
     if profile:
         base += f"\n\n--- USER PROFILE ---\n{profile}\n--- END PROFILE ---\n"
-    return base
+        
+    base += (
+        "\n\nFORMATTING RULES:\n"
+        "- Always respond in clean markdown.\n"
+        "- Use **bold** for key terms and names.\n"
+        "- Use bullet lists (- item) for multiple items, steps, or options.\n"
+        "- Use ### headers only for long structured responses (>4 paragraphs).\n"
+        "- For simple conversational replies, use plain prose — no headers.\n"
+        "- Never output raw Python dicts, JSON objects, or code unless explicitly asked.\n"
+        "- Keep replies concise. If the user wants more detail, they will ask.\n"
+        "- You are a personal assistant named Sunday. Always refer to yourself as Sunday.\n"
+    )
 
+    import os
+    brain_path = os.path.join(os.path.dirname(__file__), "context", "brain_growth.md")
+    try:
+        with open(brain_path, "r", encoding="utf-8") as f:
+            base += f"\n\n{f.read()}\n"
+    except Exception as e:
+        print(f"[router] could not read brain_growth.md: {e}")
+
+    return base
 async def _ask_ollama(message: str, history: list[dict]) -> dict:
     from ollama import AsyncClient
     

@@ -691,60 +691,111 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     import datetime
     import json
     import asyncio
+    import re
+    from zoneinfo import ZoneInfo
     
-    today = datetime.date.today()
-    formatted_date = today.strftime("%A, %d %B")
-
-    # Calendar
-    try:
-        from executors.calendar_ops import calendar_query
-        cal_res = await calendar_query(query="", days_ahead=1)
-        cal_text = "Nothing scheduled today." if "No events found" in cal_res else cal_res
-    except Exception as e:
-        cal_text = f"Nothing scheduled today. (Error: {e})"
+    # User Profile
+    profile_res = await asyncio.to_thread(lambda: client.table("user_profile").select("name").eq("user_id", user_id).limit(1).maybe_single().execute())
+    name = profile_res.data.get("name", "there") if profile_res.data else "there"
+    
+    loc_result = await asyncio.to_thread(lambda: client.table("user_location").select("timezone").eq("user_id", user_id).limit(1).maybe_single().execute())
+    tz_str = loc_result.data.get("timezone", "Australia/Sydney") if loc_result.data else "Australia/Sydney"
+    
+    tz = ZoneInfo(tz_str)
+    today = datetime.datetime.now(tz)
+    formatted_date = today.strftime("%A, %-d %B %Y")
+    
+    out = []
+    out.append(f"## Good morning, {name} ☀️")
+    out.append(f"**{formatted_date}**")
+    
+    # Schedule
+    out.append("### 📅 Today's Schedule")
+    startOfDay = today.replace(hour=0, minute=0, second=0, microsecond=0)
+    endOfDay = today.replace(hour=23, minute=59, second=59, microsecond=999)
+    events_res = await asyncio.to_thread(lambda: client.table("calendar_events").select("*").eq("user_id", user_id).gte("start_time", startOfDay.isoformat()).lte("start_time", endOfDay.isoformat()).order("start_time").execute())
+    events = events_res.data or []
+    if not events:
+        out.append("- *Nothing to report*")
+    else:
+        for ev in events:
+            # check if all day
+            st = datetime.datetime.fromisoformat(ev["start_time"].replace("Z", "+00:00")).astimezone(tz)
+            en = datetime.datetime.fromisoformat(ev["end_time"].replace("Z", "+00:00")).astimezone(tz)
+            if st.hour == 0 and st.minute == 0 and en.hour == 0 and en.minute == 0:
+                time_str = "All day"
+            else:
+                time_str = st.strftime("%-I:%M %p")
+            line = f"- **{time_str}** — {ev['title']}"
+            if ev.get("location"):
+                loc = ev['location']
+                if len(loc) > 40:
+                    loc = loc[:37] + "..."
+                line += f" *({loc})*"
+            out.append(line)
 
     # Tasks
-    try:
-        from executors.task_ops import task_list
-        tasks_res = await task_list(client, user_id, status="open")
-        tasks_text = "Clear — enjoy the day." if tasks_res == "No tasks found." else tasks_res
-    except Exception as e:
-        tasks_text = f"Clear — enjoy the day. (Error: {e})"
+    out.append("### ✅ Tasks Due Today")
+    tasks_res = await asyncio.to_thread(lambda: client.table("tasks").select("*").eq("user_id", user_id).eq("status", "open").eq("is_archived", False).lte("due_date", startOfDay.date().isoformat()).execute())
+    tasks = tasks_res.data or []
+    if not tasks:
+        out.append("- Clear — enjoy the day.")
+    else:
+        for t in tasks:
+            out.append(f"- {t['title']}")
 
-    # Inbox
+    # Emails
+    out.append("### 📬 Inbox Highlights")
+    BRIEF_EMAIL_SKIP_SENDERS = [
+        "notifications@github.com",
+        "noreply@github.com",
+        "noreply@vercel.com",
+        "no-reply@",
+        "donotreply@",
+        "mailer-daemon@",
+    ]
     try:
         from executors.gmail_ops import gmail_priority_scan
-        email_res = await gmail_priority_scan(max_results=5)
-        if "No unread" in email_res:
-            email_text = "Nothing urgent."
+        email_res = await gmail_priority_scan(max_results=10)
+        emails = json.loads(email_res)
+        valid_emails = []
+        for e in emails:
+            sender = e.get("from", "")
+            if not any(skip in sender.lower() for skip in BRIEF_EMAIL_SKIP_SENDERS):
+                valid_emails.append(e)
+        if not valid_emails:
+            out.append("- *Nothing to report*")
         else:
-            try:
-                emails = json.loads(email_res)
-                if not emails:
-                    email_text = "Nothing urgent."
-                else:
-                    email_text = "\n".join([f"- **{e.get('from', 'Unknown')}**: {e.get('subject', '(No subject)')}" for e in emails])
-            except Exception:
-                email_text = email_res
+            for e in valid_emails[:5]:
+                sender = e.get("from", "Unknown")
+                # Extract display name
+                if "<" in sender:
+                    sender = sender.split("<")[0].strip().strip('"')
+                out.append(f"- **{sender}**: {e.get('subject', '(No subject)')}")
     except Exception as e:
-        email_text = f"Nothing urgent. (Error: {e})"
+        out.append("- *Nothing to report*")
 
-    content = "\n".join([
-        f"☀️ **Good morning — {formatted_date}**",
-        "**Your day:**",
-        cal_text,
-        "**Open tasks:**",
-        tasks_text,
-        "**Inbox:**",
-        email_text
-    ])
+    # News
+    out.append("### 🗞 News")
+    news_res = await asyncio.to_thread(lambda: client.table("news_items").select("*").eq("user_id", user_id).eq("surfaced", False).order("relevance", desc=True).limit(3).execute())
+    news = news_res.data or []
+    if not news:
+        out.append("- *Nothing to report*")
+    else:
+        for n in news:
+            out.append(f"- {n['title']}")
+            await asyncio.to_thread(lambda: client.table("news_items").update({"surfaced": True}).eq("id", n["id"]).execute())
+
+    full_text = "\n".join(out)
+    if len(full_text) > 800:
+        full_text = full_text[:797] + "..."
 
     try:
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
                 "user_id": user_id,
                 "role": "assistant",
-                "content": content,
+                "content": full_text,
                 "model_used": "system",
             }).execute()
         )

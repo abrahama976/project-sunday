@@ -141,20 +141,28 @@ def _gmail_read_body_sync(message_id: str) -> str:
 
 
 # ── Priority Scan ──────────────────────────────────────────────
-def _gmail_priority_scan_sync(max_results: int = 5) -> str:
+def _gmail_priority_scan_sync(max_results: int = 20) -> str:
     """Scan recent unread important emails, return structured summary."""
-    max_results = max(1, min(max_results, 10))
+    max_results = max(1, min(max_results, 20))
     service = _get_gmail_service()
 
-    # Search for unread important emails
+    # Query 1: Important + unread (Gmail's own importance marker)
+    query = "is:unread is:important -category:promotions -category:social"
+
     listed = (
         service.users()
         .messages()
-        .list(userId="me", q="is:unread is:important", maxResults=max_results)
+        .list(userId="me", q=query, maxResults=max_results)
         .execute()
     )
 
-    message_ids = [m["id"] for m in listed.get("messages", [])]
+    message_ids = []
+    seen = set()
+    for m in listed.get("messages", []):
+        if m["id"] not in seen:
+            seen.add(m["id"])
+            message_ids.append(m["id"])
+
     if not message_ids:
         return "No unread important emails."
 

@@ -369,8 +369,20 @@ async def main():
                         continue
                         
                     if latest["id"] != last_processed_ids.get(uid):
+                        # Claim the message — only process if claim succeeds (no other brain claimed it)
+                        claim_res = await asyncio.to_thread(
+                            lambda msg=latest: client.table("messages")
+                            .update({"claimed_by": "mac"})
+                            .eq("id", msg["id"])
+                            .is_("claimed_by", "null")
+                            .execute()
+                        )
+                        if not claim_res.data:
+                            # Another brain already claimed this — skip
+                            continue
+
                         history = await asyncio.to_thread(
-                            lambda: client.table("messages").select("role,content").eq("user_id", uid).order("created_at", desc=True).limit(20).execute()
+                            lambda u=uid: client.table("messages").select("role,content").eq("user_id", u).order("created_at", desc=True).limit(20).execute()
                         )
                         history_list = list(reversed(history.data or []))
                         if await handle_message(client, latest, history_list, uid):
