@@ -706,10 +706,10 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     
     # User Profile
     profile_res = await asyncio.to_thread(lambda: client.table("user_profile").select("name").eq("user_id", user_id).limit(1).maybe_single().execute())
-    name = profile_res.data.get("name", "there") if profile_res.data else "there"
+    name = profile_res.data.get("name", "there") if (profile_res and profile_res.data) else "there"
     
     loc_result = await asyncio.to_thread(lambda: client.table("user_location").select("timezone").eq("user_id", user_id).limit(1).maybe_single().execute())
-    tz_str = loc_result.data.get("timezone", "Australia/Sydney") if loc_result.data else "Australia/Sydney"
+    tz_str = loc_result.data.get("timezone", "Australia/Sydney") if (loc_result and loc_result.data) else "Australia/Sydney"
     
     tz = ZoneInfo(tz_str)
     today = datetime.datetime.now(tz)
@@ -729,7 +729,7 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     startOfDay = today.replace(hour=0, minute=0, second=0, microsecond=0)
     endOfDay = today.replace(hour=23, minute=59, second=59, microsecond=999)
     events_res = await asyncio.to_thread(lambda: client.table("calendar_events").select("*").eq("user_id", user_id).gte("start_time", startOfDay.isoformat()).lte("start_time", endOfDay.isoformat()).order("start_time").execute())
-    events = events_res.data or []
+    events = (events_res.data if events_res else None) or []
     if not events:
         out.append("- *Nothing to report*")
     else:
@@ -752,7 +752,7 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     # Tasks
     out.append("### ✅ Tasks Due Today")
     tasks_res = await asyncio.to_thread(lambda: client.table("tasks").select("*").eq("user_id", user_id).eq("status", "open").eq("is_archived", False).lte("due_date", startOfDay.date().isoformat()).execute())
-    tasks = tasks_res.data or []
+    tasks = (tasks_res.data if tasks_res else None) or []
     if not tasks:
         out.append("- Clear — enjoy the day.")
     else:
@@ -793,7 +793,7 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     # News
     out.append("### 🗞 News")
     news_res = await asyncio.to_thread(lambda: client.table("news_items").select("*").eq("user_id", user_id).eq("surfaced", False).order("relevance", desc=True).limit(3).execute())
-    news = news_res.data or []
+    news = (news_res.data if news_res else None) or []
     if not news:
         out.append("- *Nothing to report*")
     else:
@@ -823,7 +823,8 @@ async def send_daily_brief_for_all_users(client: Client, gemini_api_key: str) ->
     result = await asyncio.to_thread(
         lambda: client.table("user_profile").select("user_id").execute()
     )
-    for row in (result.data or []):
+    users = result.data if (result and result.data) else []
+    for row in users:
         try:
             await send_daily_brief(client, row["user_id"])
         except Exception as e:
