@@ -175,20 +175,23 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
             
             if tasks:
                 inserted = 0
-                for t in tasks:
+                async def _insert_task(task_data: dict) -> None:
                     await asyncio.to_thread(
-                        lambda: client.table("tasks").insert({
-                            "user_id": user_id,
-                            "title": t["title"],
-                            "tags": t.get("tags", []),
-                            "flexibility_score": t.get("flexibility_score", 3),
-                            "category": "personal",
-                            "source": "chat",
-                            "priority": 2,
-                            "status": "open",
-                            "is_archived": False,
-                        }).execute()
+                        lambda: client.table("tasks").insert(task_data).execute()
                     )
+
+                for t in tasks:
+                    await _insert_task({
+                        "user_id": user_id,
+                        "title": t["title"],
+                        "tags": t.get("tags", []),
+                        "flexibility_score": t.get("flexibility_score", 3),
+                        "category": "personal",
+                        "source": "chat",
+                        "priority": 2,
+                        "status": "open",
+                        "is_archived": False,
+                    })
                     inserted += 1
                 
                 reply = f"I created {inserted} tasks from your brain-dump. Here is what I categorized:\n"
