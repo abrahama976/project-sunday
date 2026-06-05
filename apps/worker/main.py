@@ -18,6 +18,7 @@ from google_auth import verify_all_tokens
 from scheduler import Scheduler
 from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief, sync_calendar_job
 from executors.base import already_executed, mark_executed, set_status
+from executors.notify_ops import push_approval
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
@@ -173,6 +174,9 @@ async def handle_message(client: Client, message: dict, history: list, user_id: 
                 "approved": True if tier == "auto" else None
             }).execute()
         )
+        
+        if tier != "auto":
+            await push_approval(action_type=tool, summary=str(result.get("args", "")))
 
         if tier == "approve":
             await asyncio.to_thread(

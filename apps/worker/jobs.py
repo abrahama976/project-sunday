@@ -17,6 +17,8 @@ from google import genai
 from google.genai import types
 from config import GEMINI_MODEL, GEMINI_MAX_TOKENS
 from budget_gate import pick_model, check_and_increment
+from executors.weather_ops import get_today_weather
+from executors.notify_ops import push_brief_ready, push_approval
 
 
 async def morning_briefing(client: Client, gemini_api_key: str) -> None:
@@ -709,6 +711,11 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     out.append(f"## Good morning, {name} ☀️")
     out.append(f"**{formatted_date}**")
     
+    weather = await get_today_weather()
+    weather_line = weather.get("summary_line", "") if weather else ""
+    if weather_line:
+        out.append(f"Today's weather (Sydney): {weather_line}")
+    
     # Schedule
     out.append("### 📅 Today's Schedule")
     startOfDay = today.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -799,6 +806,7 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
                 "model_used": "system",
             }).execute()
         )
+        await push_brief_ready()
         print(f"[jobs] Daily brief sent for {user_id[:8]}")
     except Exception as e:
         print(f"[jobs] Failed to save daily brief for {user_id[:8]}: {e}")
