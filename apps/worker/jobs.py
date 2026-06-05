@@ -19,6 +19,7 @@ from config import GEMINI_MODEL, GEMINI_MAX_TOKENS
 from budget_gate import pick_model, check_and_increment
 from executors.weather_ops import get_today_weather
 from executors.notify_ops import push_brief_ready, push_approval
+from utils import generate_with_retry
 
 
 async def morning_briefing(client: Client, gemini_api_key: str) -> None:
@@ -151,7 +152,7 @@ Rules:
                 content = "⚠️ Briefing generation skipped: LLM budget exhausted."
             else:
                 await check_and_increment(client, uid, model_id)
-                response = await asyncio.to_thread(
+                response = await generate_with_retry(
                     lambda: ai_client.models.generate_content(
                         model=model_id,
                         contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
@@ -246,7 +247,7 @@ Is there a free 15-minute window in the next 2 hours? Reply YES or NO only."""
             await check_and_increment(client, uid, model_id)
 
             ai_client = genai.Client(api_key=gemini_api_key)
-            response = await asyncio.to_thread(
+            response = await generate_with_retry(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
                     contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
@@ -350,7 +351,7 @@ async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
                 else:
                     await check_and_increment(client, uid, model_id)
                     ai_client = genai.Client(api_key=gemini_api_key)
-                    response = await asyncio.to_thread(
+                    response = await generate_with_retry(
                         lambda: ai_client.models.generate_content(
                             model=model_id,
                             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
@@ -415,7 +416,7 @@ Calendar string:
 {events_str}
 Return ONLY valid JSON (no markdown block)."""
             
-            response_ext = await asyncio.to_thread(
+            response_ext = await generate_with_retry(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
                     contents=[types.Content(role="user", parts=[types.Part(text=prompt_extract)])],
@@ -564,7 +565,7 @@ Write a very short, casual 1-sentence nudge for the chat interface. Be friendly.
             await check_and_increment(client, uid, model_id)
 
             ai_client = genai.Client(api_key=gemini_api_key)
-            response = await asyncio.to_thread(
+            response = await generate_with_retry(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
                     contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
