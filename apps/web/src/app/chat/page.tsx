@@ -158,7 +158,9 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
   const [workerOffline, setWorkerOffline] = useState(false);
+  const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "error">("reconnecting");
   const offlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const clearOfflineTimer = () => {
     if (offlineTimerRef.current) {
@@ -243,20 +245,24 @@ export default function ChatPage() {
       }
     );
 
-    let channel: ReturnType<typeof supabase.channel> | null = null;
     let pollInterval: number | undefined;
 
-    void (async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+    const setupRealtimeChannel = async () => {
+      if (cancelled) return;
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+      const { data: { session } } = await supabase.auth.getSession();
       if (cancelled) return;
       if (session?.access_token) {
         await supabase.realtime.setAuth(session.access_token);
       }
 
-      channel = supabase
-        .channel("messages-realtime")
+      const channel = supabase.channel("messages-realtime");
+      channelRef.current = channel;
+
+      channel
         .on(
           "postgres_changes",
           { event: "INSERT", schema: "public", table: "messages" },
@@ -267,29 +273,40 @@ export default function ChatPage() {
             if (row.role === "assistant") clearOfflineTimer();
           }
         )
+        .on('system', { event: 'disconnect' }, () => {
+          if (cancelled) return;
+          setConnStatus("reconnecting");
+          setTimeout(() => {
+            if (!cancelled) setupRealtimeChannel();
+          }, 3000);
+        })
         .subscribe((status, err) => {
           if (cancelled) return;
           if (status === "SUBSCRIBED") {
+            setConnStatus("connected");
             void loadHistory();
           } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            setError(
-              `Realtime unavailable: ${err?.message ?? status}. Refresh to see new messages.`
-            );
+            setConnStatus("error");
+            setError(`Realtime unavailable: ${err?.message ?? status}. Refresh to see new messages.`);
             void loadHistory();
           }
         });
+    };
+
+    void setupRealtimeChannel();
 
       // Polling fallback: re-fetch every 4s in case Realtime drops assistant messages
       pollInterval = setInterval(() => {
         void loadHistory();
       }, 4000) as unknown as number;
-    })();
+    // End of setupRealtimeChannel
+
 
     return () => {
       cancelled = true;
       clearInterval(pollInterval);
       authListener.subscription.unsubscribe();
-      if (channel) supabase.removeChannel(channel);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
   }, [supabase]);
 
@@ -347,11 +364,31 @@ export default function ChatPage() {
       height: "calc(100dvh - var(--nav-top-h))",
       paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
     }}>
+      {/* Header with status */}
+      <div style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        alignItems: "center",
+        padding: "var(--space-2) var(--space-4)",
+        fontSize: "0.6875rem",
+        color: "var(--color-text-faint)",
+        gap: "6px",
+      }}>
+        {connStatus === "reconnecting" ? "Reconnecting..." : connStatus === "connected" ? "Connected" : "Offline"}
+        <span style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: connStatus === "connected" ? "var(--color-success, #6daa45)" : connStatus === "reconnecting" ? "var(--color-warning, #e8a020)" : "var(--color-danger, #c44d4d)",
+          display: "inline-block"
+        }} />
+      </div>
+
       {/* Message stream */}
       <div style={{
         flex: 1,
         overflowY: "auto",
-        padding: "var(--space-4) var(--space-5)",
+        padding: "0 var(--space-5) var(--space-4) var(--space-5)",
         display: "flex",
         flexDirection: "column",
       }}>
