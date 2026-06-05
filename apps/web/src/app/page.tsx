@@ -53,6 +53,15 @@ function isMessage(x: unknown): x is Message {
   );
 }
 
+type CalEvent = {
+  id: string;
+  title: string;
+  start_time: string;
+  end_time: string;
+  location?: string;
+  calendar_name?: string;
+};
+
 /* ── Greeting ───────────────────────────────────────────── */
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -87,6 +96,7 @@ export default function DashboardPage() {
   const [brief, setBrief] = useState<Message | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [approvalsCount, setApprovalsCount] = useState(0);
+  const [nextEvent, setNextEvent] = useState<CalEvent | null>(null);
   const [loadingTasks, setLoadingTasks] = useState<Set<string>>(new Set());
   const [refreshingBrief, setRefreshingBrief] = useState(false);
 
@@ -145,7 +155,16 @@ export default function DashboardPage() {
         .eq("user_id", user.id)
         .eq("status", "awaiting_approval");
 
-      const [resBrief, resTasks, resApprovals] = await Promise.all([pBrief, pTasks, pApprovals]);
+      const pNextEvent = supabase
+        .from("calendar_events")
+        .select("id, title, start_time, end_time, location, calendar_name")
+        .eq("user_id", user.id)
+        .gt("end_time", new Date().toISOString())
+        .order("start_time", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      const [resBrief, resTasks, resApprovals, resNextEvent] = await Promise.all([pBrief, pTasks, pApprovals, pNextEvent]);
 
       if (cancelled) return;
 
@@ -161,6 +180,12 @@ export default function DashboardPage() {
 
       if (resApprovals.count !== null) {
         setApprovalsCount(resApprovals.count);
+      }
+
+      if (resNextEvent.data) {
+        setNextEvent(resNextEvent.data as CalEvent);
+      } else {
+        setNextEvent(null);
       }
     };
 
@@ -277,6 +302,49 @@ export default function DashboardPage() {
               </span>
             </div>
           </Link>
+        )}
+
+        {/* Next Event Widget */}
+        {nextEvent && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginLeft: "2px", marginRight: "2px" }}>
+              <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
+                Next Event
+              </h2>
+            </div>
+            <Link href="/schedule" style={{ textDecoration: "none" }}>
+              <div style={{
+                background: "var(--color-surface)",
+                borderRadius: "var(--radius-xl)",
+                padding: "var(--space-3) var(--space-4)",
+                border: "1px solid var(--color-border)",
+                borderLeft: "4px solid var(--color-primary)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "2px"
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--color-text)", fontWeight: 700, fontSize: "1rem" }}>
+                    {nextEvent.title}
+                  </span>
+                  <span style={{ color: "var(--color-text-faint)", fontSize: "0.75rem" }}>
+                    {new Date(nextEvent.start_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} – {new Date(nextEvent.end_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                  </span>
+                </div>
+                {nextEvent.location && (
+                  <div style={{
+                    color: "var(--color-text-faint)",
+                    fontSize: "0.6875rem",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis"
+                  }}>
+                    {nextEvent.location}
+                  </div>
+                )}
+              </div>
+            </Link>
+          </div>
         )}
 
         {/* Daily brief card */}
