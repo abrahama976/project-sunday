@@ -4,6 +4,7 @@ All callers continue to work without changes.
 """
 import asyncio
 from config import TAVILY_API_KEY
+
 async def web_search(query: str, max_results: int = 3) -> str:
     """Search the web. Returns formatted string of results.
     Uses Tavily if TAVILY_API_KEY is set, otherwise DuckDuckGo.
@@ -23,6 +24,7 @@ async def web_search(query: str, max_results: int = 3) -> str:
             f"   Snippet: {r['content']}\n"
         )
     return "\n".join(output)
+
 async def _tavily_search(query: str, max_results: int) -> list[dict]:
     try:
         from tavily import TavilyClient
@@ -37,9 +39,10 @@ async def _tavily_search(query: str, max_results: int) -> list[dict]:
     except Exception as exc:
         print(f"[search] Tavily error: {exc} — falling back to DuckDuckGo")
         return []
+
 async def _ddgs_search(query: str, max_results: int) -> list[dict]:
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
         results = await asyncio.to_thread(
             lambda: list(DDGS().text(query, max_results=max_results))
         )
