@@ -18,7 +18,7 @@ from google_auth import verify_all_tokens
 from scheduler import Scheduler
 from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief, sync_calendar_job
 from executors.base import already_executed, mark_executed, set_status
-from executors.notify_ops import push_approval
+from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
@@ -33,6 +33,17 @@ from executors.task_ops import task_create, task_update, task_list
 # To add a new tool: import the function and add one line here.
 # Args are unpacked as kwargs: await TOOL_REGISTRY[tool](**args)
 # For tools that need (client, user_id, **args), wrap them in a lambda below.
+
+async def _schedule_reminder_executor(client: Client, user_id: str, message: str, remind_at_iso: str):
+    await asyncio.to_thread(
+        lambda: client.table("one_off_reminders").insert({
+            "user_id": user_id,
+            "remind_at": remind_at_iso,
+            "message": message
+        }).execute()
+    )
+    return f"Reminder scheduled for {remind_at_iso}"
+
 def _make_registry(client_ref: list, user_id_ref: list) -> dict:
     """Build registry with late-bound client/user_id refs for tools that need them."""
     return {
@@ -54,6 +65,7 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "task_create":         lambda **kw: task_create(client_ref[0], user_id=user_id_ref[0], **kw),
         "task_update":         lambda **kw: task_update(client_ref[0], user_id=user_id_ref[0], **kw),
         "task_list":           lambda **kw: task_list(client_ref[0], user_id=user_id_ref[0], **kw),
+        "schedule_reminder":   lambda **kw: _schedule_reminder_executor(client_ref[0], user_id_ref[0], **kw),
     }
 
 def _action_result_message(tool: str, result) -> str:
@@ -285,6 +297,50 @@ async def poll_profile_updates(client: Client):
         except Exception as e:
             print(f"[poll] profile check error: {e}", flush=True)
 
+async def poll_reminders(client: Client):
+    """Poll for reminders that are due and send them."""
+    # Note: push() currently sends to a global NTFY_TOPIC.
+    # In a multi-user environment, this needs to be updated to a per-user notification channel.
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            
+            profiles = await asyncio.to_thread(lambda: client.table("user_profile").select("user_id").execute())
+            for row in (profiles.data or []):
+                uid = row.get("user_id")
+                if not uid:
+                    continue
+                    
+                res = await asyncio.to_thread(
+                    lambda u=uid: client.table("one_off_reminders")
+                    .select("*")
+                    .eq("user_id", u)
+                    .eq("fired", False)
+                    .lte("remind_at", now_iso)
+                    .execute()
+                )
+                
+                for reminder in (res.data or []):
+                    msg = reminder["message"]
+                    
+                    await push(title="Reminder", body=msg, priority="high", tags=["alarm_clock"])
+                    
+                    await asyncio.to_thread(
+                        lambda r=reminder, u=uid: client.table("messages").insert({
+                            "user_id": u,
+                            "role": "assistant",
+                            "content": f"⏰ **Reminder**: {r['message']}",
+                            "model_used": "system"
+                        }).execute()
+                    )
+                    
+                    await asyncio.to_thread(
+                        lambda r=reminder: client.table("one_off_reminders").update({"fired": True}).eq("id", r["id"]).execute()
+                    )
+        except Exception as e:
+            print(f"[poll_reminders] error: {e}", flush=True)
+
 async def main():
     print("[worker] Project Sunday worker starting...")
     client = get_client()
@@ -348,6 +404,13 @@ async def main():
     sched.register_handler("daily_brief", send_daily_brief_for_all_users)
     sched.register_handler("sync_calendar", sync_calendar_job)
     asyncio.create_task(sched.run())
+
+    # Start reminders poll loop
+    def _on_reminders_done(task):
+        if task.exception():
+            print(f"[poll_reminders] task died: {task.exception()}", flush=True)
+    reminders_task = asyncio.create_task(poll_reminders(client))
+    reminders_task.add_done_callback(_on_reminders_done)
 
     print("[worker] ready. Listening for messages, approvals, and scheduled jobs.")
 
