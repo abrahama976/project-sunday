@@ -5,6 +5,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL
+from utils import generate_with_retry
 from context.loader import get_profile
 from tools.registry import TOOLS
 from supabase import Client
@@ -152,7 +153,7 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
                 return {"type": "text", "content": "Budget low — brain-dump parsing requires Gemini. Please try again tomorrow.", "model_used": "system"}
             if model_id == "ollama":
                 return {"type": "text", "content": "Budget exhausted — brain-dump parsing requires a cloud model. Please try again tomorrow.", "model_used": "system"}
-            response = await asyncio.to_thread(
+            response = await generate_with_retry(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
                     contents=[
@@ -244,7 +245,7 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
     for model_id in models_to_try:
         try:
             print(f"[router] Attempting generation with {model_id}...")
-            response = await asyncio.to_thread(
+            response = await generate_with_retry(
                 lambda: client_genai.models.generate_content(
                     model=model_id,
                     contents=contents,

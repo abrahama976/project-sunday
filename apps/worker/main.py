@@ -22,6 +22,7 @@ from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.web_fetch import web_fetch
+from utils import generate_with_retry
 from executors.web_search_ops import web_search
 from executors.travel_ops import travel_directions, transit_departures
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
@@ -92,7 +93,7 @@ async def _llm_confirmation(gemini_api_key: str, tool: str, args: dict, result) 
             "Maximum 2 sentences. Start directly — no preamble."
         )
         ai_client = genai.Client(api_key=gemini_api_key)
-        response = await asyncio.to_thread(
+        response = await generate_with_retry(
             lambda: ai_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
