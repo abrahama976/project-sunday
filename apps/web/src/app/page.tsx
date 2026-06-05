@@ -11,7 +11,7 @@ type Task = {
   id: string;
   title: string;
   status: "open" | "done";
-  priority: 1 | 2 | 3;
+  priority: 0 | 1 | 2 | 3;
   due_date: string | null;
   category: string | null;
   is_archived: boolean;
@@ -25,7 +25,7 @@ function isTask(x: unknown): x is Task {
     typeof o.id === "string" &&
     typeof o.title === "string" &&
     (o.status === "open" || o.status === "done") &&
-    (o.priority === 1 || o.priority === 2 || o.priority === 3) &&
+    (o.priority === 0 || o.priority === 1 || o.priority === 2 || o.priority === 3) &&
     (o.due_date === null || typeof o.due_date === "string") &&
     (o.category === null || typeof o.category === "string") &&
     typeof o.is_archived === "boolean" &&
@@ -210,7 +210,7 @@ export default function DashboardPage() {
       display: "flex",
       flexDirection: "column",
       minHeight: "calc(100dvh - var(--nav-top-h))",
-      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom) + var(--space-8))",
+      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
     }}>
       <div style={{
         padding: "var(--space-6) var(--space-5)",
@@ -227,7 +227,7 @@ export default function DashboardPage() {
           <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
             {dateStr}
           </h1>
-          <p style={{ fontSize: "1.125rem", color: "var(--color-text-faint)", marginTop: "2px" }}>
+          <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginTop: "var(--space-1)" }}>
             {getGreeting()}
           </p>
         </div>
@@ -244,7 +244,12 @@ export default function DashboardPage() {
               alignItems: "center",
               gap: "var(--space-3)",
             }}>
-              <span style={{ fontSize: "1.25rem" }}>⚡</span>
+              <span style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: "var(--color-warning)",
+                flexShrink: 0,
+                display: "inline-block",
+              }} />
               <span style={{ fontSize: "0.9375rem", fontWeight: 500, color: "var(--color-text)" }}>
                 {approvalsCount} action{approvalsCount === 1 ? "" : "s"} waiting for your approval
               </span>
@@ -280,28 +285,13 @@ export default function DashboardPage() {
             </h2>
           </div>
           
-          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+          <div className="grouped-list">
             {tasks.length > 0 ? (
-              tasks.map((task, idx) => {
-                const isFirst = idx === 0;
-                const isLast = idx === tasks.length - 1;
+              tasks.map((task) => {
                 const isLoading = loadingTasks.has(task.id);
                 
                 return (
-                  <div key={task.id} style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-3)",
-                    padding: "var(--space-3) var(--space-4)",
-                    background: "var(--color-surface)",
-                    borderLeft: "1px solid var(--color-border)",
-                    borderRight: "1px solid var(--color-border)",
-                    borderTop: isFirst ? "1px solid var(--color-border)" : "none",
-                    borderBottom: isLast ? "1px solid var(--color-border)" : "none",
-                    borderTopLeftRadius: isFirst ? "var(--radius-lg)" : 0,
-                    borderTopRightRadius: isFirst ? "var(--radius-lg)" : 0,
-                    borderBottomLeftRadius: isLast ? "var(--radius-lg)" : 0,
-                    borderBottomRightRadius: isLast ? "var(--radius-lg)" : 0,
+                  <div key={task.id} className="grouped-list-item" style={{
                     opacity: isLoading ? 0.5 : 1,
                   }}>
                     <button
@@ -350,7 +340,7 @@ export default function DashboardPage() {
             <Link href="/tasks" style={{ 
               display: "block", 
               marginTop: "var(--space-2)", 
-              marginLeft: "2px",
+              marginLeft: "0",
               fontSize: "0.875rem", 
               color: "var(--color-primary)", 
               textDecoration: "none",
