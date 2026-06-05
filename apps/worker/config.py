@@ -78,3 +78,12 @@ TOOL_TIER_MAP = {
     # Dangerous
     "shell_cmd":            "hold",
 }
+
+# ── External integrations ──────────────────────────────────────────────────
+TAVILY_API_KEY   = os.getenv("TAVILY_API_KEY", "")
+NTFY_TOPIC       = os.getenv("NTFY_TOPIC", "")
+NTFY_URL         = f"https://ntfy.sh/{NTFY_TOPIC}" if NTFY_TOPIC else ""
+# Open-Meteo — no key required
+USER_LAT         = float(os.getenv("USER_LAT", "-33.8688"))   # Sydney
+USER_LNG         = float(os.getenv("USER_LNG", "151.2093"))
+USER_TIMEZONE    = os.getenv("USER_TIMEZONE", "Australia/Sydney")
