@@ -24,8 +24,11 @@
 
   /* Semantic */
   --color-success:         #6daa45;
+  --color-success-faint:   rgba(109, 170, 69, 0.12);
   --color-warning:         #c47a3b;
+  --color-warning-faint:   rgba(196, 122, 59, 0.12);
   --color-danger:          #c44d4d;
+  --color-danger-faint:    rgba(196, 77, 77, 0.12);
   --color-error:           #c44d4d;
   --color-info:            #4f98a3;
   --color-brand:           #4f98a3;
@@ -147,3 +150,26 @@ button { cursor: pointer; background: none; border: none; }
 .markdown-body h1 { font-size: 1.125rem; }
 .markdown-body h2 { font-size: 1rem; }
 .markdown-body h3 { font-size: 0.9375rem; }
+
+/* ── Grouped list ──────────────────────────────────────── */
+.grouped-list { display: flex; flex-direction: column; }
+.grouped-list-item {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.grouped-list-item:first-child {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.grouped-list-item:last-child {
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.grouped-list-item:only-child {
+  border-bottom: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
