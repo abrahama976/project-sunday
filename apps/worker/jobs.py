@@ -311,12 +311,12 @@ async def nightly_maintenance(client: Client, gemini_api_key: str) -> None:
         except Exception as e:
             print(f"[nightly_maintenance] tasks error: {e}")
 
-        # 2. Delete health_logs > 30 days old
+        # 2. Soft-delete health_logs > 30 days old
         try:
             cutoff_30 = (now_utc - timedelta(days=30)).date().isoformat()
             await asyncio.to_thread(
                 lambda: client.table("health_logs")
-                .delete()
+                .update({"is_archived": True})
                 .eq("user_id", uid)
                 .lt("log_date", cutoff_30)
                 .execute()
