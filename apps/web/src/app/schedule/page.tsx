@@ -160,9 +160,11 @@ export default function SchedulePage() {
         .from("tasks")
         .select("id, title, due_date, status, priority")
         .eq("user_id", user.id)
-        .eq("due_date", dateStr)
+        .lte("due_date", dateStr)
+        .not("due_date", "is", null)
         .neq("status", "done")
-        .order("priority", { ascending: false });
+        .eq("is_archived", false)
+        .order("due_date", { ascending: true });
 
       const [resEvents, resTasks] = await Promise.all([pEvents, pTasks]);
 
