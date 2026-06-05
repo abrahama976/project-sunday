@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
+type Task = {
+  id: string;
+  title: string;
+  due_date: string | null;
+  status: string;
+  priority: number;
+};
+
 type CalEvent = {
   id: string;
   user_id: string;
@@ -122,12 +130,13 @@ export default function SchedulePage() {
     return d;
   });
   const [events, setEvents] = useState<CalEvent[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
-    const fetchEvents = async () => {
+    const fetchData = async () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user || cancelled) return;
@@ -136,8 +145,10 @@ export default function SchedulePage() {
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(selectedDate);
       endOfDay.setHours(23, 59, 59, 999);
+      
+      const dateStr = startOfDay.toISOString().split("T")[0];
 
-      const { data } = await supabase
+      const pEvents = supabase
         .from("calendar_events")
         .select("*")
         .eq("user_id", user.id)
@@ -145,28 +156,62 @@ export default function SchedulePage() {
         .lte("start_time", endOfDay.toISOString())
         .order("start_time", { ascending: true });
 
+      const pTasks = supabase
+        .from("tasks")
+        .select("id, title, due_date, status, priority")
+        .eq("user_id", user.id)
+        .eq("due_date", dateStr)
+        .neq("status", "done")
+        .order("priority", { ascending: false });
+
+      const [resEvents, resTasks] = await Promise.all([pEvents, pTasks]);
+
       if (!cancelled) {
-        if (data) setEvents(data);
-        else setEvents([]);
+        setEvents(resEvents.data || []);
+        setTasks(resTasks.data || []);
         setLoading(false);
       }
     };
 
-    void fetchEvents();
+    void fetchData();
 
-    const channel = supabase.channel("calendar_events_changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "calendar_events" },
-        () => {
-          if (!cancelled) void fetchEvents();
-        }
-      )
-      .subscribe();
+    let channelEvents: ReturnType<typeof supabase.channel> | null = null;
+    let channelTasks: ReturnType<typeof supabase.channel> | null = null;
+
+    const setupRealtime = async () => {
+      if (cancelled) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (session?.access_token) {
+        await supabase.realtime.setAuth(session.access_token);
+      }
+
+      channelEvents = supabase.channel("calendar_events_changes")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "calendar_events" },
+          () => { if (!cancelled) void fetchData(); }
+        )
+        .on('system', { event: 'disconnect' }, () => {
+          setTimeout(() => { if (!cancelled) setupRealtime(); }, 3000);
+        })
+        .subscribe();
+        
+      channelTasks = supabase.channel("tasks_changes")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "tasks" },
+          () => { if (!cancelled) void fetchData(); }
+        )
+        .subscribe();
+    };
+    
+    void setupRealtime();
 
     return () => {
       cancelled = true;
-      supabase.removeChannel(channel);
+      if (channelEvents) supabase.removeChannel(channelEvents);
+      if (channelTasks) supabase.removeChannel(channelTasks);
     };
   }, [supabase, selectedDate]);
 
@@ -175,6 +220,20 @@ export default function SchedulePage() {
     day: "numeric",
     month: "long",
   });
+  
+  const handleCompleteTask = async (taskId: string) => {
+    // Optimistic update
+    setTasks((prev) => prev.filter(t => t.id !== taskId));
+    
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    
+    await supabase
+      .from("tasks")
+      .update({ status: "done" })
+      .eq("id", taskId)
+      .eq("user_id", user.id);
+  };
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-8) var(--space-6)", paddingBottom: "100px" }}>
@@ -210,7 +269,7 @@ export default function SchedulePage() {
             }} />
           ))}
         </div>
-      ) : events.length === 0 ? (
+      ) : (events.length === 0 && tasks.length === 0) ? (
         <div style={{
           padding: "var(--space-6)", textAlign: "center",
           borderRadius: "var(--radius-lg)",
@@ -221,48 +280,104 @@ export default function SchedulePage() {
             Nothing scheduled
           </span>
           <span style={{ color: "var(--color-text-faint)", fontSize: "0.75rem" }}>
-            Events sync every 15 minutes from Google Calendar
+            Enjoy the free time
           </span>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-          {events.map((event) => (
-            <div key={event.id} style={{
-              background: "var(--color-surface)",
-              borderRadius: "var(--radius-lg)",
-              padding: "var(--space-4) var(--space-5)",
-              border: "1px solid var(--color-border)",
-              borderLeft: "3px solid var(--color-primary)",
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-2)"
-            }}>
-              <div style={{ fontSize: "1rem", fontWeight: 500, color: "var(--color-text)" }}>
-                {event.title}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-4)", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  {isAllDay(event.start_time) && isAllDay(event.end_time)
-                    ? <span>🗓 All day</span>
-                    : <span>{formatTime(event.start_time)} – {formatTime(event.end_time)}</span>
-                  }
-                </span>
-                {event.calendar_name && (
-                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    {event.calendar_name}
-                  </span>
-                )}
-                {event.location && (
-                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    {event.location}
-                  </span>
-                )}
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+          {tasks.length > 0 && (
+            <div>
+              <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)", marginBottom: "var(--space-3)", marginLeft: "2px" }}>
+                Tasks due
+              </h2>
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                {tasks.map(task => (
+                  <div key={task.id} style={{
+                    background: "var(--color-surface)",
+                    borderRadius: "var(--radius-lg)",
+                    padding: "var(--space-4) var(--space-5)",
+                    border: "1px solid var(--color-border)",
+                    borderLeft: "3px solid var(--color-warning, #e8a020)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-3)"
+                  }}>
+                    <button
+                      onClick={() => void handleCompleteTask(task.id)}
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: "50%",
+                        border: "2px solid var(--color-border)",
+                        background: "transparent",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        cursor: "pointer",
+                      }}
+                    />
+                    <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                      <div style={{ fontSize: "1rem", fontWeight: 500, color: "var(--color-text)" }}>
+                        {task.title}
+                      </div>
+                      <div style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
+                        Due today
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
+          )}
+
+          {events.length > 0 && (
+            <div>
+              {tasks.length > 0 && (
+                <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)", marginBottom: "var(--space-3)", marginLeft: "2px" }}>
+                  Schedule
+                </h2>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                {events.map((event) => (
+                  <div key={event.id} style={{
+                    background: "var(--color-surface)",
+                    borderRadius: "var(--radius-lg)",
+                    padding: "var(--space-4) var(--space-5)",
+                    border: "1px solid var(--color-border)",
+                    borderLeft: "3px solid var(--color-primary)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "var(--space-2)"
+                  }}>
+                    <div style={{ fontSize: "1rem", fontWeight: 500, color: "var(--color-text)" }}>
+                      {event.title}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-4)", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        {isAllDay(event.start_time) && isAllDay(event.end_time)
+                          ? <span>🗓 All day</span>
+                          : <span>{formatTime(event.start_time)} – {formatTime(event.end_time)}</span>
+                        }
+                      </span>
+                      {event.calendar_name && (
+                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          {event.calendar_name}
+                        </span>
+                      )}
+                      {event.location && (
+                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          {event.location}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
-
