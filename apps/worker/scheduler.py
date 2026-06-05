@@ -69,6 +69,21 @@ def _field_matches(field: str, value: int, min_val: int, max_val: int) -> bool:
     return False
 
 
+def _get_previous_fire_time(cron_expr: str, reference_dt: datetime) -> datetime | None:
+    """
+    Walk backward minute-by-minute (max 1440 steps = 24h) to find
+    the most recent past minute that matches this cron expression.
+    Returns None if no match found in 24h window.
+    """
+    from datetime import timedelta
+    candidate = reference_dt.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    for _ in range(1440):
+        if _cron_matches(cron_expr, candidate):
+            return candidate
+        candidate -= timedelta(minutes=1)
+    return None
+
+
 class Scheduler:
     """Cron-like scheduler that reads jobs from the scheduled_jobs table."""
 
@@ -123,9 +138,6 @@ class Scheduler:
             except Exception:
                 check_time = now_minute
 
-            if not _cron_matches(cron_expr, check_time):
-                continue
-
             # Prevent double-execution within the same minute
             if last_run:
                 try:
@@ -134,6 +146,30 @@ class Scheduler:
                         continue
                 except (ValueError, TypeError):
                     pass
+
+            # Catch-up: if last_executed_at is missing or stale, fire immediately
+            # even if cron doesn't match right now (Mac was asleep)
+            last_executed = job.get("last_executed_at")
+            if last_executed:
+                try:
+                    last_exec_dt = datetime.fromisoformat(last_executed)
+                    prev_fire = _get_previous_fire_time(cron_expr, check_time)
+                    if prev_fire and last_exec_dt < prev_fire:
+                        # Missed a fire — run as catch-up
+                        print(f"[scheduler] catch-up firing job: {job_name} "
+                              f"(last_executed={last_exec_dt.isoformat()}, "
+                              f"expected={prev_fire.isoformat()})")
+                        # Fall through to execute below
+                    else:
+                        # Already ran since last expected fire — skip if cron doesn't match
+                        if not _cron_matches(cron_expr, check_time):
+                            continue
+                except (ValueError, TypeError):
+                    if not _cron_matches(cron_expr, check_time):
+                        continue
+            else:
+                if not _cron_matches(cron_expr, check_time):
+                    continue
 
             # Execute the job
             handler = self._handlers.get(job_name)
@@ -153,9 +189,11 @@ class Scheduler:
             await handler(self._client, self._gemini_api_key)
 
             # Update last_run_at
+            now_iso = datetime.now(ZoneInfo("Australia/Sydney")).isoformat()
             await asyncio.to_thread(
                 lambda: self._client.table("scheduled_jobs").update({
-                    "last_run_at": datetime.now(ZoneInfo("Australia/Sydney")).isoformat(),
+                    "last_run_at": now_iso,
+                    "last_executed_at": now_iso,
                 }).eq("id", job["id"]).execute()
             )
 
