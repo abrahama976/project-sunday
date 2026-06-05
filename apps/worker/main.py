@@ -11,7 +11,7 @@ from config import (
     APPROVAL_POLL_INTERVAL_SECONDS,
 )
 from heartbeat import run_heartbeat
-from router import route
+from router import route, _generate_with_retry
 from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
@@ -56,10 +56,46 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "task_list":           lambda **kw: task_list(client_ref[0], user_id=user_id_ref[0], **kw),
     }
 
+def _action_result_message(tool: str, result) -> str:
+    return f"✅ Action {tool} completed: {result}"
+
+async def _llm_confirmation(gemini_api_key: str, tool: str, args: dict, result) -> str:
+    """Generate a natural confirmation message via LLM after an approved action executes.
+    Falls back to _action_result_message if LLM call fails or result is already clean."""
+    from google import genai
+    from google.genai import types
+    from config import GEMINI_MODEL
+    # Don't burn a call for simple read-only tools — hardcoded is fine
+    READ_ONLY = {"task_list", "calendar_query", "gmail_search", "gmail_read_body",
+                 "web_search", "web_fetch", "file_read", "file_list"}
+    if tool in READ_ONLY:
+        return str(result) if isinstance(result, str) else _action_result_message(tool, result)
+    try:
+        prompt = (
+            f"The user approved and executed this action: {tool}\n"
+            f"Arguments: {args}\n"
+            f"Result: {result}\n\n"
+            "Write a single short, natural, friendly confirmation sentence for the user. "
+            "Do not use bullet points. Do not repeat the raw data. "
+            "Maximum 2 sentences. Start directly — no preamble."
+        )
+        ai_client = genai.Client(api_key=gemini_api_key)
+        response = await _generate_with_retry(
+            lambda: ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            )
+        )
+        text = response.text.strip()
+        return text if text else _action_result_message(tool, result)
+    except Exception as e:
+        print(f"[worker] second-pass LLM failed for {tool}: {e}")
+        return _action_result_message(tool, result)
+
 def get_client() -> Client:
     return create_client(SUPABASE_URL, get_service_role_key())
 
-async def execute_action(client: Client, action: dict):
+async def execute_action(client: Client, action: dict, gemini_api_key: str = ""):
     action_id = action["id"]
     user_id = action.get("user_id")
     idempotency_key = str(action.get("idempotency_key", action_id))
@@ -113,11 +149,12 @@ async def execute_action(client: Client, action: dict):
             result = await registry[tool](**args)
 
         await set_status(client, action_id, "executed")
+        confirmation_msg = await _llm_confirmation(gemini_api_key, tool, args, result)
         await asyncio.to_thread(
             lambda: client.table("messages").insert({
                 "user_id": user_id,
                 "role": "assistant",
-                "content": str(result),
+                "content": confirmation_msg,
                 "model_used": "gemini"
             }).execute()
         )
@@ -192,12 +229,12 @@ async def handle_message(client: Client, message: dict, history: list, user_id: 
             )
 
         if tier == "auto" and inserted.data:
-            await execute_action(client, inserted.data[0])
+            await execute_action(client, inserted.data[0], GEMINI_API_KEY)
         return True
 
     return False
 
-async def poll_approved(client: Client):
+async def poll_approved(client: Client, gemini_api_key: str):
     while True:
         try:
             await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
@@ -207,7 +244,7 @@ async def poll_approved(client: Client):
             found = rows.data or []
             print(f"[poll] checking approved queue — {len(found)} rows")
             for row in found:
-                await execute_action(client, row)
+                await execute_action(client, row, gemini_api_key)
         except Exception as e:
             print(f"[poll] error: {e}", flush=True)
 
@@ -288,7 +325,7 @@ async def main():
     def _on_poll_done(task):
         if task.exception():
             print(f"[poll] task died: {task.exception()}", flush=True)
-    poll_task = asyncio.create_task(poll_approved(client))
+    poll_task = asyncio.create_task(poll_approved(client, GEMINI_API_KEY))
     poll_task.add_done_callback(_on_poll_done)
 
     # Start stale processing reaper (Fix 4)
