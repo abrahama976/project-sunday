@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.projectsunday.worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/rohitjohnson/Projects/PersonalAI/apps/worker/run_worker.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/rohitjohnson/Projects/PersonalAI/apps/worker/logs/worker.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/rohitjohnson/Projects/PersonalAI/apps/worker/logs/worker_error.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/rohitjohnson/Projects/PersonalAI/apps/worker</string>
+</dict>
+</plist>
