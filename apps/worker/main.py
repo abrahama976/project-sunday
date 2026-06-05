@@ -17,7 +17,7 @@ from context.loader import fetch_and_cache_profile
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
 from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief, sync_calendar_job
-from executors.base import already_executed, mark_executed, set_status
+from executors.base import set_status
 from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
@@ -115,10 +115,6 @@ async def execute_action(client: Client, action: dict, gemini_api_key: str = "")
     tool = action["action_type"]
     args = action.get("payload", {})
 
-    if already_executed(idempotency_key):
-        print(f"[worker] skipping already-executed {action_id}")
-        return
-
     # Atomic claim: update to 'processing' ONLY if status is 'approved'.
     # Auto-tier rows are inserted as status='pending', approved=True — they get
     # set to 'approved' by the insert path in handle_message before reaching here.
@@ -135,11 +131,6 @@ async def execute_action(client: Client, action: dict, gemini_api_key: str = "")
     if not claim.data:
         print(f"[worker] {action_id} could not be claimed (not in 'approved' state) — skipping")
         return
-
-    # Only mark the idempotency key AFTER we've confirmed the row is approved
-    # and we've atomically claimed it. This prevents burning the key on
-    # unapproved or already-claimed rows.
-    mark_executed(idempotency_key)
 
     try:
         # Build registry with this action's client and user_id bound
@@ -457,7 +448,7 @@ async def main():
     message_count = 0
 
     # Record startup time — only process messages created after this point
-    startup_watermark = datetime.now(timezone.utc).isoformat()
+    startup_watermark = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     while True:
         try:
