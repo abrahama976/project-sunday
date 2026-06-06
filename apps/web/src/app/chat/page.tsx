@@ -72,6 +72,8 @@ function ThinkingDot() {
 /* ── Message row ────────────────────────────────────────── */
 function MessageRow({ msg }: { msg: Message }) {
   const [showTime, setShowTime] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
   const isUser = msg.role === "user";
 
   return (
@@ -118,7 +120,7 @@ function MessageRow({ msg }: { msg: Message }) {
             opacity: showTime ? 1 : 0,
             transition: "opacity 150ms",
           }}>
-            {formatTime(msg.created_at)}
+            {mounted ? formatTime(msg.created_at) : <span style={{ visibility: "hidden" }}>--:--</span>}
           </span>
           {!isUser && msg.model_used && msg.model_used !== "system" && (
             <span style={{

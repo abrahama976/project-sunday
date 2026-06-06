@@ -93,6 +93,9 @@ function Card({ children, href }: { children: React.ReactNode; href?: string }) 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   const [brief, setBrief] = useState<Message | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [approvalsCount, setApprovalsCount] = useState(0);
@@ -272,10 +275,10 @@ export default function DashboardPage() {
         {/* Date header */}
         <div>
           <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
-            {dateStr}
+            {mounted ? dateStr : <span style={{ visibility: "hidden" }}>Loading date...</span>}
           </h1>
           <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginTop: "var(--space-1)" }}>
-            {getGreeting()}
+            {mounted ? getGreeting() : <span style={{ visibility: "hidden" }}>Loading...</span>}
           </p>
         </div>
 
@@ -328,7 +331,11 @@ export default function DashboardPage() {
                     {nextEvent.title}
                   </span>
                   <span style={{ color: "var(--color-text-faint)", fontSize: "0.75rem" }}>
-                    {new Date(nextEvent.start_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} – {new Date(nextEvent.end_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                    {mounted ? (
+                      `${new Date(nextEvent.start_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} – ${new Date(nextEvent.end_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`
+                    ) : (
+                      <span style={{ visibility: "hidden" }}>--:-- – --:--</span>
+                    )}
                   </span>
                 </div>
                 {nextEvent.location && (
@@ -356,7 +363,7 @@ export default function DashboardPage() {
             <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
               {brief && (
                 <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
-                  Updated at {new Date(brief.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                  {mounted ? `Updated at ${new Date(brief.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}` : <span style={{ visibility: "hidden" }}>Updated at --:--</span>}
                 </span>
               )}
               <button
