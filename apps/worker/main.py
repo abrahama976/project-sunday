@@ -265,6 +265,46 @@ async def reap_stale_processing(client: Client):
         except Exception as e:
             print(f"[reaper] error: {e}", flush=True)
 
+async def reap_stale_message_claims(client: Client):
+    """Every 5 min, reset message claims older than 10 min
+    with no assistant reply — allows the worker to retry."""
+    while True:
+        try:
+            await asyncio.sleep(300)
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            stale = await asyncio.to_thread(
+                lambda: client.table("messages")
+                .select("id, user_id, claimed_at")
+                .not_.is_("claimed_by", "null")
+                .lt("claimed_at", cutoff)
+                .execute()
+            )
+            reset_count = 0
+            for row in (stale.data or []):
+                uid = row["user_id"]
+                claimed_at = row["claimed_at"]
+                reply_check = await asyncio.to_thread(
+                    lambda u=uid, ca=claimed_at: client.table("messages")
+                    .select("id")
+                    .eq("user_id", u)
+                    .eq("role", "assistant")
+                    .gt("created_at", ca)
+                    .limit(1)
+                    .execute()
+                )
+                if not reply_check.data:
+                    await asyncio.to_thread(
+                        lambda r=row: client.table("messages")
+                        .update({"claimed_by": None, "claimed_at": None})
+                        .eq("id", r["id"])
+                        .execute()
+                    )
+                    reset_count += 1
+            if reset_count > 0:
+                print(f"[msg-reaper] Reset {reset_count} stale claim(s)", flush=True)
+        except Exception as e:
+            print(f"[msg-reaper] error: {e}", flush=True)
+
 async def poll_profile_updates(client: Client):
     last_updated_at = None
     while True:
@@ -378,6 +418,14 @@ async def main():
     reaper_task = asyncio.create_task(reap_stale_processing(client))
     reaper_task.add_done_callback(_on_reaper_done)
 
+    def _on_msg_reaper_done(task):
+        if not task.cancelled() and task.exception():
+            print(f"[msg-reaper] CRITICAL: msg reaper died: {task.exception()}",
+                  flush=True)
+            sys.exit(1)
+    msg_reaper_task = asyncio.create_task(reap_stale_message_claims(client))
+    msg_reaper_task.add_done_callback(_on_msg_reaper_done)
+
     # Start scheduler
     sched = Scheduler(client, GEMINI_API_KEY)
     sched.register_handler("morning_briefing", morning_briefing)
@@ -390,7 +438,14 @@ async def main():
     sched.register_handler("cold_storage_archive", cold_storage_archive)
     sched.register_handler("daily_brief", send_daily_brief_for_all_users)
     sched.register_handler("sync_calendar", sync_calendar_job)
-    asyncio.create_task(sched.run())
+    scheduler_task = asyncio.create_task(sched.run())
+
+    def _on_scheduler_done(task):
+        if not task.cancelled() and task.exception():
+            print(f"[scheduler] CRITICAL: scheduler died: {task.exception()}", 
+                  flush=True)
+            sys.exit(1)
+    scheduler_task.add_done_callback(_on_scheduler_done)
 
     # Start reminders poll loop
     def _on_reminders_done(task):
@@ -416,7 +471,14 @@ async def main():
         print(f"[worker] Failed to register sync_calendar job: {e}")
 
     # Run calendar sync on startup
-    asyncio.create_task(sync_calendar_job(client, GEMINI_API_KEY))
+    sync_cal_task = asyncio.create_task(sync_calendar_job(client, GEMINI_API_KEY))
+
+    def _on_sync_calendar_done(task):
+        if not task.cancelled() and task.exception():
+            print(f"[sync_calendar] CRITICAL: sync_calendar died: {task.exception()}", 
+                  flush=True)
+            sys.exit(1)
+    sync_cal_task.add_done_callback(_on_sync_calendar_done)
 
     # On startup: send today's brief if not already sent
     import datetime as dt
@@ -467,7 +529,8 @@ async def main():
                         # Claim the message — only process if claim succeeds (no other brain claimed it)
                         claim_res = await asyncio.to_thread(
                             lambda msg=latest: client.table("messages")
-                            .update({"claimed_by": "mac"})
+                            .update({"claimed_by": "mac",
+                                     "claimed_at": datetime.now(timezone.utc).isoformat()})
                             .eq("id", msg["id"])
                             .is_("claimed_by", "null")
                             .execute()
