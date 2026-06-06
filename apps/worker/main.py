@@ -414,7 +414,7 @@ async def main():
                 "cron_expr": "*/15 * * * *",
                 "timezone": "UTC",
                 "config": {"description": "Sync Google Calendar events to Supabase"}
-            }).execute()
+            }, on_conflict="job_name").execute()
         )
     except Exception as e:
         print(f"[worker] Failed to register sync_calendar job: {e}")

@@ -376,13 +376,17 @@ export default function ChatPage() {
       }}>
         <button
           onClick={async () => {
-            if (!userId) return;
+            console.log("[clear chat] clicked, userId:", userId);
+            if (!userId) {
+              console.log("[clear chat] userId not ready, aborting");
+              return;
+            }
             const confirmed = window.confirm("Clear all chat history?");
             if (!confirmed) return;
             await supabase.from("messages").delete().eq("user_id", userId);
             setMessages([]);
+            console.log("[clear chat] done");
           }}
-          disabled={!userId}
           style={{
             background: "transparent",
             border: "none",
@@ -392,10 +396,9 @@ export default function ChatPage() {
             alignItems: "center",
             justifyContent: "center",
             padding: "var(--space-1)",
-            opacity: userId ? 1 : 0.3,
-            pointerEvents: userId ? "auto" : "none",
           }}
-          title="Clear Chat"
+          title={userId ? "Clear Chat" : "Waiting for user data..."}
+          aria-label={userId ? "Clear Chat" : "Waiting for user data..."}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="3 6 5 6 21 6" />
