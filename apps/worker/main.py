@@ -231,7 +231,7 @@ async def handle_message(client: Client, message: dict, history: list, user_id: 
 
     return False
 
-async def poll_approved(client: Client, gemini_api_key: str):
+async def poll_approved(client: Client):
     while True:
         try:
             await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
@@ -364,15 +364,17 @@ async def main():
 
     # Start approval poll loop
     def _on_poll_done(task):
-        if task.exception():
-            print(f"[poll] task died: {task.exception()}", flush=True)
-    poll_task = asyncio.create_task(poll_approved(client, GEMINI_API_KEY))
+        if not task.cancelled() and task.exception():
+            print(f"[poll] CRITICAL: approval loop died: {task.exception()}", flush=True)
+            sys.exit(1)
+    poll_task = asyncio.create_task(poll_approved(client))
     poll_task.add_done_callback(_on_poll_done)
 
     # Start stale processing reaper (Fix 4)
     def _on_reaper_done(task):
-        if task.exception():
-            print(f"[reaper] task died: {task.exception()}", flush=True)
+        if not task.cancelled() and task.exception():
+            print(f"[reaper] CRITICAL: reaper died: {task.exception()}", flush=True)
+            sys.exit(1)
     reaper_task = asyncio.create_task(reap_stale_processing(client))
     reaper_task.add_done_callback(_on_reaper_done)
 
@@ -392,8 +394,9 @@ async def main():
 
     # Start reminders poll loop
     def _on_reminders_done(task):
-        if task.exception():
-            print(f"[poll_reminders] task died: {task.exception()}", flush=True)
+        if not task.cancelled() and task.exception():
+            print(f"[poll_reminders] CRITICAL: reminders loop died: {task.exception()}", flush=True)
+            sys.exit(1)
     reminders_task = asyncio.create_task(poll_reminders(client))
     reminders_task.add_done_callback(_on_reminders_done)
 
