@@ -86,6 +86,7 @@ def _calendar_create_sync(
     end: str,
     location: str = "",
     description: str = "",
+    idempotency_key: str = "",
 ) -> str:
     service = _get_calendar_service()
 
@@ -105,6 +106,9 @@ def _calendar_create_sync(
         event_body["location"] = location
     if description:
         event_body["description"] = description
+
+    if idempotency_key:
+        event_body["iCalUID"] = f"ps-{idempotency_key}@projectsunday.local"
 
     created = service.events().insert(calendarId="primary", body=event_body).execute()
     event_link = created.get("htmlLink", "")
@@ -240,9 +244,10 @@ async def calendar_create(
     end: str,
     location: str = "",
     description: str = "",
+    idempotency_key: str = "",
 ) -> str:
     return await asyncio.to_thread(
-        _calendar_create_sync, summary, start, end, location, description
+        _calendar_create_sync, summary, start, end, location, description, idempotency_key
     )
 
 

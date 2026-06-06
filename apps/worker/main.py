@@ -149,6 +149,9 @@ async def execute_action(client: Client, action: dict, gemini_api_key: str = "")
                 result = "Error: section and content are required."
             else:
                 result = await registry[tool](section=section, content=content)
+        elif tool == "calendar_create":
+            args["idempotency_key"] = action_id
+            result = await registry[tool](**args)
         else:
             result = await registry[tool](**args)
 
