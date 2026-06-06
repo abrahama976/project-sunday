@@ -376,11 +376,13 @@ export default function ChatPage() {
       }}>
         <button
           onClick={async () => {
-            if (userId) {
-              await supabase.from("messages").delete().eq("user_id", userId);
-              setMessages([]);
-            }
+            if (!userId) return;
+            const confirmed = window.confirm("Clear all chat history?");
+            if (!confirmed) return;
+            await supabase.from("messages").delete().eq("user_id", userId);
+            setMessages([]);
           }}
+          disabled={!userId}
           style={{
             background: "transparent",
             border: "none",
@@ -390,6 +392,8 @@ export default function ChatPage() {
             alignItems: "center",
             justifyContent: "center",
             padding: "var(--space-1)",
+            opacity: userId ? 1 : 0.3,
+            pointerEvents: userId ? "auto" : "none",
           }}
           title="Clear Chat"
         >
