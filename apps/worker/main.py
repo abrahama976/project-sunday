@@ -166,6 +166,14 @@ async def execute_action(client: Client, action: dict, gemini_api_key: str = "")
     except Exception as e:
         print(f"[worker] executor error {action_id}: {e}")
         await set_status(client, action_id, "failed", {"error": str(e)})
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "user_id": user_id,
+                "role": "assistant",
+                "content": f"⚠️ I couldn't complete that action ({action.get('action_type', 'unknown')}). The error has been logged.",
+                "model_used": "system"
+            }).execute()
+        )
 
 async def handle_message(client: Client, message: dict, history: list, user_id: str) -> bool:
     content = message.get("content", "")

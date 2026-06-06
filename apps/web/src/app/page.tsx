@@ -94,7 +94,11 @@ export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   
   const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
+  useEffect(() => { 
+    setMounted(true); 
+    setCurrentTime(new Date());
+  }, []);
 
   const [brief, setBrief] = useState<Message | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -102,6 +106,8 @@ export default function DashboardPage() {
   const [nextEvent, setNextEvent] = useState<CalEvent | null>(null);
   const [loadingTasks, setLoadingTasks] = useState<Set<string>>(new Set());
   const [refreshingBrief, setRefreshingBrief] = useState(false);
+  const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(null);
+  const [isLocalMode, setIsLocalMode] = useState(false);
 
   const refreshBrief = async () => {
     setRefreshingBrief(true);
@@ -167,7 +173,23 @@ export default function DashboardPage() {
         .limit(1)
         .maybeSingle();
 
-      const [resBrief, resTasks, resApprovals, resNextEvent] = await Promise.all([pBrief, pTasks, pApprovals, pNextEvent]);
+      const pHeartbeat = supabase
+        .from("mac_heartbeat")
+        .select("last_seen")
+        .eq("id", 1)
+        .maybeSingle();
+
+      const pRecentMessage = supabase
+        .from("messages")
+        .select("model_used")
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const [resBrief, resTasks, resApprovals, resNextEvent, resHeartbeat, resRecentMessage] = await Promise.all([
+        pBrief, pTasks, pApprovals, pNextEvent, pHeartbeat, pRecentMessage
+      ]);
 
       if (cancelled) return;
 
@@ -189,6 +211,14 @@ export default function DashboardPage() {
         setNextEvent(resNextEvent.data as CalEvent);
       } else {
         setNextEvent(null);
+      }
+
+      if (resHeartbeat.data && resHeartbeat.data.last_seen) {
+        setLastHeartbeat(new Date(resHeartbeat.data.last_seen));
+      }
+
+      if (resRecentMessage.data && resRecentMessage.data.model_used) {
+        setIsLocalMode(resRecentMessage.data.model_used === "ollama");
       }
     };
 
@@ -252,8 +282,8 @@ export default function DashboardPage() {
     }
   };
 
-  const now = new Date();
-  const dateStr = now.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" });
+  const dateStr = currentTime ? currentTime.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" }) : "";
+  const isOnline = (lastHeartbeat && currentTime) ? (currentTime.getTime() - lastHeartbeat.getTime() < 120000) : false;
 
   return (
     <div style={{
@@ -273,13 +303,37 @@ export default function DashboardPage() {
       }}>
         
         {/* Date header */}
-        <div>
-          <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
-            {mounted ? dateStr : <span style={{ visibility: "hidden" }}>Loading date...</span>}
-          </h1>
-          <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginTop: "var(--space-1)" }}>
-            {mounted ? getGreeting() : <span style={{ visibility: "hidden" }}>Loading...</span>}
-          </p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
+              {mounted ? dateStr : <span style={{ visibility: "hidden" }}>Loading date...</span>}
+            </h1>
+            <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginTop: "var(--space-1)" }}>
+              {mounted ? getGreeting() : <span style={{ visibility: "hidden" }}>Loading...</span>}
+            </p>
+          </div>
+          
+          {mounted && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", marginTop: "var(--space-1)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <div style={{
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: "50%", 
+                  background: isOnline ? "var(--color-success)" : "var(--color-danger)",
+                  boxShadow: isOnline ? "0 0 8px var(--color-success-faint)" : "0 0 8px var(--color-danger-faint)"
+                }} />
+                <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                  {isOnline ? "Online" : "Offline"}
+                </span>
+              </div>
+              {isOnline && isLocalMode && (
+                <span style={{ fontSize: "0.625rem", color: "var(--color-warning)", fontWeight: 500 }}>
+                  Local / Low-power
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Approvals Badge Row */}
