@@ -157,18 +157,17 @@ python3 main.py
 The worker is normally managed by `launchd` via
 `apps/worker/com.projectsunday.worker.plist`, which restarts it when it exits.
 
-### The watchdog
-After applying migrations, set your ntfy topic once — the watchdog stays inert
-until you do:
+### First run after a break
 
-```sql
-INSERT INTO public.watchdog_config (id, ntfy_topic)
-VALUES (1, 'your-topic-here')
-ON CONFLICT (id) DO UPDATE SET ntfy_topic = EXCLUDED.ntfy_topic;
-```
+See **[docs/runbook.md](./docs/runbook.md)** for the two manual steps that are
+easy to get subtly wrong:
 
-It then checks every 5 minutes and pushes to your phone if the worker goes
-quiet for 15.
+- **Publishing the OAuth consent screen to Production.** Stops the 7-day
+  refresh-token expiry. Note that tokens minted while the app was in Testing
+  keep their 7-day fate — you must re-authorise *after* publishing or nothing
+  changes.
+- **Arming the watchdog.** It ships inert; it does nothing until you give it an
+  ntfy topic. Use a long random one — ntfy topics are public.
 
 ---
 

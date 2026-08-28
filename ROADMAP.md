@@ -35,10 +35,12 @@ Last updated: **2026-08-28**
 - [x] Dead-man's watchdog outside the Mac
 - [x] The learning brain
 - [x] Collapse the documentation
+- [x] Runbook for the two manual steps — [docs/runbook.md](./docs/runbook.md)
 - [ ] **Publish the Google consent screen to Production** — manual, ~20 min.
-      Verification is bypassable for a personal app. This retires a failure
-      that has recurred roughly twelve times.
-- [ ] Apply migrations, set the ntfy topic, re-auth Google
+      The 7-day expiry is tied to *publishing status*, not verification, so no
+      verification is needed. Tokens minted in Testing keep their 7-day fate,
+      so re-auth afterwards or nothing changes.
+- [ ] Apply the four migrations and set `watchdog_config.ntfy_topic`
 - [ ] Start the worker and watch one full scheduler cycle
 
 ## Phase 1 — The agentic loop (Sprint 3.T1)
