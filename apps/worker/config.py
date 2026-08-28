@@ -28,6 +28,16 @@ GLOBAL_FLASH_CEILING = 200
 DAILY_LITE_LIMIT = 300
 GLOBAL_LITE_CEILING = 500
 
+# ── Learning brain ─────────────────────────────────────────────────────────
+# Learned directives ride in the system prompt on EVERY request, so these caps
+# are a budget control as much as a quality one: 40 rules at ~120 chars is
+# roughly 1.5k tokens on all 250 daily requests. Raise deliberately.
+BRAIN_MAX_DIRECTIVES = 40
+BRAIN_MAX_CHARS = 6000
+# The summariser proposes at most this many inferred directives per run, so a
+# single chatty conversation cannot flood the approvals queue.
+BRAIN_MAX_PROPOSALS_PER_RUN = 2
+
 HEARTBEAT_INTERVAL_SECONDS = 30
 WORKER_RECONNECT_MAX_RETRIES = 5
 WORKER_RECONNECT_BACKOFF_BASE_SECONDS = 2
@@ -71,8 +81,11 @@ TOOL_TIER_MAP = {
     # Travel
     "travel_directions":    "auto",
     "transit_departures":   "auto",
-    # Profile
+    # Profile & memory
     "update_profile":       "approve",
+    "brain_learn":          "approve",
+    # Reminders
+    "schedule_reminder":    "approve",
     # Inventory
     "inventory_update":     "approve",
     # Dangerous

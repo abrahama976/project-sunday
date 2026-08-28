@@ -13,7 +13,7 @@ from config import (
 from heartbeat import run_heartbeat
 from router import route
 from summariser import maybe_summarise
-from context.loader import fetch_and_cache_profile
+from context.loader import fetch_and_cache_profile, fetch_and_cache_directives
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
 from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief, sync_calendar_job
@@ -21,6 +21,7 @@ from executors.base import set_status
 from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
+from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
 from utils import generate_with_retry
 from executors.web_search_ops import web_search
@@ -63,6 +64,7 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "gmail_read_body":     gmail_read_body,
         "gmail_priority_scan": gmail_priority_scan,
         "update_profile":      lambda **kw: update_profile(client_ref[0], user_id_ref[0], **kw),
+        "brain_learn":         lambda **kw: brain_learn(client_ref[0], user_id_ref[0], **kw),
         "task_create":         lambda **kw: task_create(client_ref[0], user_id=user_id_ref[0], **kw),
         "task_update":         lambda **kw: task_update(client_ref[0], user_id=user_id_ref[0], **kw),
         "task_list":           lambda **kw: task_list(client_ref[0], user_id=user_id_ref[0], **kw),
@@ -77,6 +79,9 @@ def _action_result_message(tool: str, args: dict, result) -> str:
         "task_create":       lambda a, r: f"✓ Task '{a.get('name', '')}' created.",
         "task_update":       lambda a, r: f"✓ Task updated.",
         "update_profile":    lambda a, r: f"✓ Profile updated: {a.get('section', '')}.",
+        # Uses the executor's own return: it reports whether this superseded an
+        # existing rule, which is the part worth seeing.
+        "brain_learn":       lambda a, r: f"🧠 {r}",
         "schedule_reminder": lambda a, r: f"✓ Reminder set for {a.get('remind_at_iso', '')}.",
     }
     fn = templates.get(tool)
@@ -306,7 +311,14 @@ async def reap_stale_message_claims(client: Client):
             print(f"[msg-reaper] error: {e}", flush=True)
 
 async def poll_profile_updates(client: Client):
+    """Watch both memory layers for out-of-band edits.
+
+    The user can change either from the phone (Profile, and Profile → Brain)
+    without the worker being involved, so the caches the router reads have to
+    be refreshed on a timer rather than only on write.
+    """
     last_updated_at = None
+    last_brain_at = None
     while True:
         try:
             await asyncio.sleep(10)
@@ -319,6 +331,19 @@ async def poll_profile_updates(client: Client):
                     print(f"[poll] profile update detected, reloading...")
                     await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
                 last_updated_at = current_updated_at
+
+            brain_res = await asyncio.to_thread(
+                lambda: client.table("brain_directives")
+                .select("updated_at")
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            current_brain_at = brain_res.data[0].get("updated_at") if brain_res.data else None
+            if last_brain_at is not None and current_brain_at != last_brain_at:
+                print("[poll] brain update detected, reloading...")
+                await _load_brain(client)
+            last_brain_at = current_brain_at
         except Exception as e:
             print(f"[poll] profile check error: {e}", flush=True)
 
@@ -366,10 +391,33 @@ async def poll_reminders(client: Client):
         except Exception as e:
             print(f"[poll_reminders] error: {e}", flush=True)
 
+async def _load_brain(client: Client) -> None:
+    """Load learned directives into the synchronous cache the router reads.
+
+    Scoped to the primary user, matching the single-user assumption already
+    baked into fetch_and_cache_profile (which does .limit(1)). When multi-user
+    isolation lands, both caches become per-user together.
+    """
+    try:
+        res = await asyncio.to_thread(
+            lambda: client.table("user_profile").select("user_id").limit(1).execute()
+        )
+        if not res.data:
+            return
+        uid = res.data[0].get("user_id")
+        if not uid:
+            return
+        rows = await fetch_and_cache_directives(client, uid)
+        print(f"[brain] loaded {len(rows)} active directive(s)")
+    except Exception as e:
+        print(f"[brain] load failed: {e}", flush=True)
+
+
 async def main():
     print("[worker] Project Sunday worker starting...")
     client = get_client()
     await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
+    await _load_brain(client)
 
     # Start profile poll loop
     def _on_profile_poll_done(task):
