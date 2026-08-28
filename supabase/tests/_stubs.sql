@@ -25,11 +25,19 @@ CREATE OR REPLACE FUNCTION net.http_post(
 LANGUAGE sql AS $$ SELECT 1::bigint $$;
 
 -- pg_cron.
+-- Column set mirrors real pg_cron, including `active` — the runbook's
+-- verification query selects it, so a stub without it would pass here and
+-- fail against a real database.
 CREATE TABLE IF NOT EXISTS cron.job (
     jobid bigserial PRIMARY KEY,
     jobname text,
     schedule text,
-    command text
+    command text,
+    nodename text DEFAULT 'localhost',
+    nodeport int DEFAULT 5432,
+    database text DEFAULT 'postgres',
+    username text DEFAULT 'postgres',
+    active boolean DEFAULT true
 );
 
 CREATE OR REPLACE FUNCTION cron.schedule(job_name text, schedule text, command text)
