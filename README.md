@@ -1,157 +1,191 @@
 # Project Sunday
 
-A hybrid personal AI assistant that runs as a **Next.js PWA** (deployed to Vercel) paired with a **Python worker** running locally on your Mac. All state lives in **Supabase**; the worker polls for messages, routes them through a cascading AI model chain, and executes tool calls autonomously.
+A personal AI assistant. Next.js PWA on Vercel for the interface, a Python
+worker on a Mac for the actions, Supabase in between holding all state.
+
+Built to run at zero recurring cost: Gemini's free tier as the primary brain,
+with a cascade down through Groq to local Ollama when the daily budget runs out.
+
+> **Status.** The worker is not currently running and Google OAuth tokens have
+> expired. See [ROADMAP.md](./ROADMAP.md) for what is built, what is not, and
+> the order to bring it back.
+
+---
 
 ## Architecture
 
 ```
-┌────────────────────┐       ┌──────────────┐       ┌─────────────────┐
-│  Next.js PWA       │──────▶│  Supabase    │◀──────│  Python Worker  │
-│  (Vercel)          │       │  (Cloud DB)  │       │  (Local Mac)    │
-│                    │       │              │       │                 │
-│  • Chat UI         │       │  • messages  │       │  • Router       │
-│  • Profile Editor  │       │  • actions   │       │  • Executors    │
-│  • Settings        │       │  • tasks     │       │  • Scheduler    │
-│  • Approvals       │       │  • profiles  │       │  • Google OAuth │
-│  • Tasks           │       │  • briefings │       │  • Ollama       │
-│  • Dashboard       │       │  • heartbeat │       │                 │
-└────────────────────┘       └──────────────┘       └─────────────────┘
+┌──────────────────┐      ┌──────────────┐      ┌──────────────────┐
+│  Next.js PWA     │─────▶│  Supabase    │◀─────│  Python worker   │
+│  (Vercel)        │      │  (Postgres)  │      │  (local Mac)     │
+│                  │      │              │      │                  │
+│  Today · Chat    │      │  messages    │      │  LLM router      │
+│  Tasks · Schedule│      │  action_queue│      │  20 executors    │
+│  Approvals       │      │  tasks       │      │  cron scheduler  │
+│  Profile · Brain │      │  user_profile│      │  Google OAuth    │
+│  Health · More   │      │  brain_…     │      │  Ollama fallback │
+└──────────────────┘      └──────────────┘      └──────────────────┘
+                                 │
+                                 └── pg_cron watchdog → ntfy → phone
 ```
 
-## Project Structure
+The two halves never talk directly. The web app writes rows; the worker polls
+for them, acts, and writes rows back. That means the UI stays up when the Mac
+is asleep — and it also means nothing happens while the Mac is asleep, which
+the watchdog exists to tell you about.
+
+---
+
+## The two memory layers
+
+Sunday remembers in two distinct ways, and keeping them apart is deliberate.
+
+| | **Profile** | **Brain** |
+|---|---|---|
+| Holds | Facts about you | Rules about how to serve you |
+| Example | "Lives in Sydney" | "Keep answers under three sentences" |
+| Stored as | Markdown in `user_profile` | Rows in `brain_directives` |
+| Written by | `update_profile` | `brain_learn` |
+| Edited at | Profile | Profile → Learned rules |
+
+Facts are read and rarely revised, so a markdown blob suits them. Rules get
+contradicted, refined and retired, which a blob cannot express — you cannot
+supersede a bullet inside one, record where it came from, or retire it without
+losing the history.
+
+### How the brain learns
+
+Tell Sunday how you want something done — *"keep it shorter"*, *"always show
+code first"*, *"stop suggesting news at night"* — and it proposes a rule. You
+approve it, and it applies from then on. The summariser also proposes rules
+from observed patterns every seven messages, capped at two per run.
+
+Learned rules are appended to the system prompt after `brain_growth.md` and win
+where they conflict with a default. Four constraints keep a self-modifying
+prompt safe:
+
+1. **Approve-tier.** Nothing lands without your tap.
+2. **User-sourced only.** A rule may come from what you said or from the
+   summariser watching you. Never from a fetched page, an email body, or tool
+   output — otherwise `web_fetch` becomes a persistent prompt-injection vector.
+   Enforced in the executor *and* by a `CHECK` constraint in the schema.
+3. **Capped.** 40 rules, 6000 characters. This text rides on all 250 daily
+   requests, so growth is a budget cost.
+4. **Superseding, not stacking.** A restatement replaces the old rule rather
+   than sitting beside it.
+
+`apps/worker/context/brain_growth.md` is the constitution: hand-written,
+version-controlled, never machine-edited.
+
+---
+
+## Approval tiers
+
+No write happens without a tap. Tools are classified in `config.py`:
+
+- **`auto`** — executes inline. Reads, plus task create/update.
+- **`approve`** — queued to `action_queue`, waits for you in Approvals.
+  Calendar writes, Gmail drafts, profile and brain writes, reminders.
+- **`hold`** — declared but not exposed to the model at all. Deletes, sending
+  email, shell. Present so that if they are ever added to the registry they
+  already carry a safe tier.
+
+---
+
+## Repository layout
 
 ```
-PersonalAI/
-├── apps/
-│   ├── web/                  # Next.js 14 PWA (App Router)
-│   │   ├── src/app/
-│   │   │   ├── page.tsx          # Chat interface (main screen)
-│   │   │   ├── approvals/        # Action approval queue
-│   │   │   ├── dashboard/        # Morning briefing dashboard
-│   │   │   ├── tasks/            # Task management UI
-│   │   │   ├── profile/          # AI memory/profile editor
-│   │   │   ├── settings/         # Background job toggles
-│   │   │   ├── more/             # Settings hub / navigation
-│   │   │   ├── inventory/        # Inventory tracking
-│   │   │   ├── schedule/         # Calendar/schedule view
-│   │   │   └── login/            # Authentication
-│   │   └── package.json
-│   │
-│   └── worker/               # Python async worker (runs on Mac)
-│       ├── main.py               # Entry point, message loop, poll loops
-│       ├── router.py             # Cascading LLM router (Gemini → Ollama)
-│       ├── config.py             # All configuration and tier map
-│       ├── scheduler.py          # Cron-like job scheduler
-│       ├── jobs.py               # Scheduled job handlers
-│       ├── summariser.py         # Auto-profile learning from conversations
-│       ├── heartbeat.py          # Supabase heartbeat ping
-│       ├── google_auth.py        # Centralised Google OAuth2 management
-│       ├── auth.py               # Supabase service role key resolver
-│       ├── context/
-│       │   └── loader.py         # Profile cache (Supabase → memory)
-│       ├── tools/
-│       │   └── registry.py       # Gemini function declarations (20 tools)
-│       ├── executors/
-│       │   ├── calendar_ops.py   # Google Calendar CRUD
-│       │   ├── gmail_ops.py      # Gmail search, read, draft, scan
-│       │   ├── task_ops.py       # Task CRUD via Supabase
-│       │   ├── profile_ops.py    # AI profile updates via Supabase
-│       │   ├── travel_ops.py     # Google Maps + TfNSW transit
-│       │   ├── web_search_ops.py # DuckDuckGo web search
-│       │   ├── web_fetch.py      # URL content fetcher
-│       │   ├── file_ops.py       # Local file read/write/list
-│       │   ├── news_ops.py       # RSS news fetch & scoring
-│       │   └── base.py           # Idempotency & status helpers
-│       └── requirements.txt
-│
-├── supabase/
-│   └── migrations/           # 5 migration files
-│       ├── 20260429182626_remote_schema.sql
-│       ├── 20260429183724_create_base_tables.sql
-│       ├── 20260516131651_security_sprint_and_action_queue_upgrade.sql
-│       ├── 20260603000000_phase1_foundation_tables.sql
-│       └── 20260603000001_create_user_profile.sql
-│
-└── docs/                     # Architecture documentation
+apps/
+  web/                  Next.js PWA (App Router, TypeScript, Tailwind)
+    src/app/
+      page.tsx          Today — the home screen
+      chat/             Conversation
+      approvals/        Pending actions, with per-type preview cards
+      profile/          Profile editor + the learned-rules panel
+      tasks/ schedule/ health/ inventory/ settings/ more/
+  worker/               Python 3.13 asyncio worker — local Mac only
+    main.py             Entry point, poll loops, action dispatch
+    router.py           Cascading LLM router + system prompt assembly
+    budget_gate.py      The only path to an LLM call; enforces daily caps
+    scheduler.py        Cron scheduler, honours per-job timezones
+    jobs.py             Scheduled job handlers
+    summariser.py       Extracts facts and proposes rules, one call per run
+    executors/          One module per tool family
+    context/
+      brain_growth.md   The constitution (static)
+      loader.py         Caches profile + directives for the prompt hot path
+    tests/              Dependency-free unit tests — python3 tests/test_brain.py
+supabase/
+  migrations/           Schema history
+  tests/                SQL suites — ./supabase/tests/run.sh
+docs/
+  sprint_3_design.md    Agentic loop design (not yet implemented)
 ```
 
-## Features (Phase 1 — Complete)
+---
 
-### AI Chat with Cascading Fallback
-- **Primary**: `gemini-2.5-flash` — best quality, lowest free quota (20 RPD)
-- **Fallback 1**: `gemini-2.5-flash-lite` — higher quota tier
-- **Fallback 2**: Local Ollama (`llama3.2:latest`) — unlimited, offline
-- **Private mode**: `/private <message>` bypasses Google entirely → Ollama
-- Automatic 429/503 error handling with seamless model cascade
-
-### Tool Calling (20 Registered Tools)
-| Tool | Tier | Description |
-|------|------|-------------|
-| `calendar_query` | auto | Query upcoming Google Calendar events |
-| `calendar_create` | approve | Create calendar events |
-| `calendar_update` | approve | Update calendar events |
-| `gmail_search` | auto | Search Gmail inbox |
-| `gmail_read_body` | auto | Read full email content |
-| `gmail_priority_scan` | auto | Scan for important unread emails |
-| `gmail_draft` | approve | Create Gmail drafts |
-| `task_create` | auto | Create tasks from conversation |
-| `task_update` | auto | Update task status/priority |
-| `task_list` | auto | List filtered tasks |
-| `web_search` | auto | DuckDuckGo web search |
-| `web_fetch` | auto | Fetch URL content |
-| `travel_directions` | auto | Google Maps routing |
-| `transit_departures` | auto | TfNSW real-time Sydney transit |
-| `update_profile` | approve | Update AI memory/profile |
-| `file_read` | auto | Read local files |
-| `file_list` | auto | List directory contents |
-| `file_write` | approve | Write to local files |
-
-### Approval Tiers
-- **auto**: Executes immediately, no user confirmation
-- **approve**: Queued for user approval in the Approvals UI
-- **hold**: Dangerous operations, requires explicit approval
-
-### Background Jobs (Scheduler)
-- `morning_briefing` — Daily at 7am AEST
-- `email_scan` — Every 30 minutes
-- `news_fetch` — Twice daily (6am, 6pm)
-- Jobs controlled via `/settings` UI toggles
-
-### Profile Memory System
-- Editable Markdown stored in Supabase `user_profile` table
-- AI reads profile into system prompt for every message
-- Auto-learning: summariser extracts facts every 7 messages
-- Profile changes detected via polling (10s interval)
-
-## Setup
+## Running it
 
 ### Prerequisites
-- Node.js 18+, Python 3.11+
-- Supabase project with migrations applied
-- Google Cloud OAuth credentials (`credentials.json`)
-- Ollama installed with `llama3.2` model pulled
+Node 18+, Python 3.11+, a Supabase project with migrations applied, Google
+OAuth credentials (`credentials.json`), and Ollama with `llama3.2` pulled.
 
-### Environment Variables (`apps/worker/.env`)
+### Environment — `apps/worker/.env`
 ```env
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-GEMINI_API_KEY=your-gemini-api-key
-GOOGLE_MAPS_API_KEY=your-maps-key        # optional
-TFNSW_API_KEY=your-tfnsw-key             # optional
+SUPABASE_SERVICE_ROLE_KEY=...
+GEMINI_API_KEY=...
+GROQ_API_KEY=              # optional — cascade tier below Gemini
+GOOGLE_MAPS_API_KEY=       # optional — travel_directions
+TFNSW_API_KEY=             # optional — Sydney transit
+TAVILY_API_KEY=            # optional — web_search
+NTFY_TOPIC=                # push notifications
 ```
 
-### Running
+### Start
 ```bash
-# Frontend (or deployed to Vercel)
-cd apps/web && npm run dev
+# Frontend
+cd apps/web && npm install && npm run dev
 
-# Worker (runs locally on Mac)
+# Worker
 cd apps/worker
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python3 main.py
 ```
 
-## Status
+The worker is normally managed by `launchd` via
+`apps/worker/com.projectsunday.worker.plist`, which restarts it when it exits.
 
-Phase 1 complete. See [walkthrough.md](./walkthrough.md) for details.
+### First run after a break
+
+See **[docs/runbook.md](./docs/runbook.md)** for the two manual steps that are
+easy to get subtly wrong:
+
+- **Publishing the OAuth consent screen to Production.** Stops the 7-day
+  refresh-token expiry. Note that tokens minted while the app was in Testing
+  keep their 7-day fate — you must re-authorise *after* publishing or nothing
+  changes.
+- **Arming the watchdog.** It ships inert; it does nothing until you give it an
+  ntfy topic. Use a long random one — ntfy topics are public.
+
+---
+
+## Tests
+
+```bash
+python3 apps/worker/tests/test_brain.py     # brain logic, no dependencies
+./supabase/tests/run.sh                     # watchdog + schema, throwaway PG
+```
+
+---
+
+## Constraints
+
+These are standing rules for the project, not preferences:
+
+- Email is never sent, only drafted.
+- Tasks and messages are soft-deleted, never hard-deleted.
+- `budget_gate.py` is the only path to an LLM call.
+- The AI may suggest calendar changes, never book them unattended.
+- UI is dark-mode, mobile-first, 390px baseline.

@@ -194,7 +194,7 @@ async def news_fetch_and_store(
 
     # Discover user_id for budget gate
     user_res = await asyncio.to_thread(
-        lambda: client.table("user_profile").select("user_id").limit(1).maybeSingle().execute()
+        lambda: client.table("user_profile").select("user_id").limit(1).maybe_single().execute()
     )
     news_uid = user_res.data.get("user_id") if user_res.data else None
 

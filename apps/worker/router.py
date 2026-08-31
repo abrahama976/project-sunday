@@ -6,7 +6,8 @@ from google.genai import types
 from google.genai.errors import APIError
 from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL
 from utils import generate_with_retry
-from context.loader import get_profile
+from context.loader import get_profile, get_directives
+from executors.brain_ops import render_directives
 from tools.registry import TOOLS
 from supabase import Client
 from budget_gate import pick_model, check_and_increment, _groq_available
@@ -50,6 +51,7 @@ def build_system_prompt() -> str:
         "- You are a personal assistant named Sunday. Always refer to yourself as Sunday.\n"
     )
 
+    # The constitution: hand-written, version-controlled, never machine-edited.
     import os
     brain_path = os.path.join(os.path.dirname(__file__), "context", "brain_growth.md")
     try:
@@ -57,6 +59,13 @@ def build_system_prompt() -> str:
             base += f"\n\n{f.read()}\n"
     except Exception as e:
         print(f"[router] could not read brain_growth.md: {e}")
+
+    # The learned layer: directives the user has taught Sunday over time.
+    # Placed last so it carries the most weight — a learned rule should be able
+    # to override a default stated further up this prompt.
+    learned = render_directives(get_directives())
+    if learned:
+        base += f"\n\n{learned}\n"
 
     return base
 async def _ask_ollama(message: str, history: list[dict]) -> dict:
