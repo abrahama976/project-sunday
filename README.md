@@ -6,9 +6,9 @@ worker on a Mac for the actions, Supabase in between holding all state.
 Built to run at zero recurring cost: Gemini's free tier as the primary brain,
 with a cascade down through Groq to local Ollama when the daily budget runs out.
 
-> **Status.** The worker is not currently running and Google OAuth tokens have
-> expired. See [ROADMAP.md](./ROADMAP.md) for what is built, what is not, and
-> the order to bring it back.
+> **Status.** The consent screen is published and the watchdog is armed and
+> proven. The worker is still stopped — it needs one Google re-authorisation
+> before it will start. See [ROADMAP.md](./ROADMAP.md).
 
 ---
 

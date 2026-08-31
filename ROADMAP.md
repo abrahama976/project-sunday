@@ -13,13 +13,13 @@ Last updated: **2026-08-31**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260828150000` |
+| Supabase | Up | Migrations through `20260831000000` |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Settings, Inventory |
-| `apps/worker` | **Not running** | Everything below inherits this |
-| Google OAuth | **Expired** | Consent screen on External + Testing — tokens die every 7 days |
+| `apps/worker` | **Not running** | Silent since 2026-07-01. Needs re-auth, then start |
+| Google OAuth | **In production** | 7-day expiry retired. Tokens minted in Testing still need one re-auth |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
-| Watchdog | Built | pg_cron → ntfy. Needs a topic set before it does anything |
+| Watchdog | **Armed & proven** | Topic set; ntfy returned 200 on a live alert |
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Not built | Sprint 3.T4 |
@@ -38,12 +38,17 @@ Last updated: **2026-08-31**
 - [x] The learning brain
 - [x] Collapse the documentation
 - [x] Runbook for the two manual steps — [docs/runbook.md](./docs/runbook.md)
-- [ ] **Publish the Google consent screen to Production** — manual, ~20 min.
-      The 7-day expiry is tied to *publishing status*, not verification, so no
-      verification is needed. Tokens minted in Testing keep their 7-day fate,
-      so re-auth afterwards or nothing changes.
-- [ ] Apply the four migrations and set `watchdog_config.ntfy_topic`
-- [ ] Start the worker and watch one full scheduler cycle
+- [x] **Google consent screen published to Production** — status reads
+      *In production*, External, 1/100 user cap. The 7-day refresh-token expiry
+      is retired for tokens minted from here on.
+- [x] Migrations applied and the watchdog armed — verified against the live
+      database, not the ledger: `pg_net` 0.20.0 and `pg_cron` 1.6.4 installed,
+      the cron job active on `*/5 * * * *`, and ntfy returning **200** for a
+      real alert.
+- [ ] **Re-authorise Google**, then start the worker. Publishing does not heal
+      tokens minted under Testing — `rm token_*.json`, run `main.py`, approve
+      both consent screens. Expect a "Sunday is back" push once it comes up.
+- [ ] Watch one full scheduler cycle
 
 ## Phase 1 — The agentic loop (Sprint 3.T1) · *done*
 
@@ -112,6 +117,13 @@ twelve-week gap. Decide each on evidence after a fortnight of real use:
 
 1. **Google OAuth 7-day expiry.** Top of Phase 0. Manual fix.
 2. **Migration drift.** `mac_heartbeat.status` was written by the worker but
-   never migrated, and a previous commit exists purely to repair drift. Prefer
-   migrations over dashboard edits.
+   never migrated. Now confirmed: the live column holds `'online'`, not the
+   `'offline'` default a newly-created column would carry, so it had been added
+   by hand in the dashboard and heartbeat writes were never failing. The
+   migration closed the drift for anyone rebuilding from scratch. Prefer
+   migrations over dashboard edits — this one cost an afternoon of uncertainty.
 3. **Global ntfy topic.** `poll_reminders` pushes to one topic for all users.
+4. **The dormancy was 60 days, not twelve weeks.** The last commit is
+   2026-06-06 but `mac_heartbeat.last_seen` reads 2026-07-01 — the worker ran
+   for three and a half weeks after the code went quiet. Worth remembering when
+   reasoning about what "still worked" at the end.
