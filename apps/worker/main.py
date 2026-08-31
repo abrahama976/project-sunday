@@ -453,6 +453,23 @@ async def main():
         status = "✓" if valid else "✗ (re-auth needed)"
         print(f"[worker] Google {service}: {status}")
 
+    # Say what to DO about it. The worker no longer opens a browser on its own
+    # — scheduled jobs that need Google will fail with ReauthRequired until
+    # this is run — so the instruction has to be here, at eye level, once.
+    if not all(token_status.values()):
+        missing = ", ".join(n for n, ok in token_status.items() if not ok)
+        print(f"[worker] ⚠ {missing} will fail until you run:  python3 auth_setup.py")
+
+    # A missing ntfy topic is silent otherwise: notify_ops just skips every
+    # push, so reminders and approval alerts vanish with one line buried in
+    # the log at the moment they are dropped.
+    from config import NTFY_TOPIC
+    if NTFY_TOPIC:
+        print(f"[worker] ntfy topic: ✓ ({NTFY_TOPIC})")
+    else:
+        print("[worker] ntfy topic: ✗ NTFY_TOPIC unset — reminders and approval "
+              "pushes will be silently dropped. Set it in apps/worker/.env")
+
     # Verify Ollama connectivity and list models
     try:
         from ollama import AsyncClient as OllamaClient

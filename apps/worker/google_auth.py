@@ -5,6 +5,7 @@ instead of duplicating the OAuth flow. Supports Calendar, Gmail, and future
 Google services.
 """
 import asyncio
+import threading
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -13,6 +14,36 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 _WORKER_DIR = Path(__file__).resolve().parent
 _CREDENTIALS_PATH = _WORKER_DIR / "credentials.json"
+
+
+class ReauthRequired(RuntimeError):
+    """No usable credentials, and we are not allowed to prompt for them here.
+
+    Raised instead of opening a browser when running unattended. Callers should
+    let this propagate: the job fails with a clear message, and the user runs
+    `python3 auth_setup.py` once when they are actually at the keyboard.
+    """
+
+
+# Only an explicit, interactive entry point may run the browser flow.
+# Everything else — scheduled jobs, chat tool calls, the poll loops — is
+# unattended by definition.
+#
+# This exists because of a real incident: a worker starting after a 60-day
+# outage fired seven catch-up jobs at once, and each one independently called
+# InstalledAppFlow.run_local_server(port=0). Seven consent URLs on seven ports,
+# none of them completable, retrying every minute. The fix is not to serialise
+# those flows — it is that none of them should have existed.
+_interactive_auth_allowed = False
+
+# Guards the one flow that IS allowed, in case two threads reach it together.
+_auth_lock = threading.Lock()
+
+
+def allow_interactive_auth() -> None:
+    """Permit the browser OAuth flow on this process. Call only from a CLI."""
+    global _interactive_auth_allowed
+    _interactive_auth_allowed = True
 
 # ── Service definitions ────────────────────────────────────────
 SERVICES: dict[str, dict] = {
@@ -90,20 +121,33 @@ def get_credentials(service_name: str) -> Credentials:
         except Exception as e:
             print(f"[google_auth] refresh failed for {service_name}, re-authenticating: {e}")
 
-    # Full OAuth flow — requires user interaction (browser)
+    # Full OAuth flow — requires a human at a browser.
+    if not _interactive_auth_allowed:
+        raise ReauthRequired(
+            f"Google {service_name} needs re-authorisation and this process "
+            "cannot prompt for it. Run:  python3 auth_setup.py"
+        )
+
     if not _CREDENTIALS_PATH.exists():
         raise FileNotFoundError(
             f"credentials.json not found at {_CREDENTIALS_PATH}. "
             "Download it from Google Cloud Console."
         )
 
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(_CREDENTIALS_PATH), scopes
-    )
-    creds = flow.run_local_server(port=0)
-    token_path.write_text(creds.to_json(), encoding="utf-8")
-    _cache[service_name] = creds
-    return creds
+    with _auth_lock:
+        # Re-check inside the lock: another thread may have completed the flow
+        # for this service while we were waiting, and a second consent screen
+        # for credentials we now hold is pure confusion.
+        if service_name in _cache and _cache[service_name].valid:
+            return _cache[service_name]
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(_CREDENTIALS_PATH), scopes
+        )
+        creds = flow.run_local_server(port=0)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        _cache[service_name] = creds
+        return creds
 
 
 def verify_all_tokens() -> dict[str, bool]:

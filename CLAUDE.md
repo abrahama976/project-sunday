@@ -50,6 +50,15 @@ the only writer of `agent_turns`. When touching it:
   loses the whole turn.
 - **Telemetry never breaks the answer.** `log_turn` swallows its own errors.
 
+## Two failure modes this project has already paid for
+
+- **`maybe_single()` returns `None`**, not a response with `data=None`, when no
+  row matches. `res.data` on that raises. Always go through `utils.row()`.
+- **Background code never opens an OAuth browser flow.** `google_auth` raises
+  `ReauthRequired` unless `allow_interactive_auth()` was called, and only
+  `auth_setup.py` calls it. Seven catch-up jobs once opened seven consent URLs
+  on seven ports, none completable.
+
 ## Conventions
 
 - Python: `supabase-py` uses **snake_case** (`maybe_single()`, not
@@ -57,6 +66,8 @@ the only writer of `agent_turns`. When touching it:
 - Wrap blocking Supabase calls in `asyncio.to_thread`.
 - Background tasks get an `add_done_callback` that escalates to `sys.exit(1)`
   so `launchd` recycles the worker. Do not add a bare `create_task`.
+- The scheduler holds an `_in_flight` set: a job slower than the tick must not
+  be started twice. Release it in a `finally`, or a raising job never runs again.
 - Scheduler jobs store **local** hours against their `timezone` column;
   `scheduler.py` honours it. Do not pre-convert to UTC — it drifts under DST.
 - New tools need three edits: `tools/registry.py` (declaration),

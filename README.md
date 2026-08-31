@@ -126,6 +126,7 @@ apps/
       tasks/ schedule/ health/ inventory/ settings/ more/
   worker/               Python 3.13 asyncio worker — local Mac only
     main.py             Entry point, poll loops, action dispatch
+    auth_setup.py       The ONLY place the browser OAuth flow may run
     agent_loop.py       think → act → observe; the only writer of agent_turns
     router.py           Cascading LLM router + system prompt assembly
     budget_gate.py      The only path to an LLM call; enforces daily caps
@@ -176,8 +177,13 @@ cd apps/web && npm install && npm run dev
 cd apps/worker
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python3 auth_setup.py    # once, interactively — authorises Google
 python3 main.py
 ```
+
+`auth_setup.py` is the only place the browser OAuth flow runs. The worker
+itself never opens one: a background job that needs Google fails with
+`ReauthRequired` and says what to run. That is deliberate — see the runbook.
 
 The worker is normally managed by `launchd` via
 `apps/worker/com.projectsunday.worker.plist`, which restarts it when it exits.
@@ -200,6 +206,7 @@ easy to get subtly wrong:
 
 ```bash
 python3 apps/worker/tests/test_brain.py       # brain logic, no dependencies
+python3 apps/worker/tests/test_scheduler.py   # cron + in-flight guard, no deps
 python3 apps/worker/tests/test_agent_loop.py  # the loop, against a scripted
                                               # model; needs the worker's deps
 ./supabase/tests/run.sh                       # watchdog + schema, throwaway PG
