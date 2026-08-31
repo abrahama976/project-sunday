@@ -30,7 +30,9 @@ Last updated: **2026-08-28**
 
 - [x] Repair the learning loop — `maybe_single()`, summariser call signature
 - [x] `mac_heartbeat.status` migration (written by the worker, never migrated)
-- [x] Scheduler timezones — `meal_checkin` was firing at 23:00 and 05:00 Sydney
+- [x] Scheduler timezones — `meal_checkin` was firing at 23:00 and 05:00 Sydney,
+      `cold_storage_archive` on Sunday afternoons. (`daily_brief` was already
+      correct — pinned, not fixed.)
 - [x] `schedule_reminder` explicit in `TOOL_TIER_MAP`
 - [x] Dead-man's watchdog outside the Mac
 - [x] The learning brain
