@@ -9,9 +9,11 @@ from config import (
     WORKER_RECONNECT_MAX_RETRIES,
     WORKER_RECONNECT_BACKOFF_BASE_SECONDS,
     APPROVAL_POLL_INTERVAL_SECONDS,
+    TOOL_TIER_MAP,
 )
 from heartbeat import run_heartbeat
-from router import route
+from router import route_special, degraded_chat
+from agent_loop import run_agent_loop
 from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile, fetch_and_cache_directives
 from google_auth import verify_all_tokens
@@ -165,13 +167,69 @@ async def execute_action(client: Client, action: dict):
             }).execute()
         )
 
+async def _queue_write_tier(client: Client, user_id: str, tool: str, args: dict) -> str:
+    """Queue an approve-tier action from inside the loop and describe it.
+
+    The payload must stand alone: once the loop halts, execute_action runs this
+    row with no memory of the conversation that produced it, so every argument
+    the executor needs has to be resolved by now (design §6).
+    """
+    await asyncio.to_thread(
+        lambda: client.table("action_queue").insert({
+            "user_id": user_id,
+            "action_type": tool,
+            "payload": args,
+            "tier": TOOL_TIER_MAP.get(tool, "approve"),
+            "status": "awaiting_approval",
+            "approved": None,
+        }).execute()
+    )
+    await push_approval(action_type=tool, summary=str(args))
+    return f"I've prepared {tool} for your approval. Check the Approvals tab."
+
+
 async def handle_message(client: Client, message: dict, history: list, user_id: str) -> bool:
     content = message.get("content", "")
     if not content or message.get("role") != "user":
         return False
     print(f"[router] routing: {content[:60]}")
+
+    async def _insert_reply(text: str, model_used: str) -> None:
+        row = {
+            "user_id": user_id,
+            "role": "assistant",
+            "content": text,
+            "model_used": model_used,
+        }
+        # Design §8: the UI renders a low-power indicator off this flag, so the
+        # user can tell a local answer from a cloud one.
+        if model_used == "ollama":
+            row["metadata"] = {"low_power": "true"}
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert(row).execute()
+        )
+
     try:
-        result = await route(client, content, history, GEMINI_API_KEY, user_id)
+        # /private and brain-dump decide from the text alone and never enter
+        # the loop. Everything else goes to think → act → observe, whose first
+        # round doubles as the routing call — so a message needing no tool
+        # still costs exactly one model call.
+        special = await route_special(client, content, history, GEMINI_API_KEY, user_id)
+        if special is None:
+            registry = _make_registry([client], [user_id])
+            return await run_agent_loop(
+                client,
+                message=content,
+                history=history,
+                user_id=user_id,
+                message_id=message.get("id"),
+                gemini_api_key=GEMINI_API_KEY,
+                registry=registry,
+                on_write_tier=lambda t, a: _queue_write_tier(client, user_id, t, a),
+                insert_reply=_insert_reply,
+                degraded_reply=lambda p: degraded_chat(p, content, history),
+            )
+        result = special
     except Exception as e:
         print(f"[router] error: {e}")
         error_msg = str(e)
@@ -190,48 +248,11 @@ async def handle_message(client: Client, message: dict, history: list, user_id: 
         )
         return False
 
-    model_used = result.get("model_used", "system")
-
-    if result["type"] == "text":
-        await asyncio.to_thread(
-            lambda: client.table("messages").insert({
-                "user_id": user_id,
-                "role": "assistant",
-                "content": result["content"],
-                "model_used": model_used
-            }).execute()
-        )
-        return True
-
-    if result["type"] == "tool_call":
-        tool = result["tool"]
-        tier = result["tier"]
-        inserted = await asyncio.to_thread(
-            lambda: client.table("action_queue").insert({
-                "user_id": user_id,
-                "action_type": tool,
-                "payload": result["args"],
-                "tier": tier,
-                "status": "approved" if tier == "auto" else "awaiting_approval",
-                "approved": True if tier == "auto" else None
-            }).execute()
-        )
-        
-        if tier != "auto":
-            await push_approval(action_type=tool, summary=str(result.get("args", "")))
-
-        if tier == "approve":
-            await asyncio.to_thread(
-                lambda: client.table("messages").insert({
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": f"I've suggested an action for your approval: {tool}. Check the Approvals tab.",
-                    "model_used": "system"
-                }).execute()
-            )
-
-        if tier == "auto" and inserted.data:
-            await execute_action(client, inserted.data[0])
+    # Only the special paths reach here, and both return plain text — /private
+    # answers via Ollama, brain-dump inserts its tasks and reports. Tool calls
+    # are the loop's business now.
+    if result.get("type") == "text":
+        await _insert_reply(result.get("content", ""), result.get("model_used", "system"))
         return True
 
     return False

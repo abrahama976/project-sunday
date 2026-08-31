@@ -112,7 +112,14 @@ async def _ask_groq(message: str, history: list[dict]) -> dict:
 
 # record_llm_usage removed — all recording is now via budget_gate.check_and_increment
 
-async def route(client: Client, message: str, history: list[dict], gemini_api_key: str, user_id: str) -> dict:
+async def route_special(client: Client, message: str, history: list[dict], gemini_api_key: str, user_id: str) -> dict | None:
+    """Paths that bypass tool-calling entirely.
+
+    Explicit `/private` routing and brain-dump extraction both decide what to do
+    from the message text alone, before any tool-calling model call. Returns a
+    finished result dict, or None to mean "nothing special — continue to the
+    tool-calling path".
+    """
     if message.strip().startswith("/private"):
         clean_msg = message.replace("/private", "", 1).strip()
         print(f"[router] explicit private routing triggered")
@@ -215,51 +222,81 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
         except Exception as e:
             return {"type": "text", "content": f"Failed to parse brain-dump: {e}", "model_used": "system"}
 
-    client_genai = genai.Client(api_key=gemini_api_key)
+    # Nothing special about this message — the caller continues to the
+    # tool-calling path — the agentic loop in main.py.
+    return None
 
-    gemini_tools = [
+
+def build_gemini_tools() -> list:
+    """Tool declarations for the model, built from the registry."""
+    return [
         types.Tool(function_declarations=[
             types.FunctionDeclaration(
                 name=t["name"],
                 description=t["description"],
-                parameters=t["parameters"]
+                parameters=t["parameters"],
             ) for t in TOOLS
         ])
     ]
 
+
+def build_contents(history: list[dict], message: str) -> list:
+    """Seed the model conversation from stored history plus the new message.
+
+    Returned mutable: the agentic loop owns this list and appends its own
+    function_call / function_response turns to it as it goes.
+    """
     contents = []
     for h in history[-20:]:
         role = "user" if h["role"] == "user" else "model"
         contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
+    return contents
 
-    # Budget-aware model selection: pick the best available tier (defaults to allow_flash=True)
+
+async def route_turn(client: Client, contents: list, user_id: str, gemini_api_key: str) -> dict:
+    """One think step: the budget gate, then the Gemini tier cascade over `contents`.
+
+    Returns exactly one of:
+      {"status": "ok", "content": Content, "text": str,
+       "function_call": {"name", "args"} | None, "model_used": str}
+      {"status": "exhausted"}                  no model left within budget
+      {"status": "degraded", "provider": ...}  only Groq/Ollama remain, and
+                                               neither does function calling here
+      {"status": "error", "message": str}
+
+    This is the loop's only path to a model, so the budget gate runs on every
+    call: check_and_increment fires once per round, not once per user turn.
+    """
     budget_model = await pick_model(client, user_id)
     if budget_model == "EXHAUSTED":
         print("[router] All LLMs exhausted for user.")
-        return {"type": "text", "content": "You've hit today's free-tier LLM limit. Please try again later.", "model_used": "system"}
+        return {"status": "exhausted"}
     if budget_model == GROQ_MODEL:
-        print("[router] All Gemini tiers exhausted. Falling back to Groq.")
-        return await _ask_groq(message, history)
+        print("[router] All Gemini tiers exhausted — degrading to Groq.")
+        return {"status": "degraded", "provider": "groq"}
     if budget_model == "ollama":
-        print("[router] All tiers exhausted. Falling back to Ollama.")
-        return await _ask_ollama(message, history)
+        print("[router] All tiers exhausted — degrading to Ollama.")
+        return {"status": "degraded", "provider": "ollama"}
 
-    # Build cascade: start from the budget-allowed tier downward
+    client_genai = genai.Client(api_key=gemini_api_key)
+    gemini_tools = build_gemini_tools()
+
+    # Start the cascade from whatever tier pick_model said was available.
     GEMINI_TIER_ORDER = [GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL]
-    # Start the cascade from whatever pick_model said was available
-    if budget_model in GEMINI_TIER_ORDER:
-        start = GEMINI_TIER_ORDER.index(budget_model)
-        models_to_try = GEMINI_TIER_ORDER[start:]
-    else:
-        models_to_try = []  # budget_model is groq or ollama — handled below
+    start = (GEMINI_TIER_ORDER.index(budget_model)
+             if budget_model in GEMINI_TIER_ORDER else len(GEMINI_TIER_ORDER))
+    models_to_try = GEMINI_TIER_ORDER[start:]
 
     for model_id in models_to_try:
         try:
             print(f"[router] Attempting generation with {model_id}...")
             response = await generate_with_retry(
-                lambda: client_genai.models.generate_content(
-                    model=model_id,
+                # m=model_id binds per iteration — a bare closure over the loop
+                # variable is the bug this project already fixed once in the
+                # brain-dump path.
+                lambda m=model_id: client_genai.models.generate_content(
+                    model=m,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=build_system_prompt(),
@@ -272,33 +309,52 @@ async def route(client: Client, message: str, history: list[dict], gemini_api_ke
             await check_and_increment(client, user_id, model_id)
 
             candidate = response.candidates[0].content
-            for part in candidate.parts:
-                if part.function_call:
-                    fn = part.function_call
-                    tool_name = fn.name
-                    tier = TOOL_TIER_MAP.get(tool_name, "approve")
-                    return {
-                        "type": "tool_call",
-                        "tool": tool_name,
-                        "args": dict(fn.args),
-                        "tier": tier,
-                        "model_used": model_id
-                    }
+            parts = candidate.parts or []
 
-            text = "".join(p.text for p in candidate.parts if hasattr(p, "text") and p.text)
-            return {"type": "text", "content": text, "model_used": model_id}
+            text = "".join(p.text for p in parts if getattr(p, "text", None))
+
+            function_call = None
+            for part in parts:
+                if getattr(part, "function_call", None):
+                    # Only the FIRST function call is taken; any others in the
+                    # same response are ignored. Executing several in one round
+                    # would break the linear queueing the approval tiers rely on
+                    # — two write-tier calls would race the same halt.
+                    function_call = {
+                        "name": part.function_call.name,
+                        "args": dict(part.function_call.args or {}),
+                    }
+                    break
+
+            return {
+                "status": "ok",
+                "content": candidate,
+                "text": text,
+                "function_call": function_call,
+                "model_used": model_id,
+            }
 
         except APIError as e:
             if e.code in [429, 503]:
                 print(f"[router] {model_id} exhausted or unavailable (Error {e.code}). Cascading to next model...")
                 continue
-            else:
-                return {"type": "text", "content": f"Google API Error: {e.message}", "model_used": "system"}
+            return {"status": "error", "message": f"Google API Error: {e.message}"}
         except Exception as e:
-            return {"type": "text", "content": f"Unexpected Error: {e}", "model_used": "system"}
+            return {"status": "error", "message": f"Unexpected Error: {e}"}
 
     print("[router] Google models exhausted.")
-    if budget_model == GROQ_MODEL or _groq_available():
+    return {"status": "degraded", "provider": "groq" if _groq_available() else "ollama"}
+
+
+async def degraded_chat(provider: str, message: str, history: list[dict]) -> dict:
+    """Plain chat with a non-tool-calling provider, for when the budget runs out.
+
+    Groq and Ollama are wired here as chat-only, so the loop cannot continue
+    tool-calling once it degrades to them. It can still get a real answer,
+    which is the whole point of the cascade — degrading should cost the user
+    tool use, not the reply.
+    """
+    if provider == "groq":
         print("[router] Failing over to Groq...")
         return await _ask_groq(message, history)
     print("[router] Failing over to local Ollama...")

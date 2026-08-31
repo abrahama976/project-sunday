@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-08-28**
+Last updated: **2026-08-31**
 
 ---
 
@@ -20,8 +20,8 @@ Last updated: **2026-08-28**
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
 | Watchdog | Built | pg_cron → ntfy. Needs a topic set before it does anything |
-| **Agentic loop** | **Not built** | Sprint 3.T1. Designed in full, zero lines written |
-| `agent_turns` | No writers | Table and indexes exist; the loop will fill them |
+| **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
+| `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Not built | Sprint 3.T4 |
 
 ---
@@ -45,32 +45,38 @@ Last updated: **2026-08-28**
 - [ ] Apply the four migrations and set `watchdog_config.ntfy_topic`
 - [ ] Start the worker and watch one full scheduler cycle
 
-## Phase 1 — The agentic loop (Sprint 3.T1)
+## Phase 1 — The agentic loop (Sprint 3.T1) · *done*
 
-The only remaining change that alters what Sunday can *do*. Twenty tools
-currently cannot chain: *"what's on tomorrow and when do I need to leave?"*
-needs `calendar_query` then `travel_directions`, and today that is two
-questions asked by hand.
+Tools can chain now. *"What's on tomorrow and when do I need to leave?"* runs
+`calendar_query` then `travel_directions` and answers once.
 
-Implement `docs/sprint_3_design.md` as written — the design holds up.
+- [x] `agent_loop.py` — think → act → observe, `MAX_TOOL_ITERS = 5`
+- [x] Tool results fed back as `function_response`; history as `types.Content`
+- [x] `agent_turns` gets its writers
+- [x] Per-tool truncation before re-injection (§5); full output still persisted
+- [x] Write-tier call queues the action and halts the loop (§6)
+- [x] No-progress detector — identical tool + args twice running breaks out
+- [x] Unknown tool is fed back as an observation, never raised (§9)
 
-- [ ] `handle_message` becomes think → act → observe, `MAX_TOOL_ITERS = 5`
-- [ ] Tool results fed back as `function_response`; history as `types.Content`
-- [ ] `agent_turns` gets its writers
-- [ ] Per-tool truncation before re-injection (§5); full output still persisted
-- [ ] Write-tier call queues the action and halts the loop (§6)
-- [ ] No-progress detector — identical tool + args twice running breaks out
+**Three deviations from the design doc, all deliberate:**
 
-**Amendment to the design doc:** §6 lists `task_create` and `task_update` as
-write-tier, but `config.py` has them `auto` and that is the intended
-behaviour — the loop executes them inline and keeps iterating rather than
-halting for approval.
+1. **§6 lists `task_create`/`task_update` as write-tier**; `config.py` has them
+   `auto`, and that is correct. The loop runs them inline and keeps going.
+2. **§1 has a separate routing call decide whether to enter loop mode.** Doing
+   that literally spends two model calls on every message that needs a tool.
+   The loop's first round *is* the routing call, so a message needing no tool
+   still costs exactly one — same observable behaviour, budget not doubled.
+3. **Degrading to Groq/Ollama before any tool has run** hands the question to
+   that provider for a real answer, rather than the design's partial answer
+   plus low-power suffix. Returning an apology where the old single-shot
+   router gave a real reply would have been a straight regression. Mid-loop
+   the design's rule stands: gathered evidence beats starting over.
 
-## Phase 2 — Make it legible (Sprint 3.T4)
+## Phase 2 — Make it legible (Sprint 3.T4) · *next*
 
-Once Sunday chains five steps, the chat transcript alone cannot tell you what
-it did or why it stopped. `agent_turns` is already indexed on `run_id` for
-exactly this query.
+Sunday now chains up to five steps, and the chat transcript cannot tell you
+what it did or why it stopped — only the `final` row reaches chat. `agent_turns`
+is indexed on `run_id` for exactly this query, and now has rows in it.
 
 - [ ] Trace view grouped by `run_id`, reachable from More
 - [ ] Per run: steps in order, tool args, truncated results, termination reason
