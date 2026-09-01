@@ -18,7 +18,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile, fetch_and_cache_directives
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, news_fetch, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_for_all_users, send_daily_brief, sync_calendar_job
+from jobs import morning_briefing, email_scan, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_job, send_daily_brief, sync_calendar_job
 from executors.base import set_status
 from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
@@ -516,13 +516,12 @@ async def main():
     sched = Scheduler(client, GEMINI_API_KEY)
     sched.register_handler("morning_briefing", morning_briefing)
     sched.register_handler("email_scan", email_scan)
-    sched.register_handler("news_fetch", news_fetch)
     sched.register_handler("meal_checkin", meal_checkin)
     sched.register_handler("nightly_maintenance", nightly_maintenance)
     sched.register_handler("calendar_prep", calendar_prep)
     sched.register_handler("task_tracker", task_tracker)
     sched.register_handler("cold_storage_archive", cold_storage_archive)
-    sched.register_handler("daily_brief", send_daily_brief_for_all_users)
+    sched.register_handler("daily_brief", send_daily_brief_job)
     sched.register_handler("sync_calendar", sync_calendar_job)
     scheduler_task = asyncio.create_task(sched.run())
 

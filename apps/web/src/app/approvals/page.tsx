@@ -32,7 +32,6 @@ const TYPE_LABELS: Record<string, string> = {
   gmail_send: "Gmail Send",
   shell_cmd: "Shell",
   update_profile: "Update Profile",
-  inventory_update: "Inventory Update",
   web_fetch: "Web Fetch",
 };
 

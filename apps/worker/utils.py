@@ -42,6 +42,48 @@ def display_name(profile: dict, fallback: str = "there") -> str:
     return name.split()[0] if name else fallback
 
 
+class MultipleUsers(RuntimeError):
+    """More than one user exists, and this worker is built for exactly one.
+
+    Raised rather than quietly serving the first. Every scheduled job used to
+    fan out over `get_active_users()`; those loops are gone, so a second user
+    signing up would otherwise get silence — no brief, no calendar prep, no
+    task nudges — with nothing in the log to say why.
+    """
+
+
+async def resolve_user(client) -> dict:
+    """The single user this worker serves: `{user_id, name, content}`.
+
+    Phase 3 cut the two-user constraint on the evidence that `auth.users` holds
+    exactly one row. This is the one place that assumption is checked, so if it
+    ever stops being true the failure is loud and in one spot.
+
+    Note this reads `user_profile` rather than the `get_active_users()` RPC.
+    The RPC returns `user_profile.name`, which is NULL, and no `content` — so
+    callers fell back to the email prefix and greeted the user as their login.
+    """
+    res = await asyncio.to_thread(
+        lambda: client.table("user_profile").select("user_id, name, content").execute()
+    )
+    profiles = [p for p in (getattr(res, "data", None) or []) if p.get("user_id")]
+
+    if len(profiles) > 1:
+        raise MultipleUsers(
+            f"{len(profiles)} user profiles found; this worker serves one. "
+            "Restore the per-user fan-out in jobs.py before adding a second user."
+        )
+    if not profiles:
+        raise MultipleUsers("No user profile found — nothing to run jobs for.")
+
+    profile = profiles[0]
+    return {
+        "user_id": profile["user_id"],
+        "name": display_name(profile),
+        "content": profile.get("content") or "",
+    }
+
+
 async def generate_with_retry(fn, max_retries=3, base_delay=2.0):
     """
     Executes a synchronous LLM call (fn) in a thread and retries with exponential backoff

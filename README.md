@@ -127,7 +127,7 @@ apps/
       approvals/        Pending actions, with per-type preview cards
       profile/          Profile editor + the learned-rules panel
       traces/           How each answer was reached, from agent_turns
-      tasks/ schedule/ health/ inventory/ settings/ more/
+      tasks/ schedule/ health/ settings/ more/
   worker/               Python 3.13 asyncio worker — local Mac only
     main.py             Entry point, poll loops, action dispatch
     auth_setup.py       The ONLY place the browser OAuth flow may run

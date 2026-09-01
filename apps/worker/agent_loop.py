@@ -50,7 +50,7 @@ from router import build_contents, route_special, route_turn
 # model context is cut. Tools whose output is inherently bounded and structured
 # are left whole — truncating a calendar mid-event is worse than the tokens.
 _NO_TRUNCATE = {"calendar_query", "task_list"}
-_HEAD_ONLY = {"news_fetch": 1000, "web_fetch": 1000}
+_HEAD_ONLY = {"web_fetch": 1000}
 _HEAD_TAIL = {"gmail_read_body": (800, 200)}
 _DEFAULT_HEAD = 800
 

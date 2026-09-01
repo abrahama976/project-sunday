@@ -1,12 +1,15 @@
-"""Tests for utils.row and utils.display_name.
+"""Tests for utils.row, utils.display_name and utils.resolve_user.
 
-Both exist because of a live bug, and both are pure, so they are worth pinning.
-Dependency-free: the two functions are lifted straight out of the source, since
-importing utils drags in google.api_core for a helper that does not need it.
+Each exists because of a live bug or a live assumption, so each is worth
+pinning. Dependency-free: the functions are lifted straight out of the source,
+since importing utils drags in google.api_core for helpers that do not need it.
+`asyncio` is stubbed to a to_thread that just calls its argument — resolve_user
+makes exactly one outside call and that is it.
 
     python3 tests/test_utils.py
 """
 import ast
+import asyncio
 import os
 import re
 import sys
@@ -17,13 +20,26 @@ _SRC = open(os.path.join(os.path.dirname(__file__), "..", "utils.py")).read()
 _tree = ast.parse(_SRC)
 _keep = [
     n for n in _tree.body
-    if (isinstance(n, ast.FunctionDef) and n.name in {"row", "display_name"})
+    if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in {"row", "display_name", "resolve_user"})
+    or (isinstance(n, ast.ClassDef) and n.name == "MultipleUsers")
     or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_NAME_LINE")
 ]
-_g = {"re": re, "__name__": "pure"}
+
+
+class _Thread:
+    """Stands in for asyncio.to_thread — resolve_user's only outside call."""
+    @staticmethod
+    async def to_thread(fn):
+        return fn()
+
+
+_g = {"re": re, "asyncio": _Thread, "__name__": "pure"}
 exec(compile(ast.Module(body=_keep, type_ignores=[]), "utils.py", "exec"), _g)
 row = _g["row"]
 display_name = _g["display_name"]
+resolve_user = _g["resolve_user"]
+MultipleUsers = _g["MultipleUsers"]
 
 failures = []
 
@@ -31,6 +47,13 @@ failures = []
 def check(label, actual, expected):
     if actual != expected:
         failures.append(f"{label}\n     expected: {expected!r}\n     actual:   {actual!r}")
+    else:
+        print(f"  ok  {label}")
+
+
+def check_true(label, cond, detail=""):
+    if not cond:
+        failures.append(f"{label} {detail}")
     else:
         print(f"  ok  {label}")
 
@@ -90,6 +113,62 @@ check("the H1 heading is not mistaken for the name",
 check("the name line is found further down",
       display_name({"name": None, "content": "# About Me\n**Location:** Sydney\n**Name:** Abraham\n"}),
       "Abraham")
+
+print("\n── resolve_user() ────────────────────────────────────")
+
+
+class FakeClient:
+    """Just enough supabase-py to satisfy resolve_user's one query."""
+
+    def __init__(self, profiles):
+        self._profiles = profiles
+
+    def table(self, _name):
+        return self
+
+    def select(self, _cols):
+        return self
+
+    def execute(self):
+        return Res(self._profiles)
+
+
+def resolved(profiles):
+    return asyncio.run(resolve_user(FakeClient(profiles)))
+
+
+def raises(profiles):
+    try:
+        resolved(profiles)
+        return None
+    except MultipleUsers as e:
+        return str(e)
+
+
+ONE = [{"user_id": "u-1", "name": None, "content": PROFILE}]
+
+check("the single user resolves", resolved(ONE)["user_id"], "u-1")
+check("...with a real name, not the NULL column", resolved(ONE)["name"], "Abraham")
+check("...and carries the profile body", resolved(ONE)["content"].startswith("# About Me"), True)
+
+check("the column wins when it is populated",
+      resolved([{"user_id": "u-1", "name": "Alstone", "content": PROFILE}])["name"], "Alstone")
+check("no name anywhere still resolves the id",
+      resolved([{"user_id": "u-1", "name": None, "content": ""}])["name"], "there")
+
+# The guard that replaces the deleted fan-out. Serving only the first of two
+# users silently is the failure this exists to prevent.
+two = [{"user_id": "u-1", "content": PROFILE}, {"user_id": "u-2", "content": PROFILE}]
+check_true("two users raise", raises(two) is not None)
+check_true("...and the message says how many", "2 user profiles" in (raises(two) or ""))
+check_true("...and names the fix", "fan-out" in (raises(two) or ""))
+
+check_true("zero users raise", raises([]) is not None)
+check_true("rows without a user_id do not count",
+           raises([{"user_id": None, "content": PROFILE}]) is not None)
+check("one real row beside a null one still resolves",
+      resolved([{"user_id": None}, {"user_id": "u-1", "content": PROFILE}])["user_id"], "u-1")
+
 
 print()
 if failures:

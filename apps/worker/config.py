@@ -93,8 +93,6 @@ TOOL_TIER_MAP = {
     "brain_learn":          "approve",
     # Reminders
     "schedule_reminder":    "approve",
-    # Inventory
-    "inventory_update":     "approve",
     # Dangerous
     "shell_cmd":            "hold",
 }
