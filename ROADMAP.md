@@ -14,7 +14,7 @@ Last updated: **2026-09-01**
 | Component | State | Note |
 |---|---|---|
 | Supabase | Up | Migrations through `20260831000000` |
-| `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Settings, Inventory |
+| `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
 | `apps/worker` | **Running, old code** | Jobs firing; `agent_turns` and `brain_directives` both empty. Needs `git pull` + re-auth |
 | Google OAuth | **In production** | 7-day expiry retired. Tokens minted in Testing still need one re-auth |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
@@ -48,11 +48,16 @@ Last updated: **2026-09-01**
       database, not the ledger: `pg_net` 0.20.0 and `pg_cron` 1.6.4 installed,
       the cron job active on `*/5 * * * *`, and ntfy returning **200** for a
       real alert.
-- [ ] **`git pull` on the Mac.** The worker is running, but on a checkout that
-      predates #23 — proven three ways: `agent_turns` is empty (the loop is its
-      only writer), `brain_directives` is empty, and replies still arrive in the
-      `✅ web_search completed.` shape #24 deleted. Nothing built since June is
-      actually in effect.
+- [x] **`git pull` on the Mac** — done 2026-09-01, fast-forward
+      `a5f8ad9..b3d1167`.
+
+      An earlier revision of this line said the checkout "predates #23". Wrong
+      by one: it was *at* `a5f8ad9`, which is #23 — what it lacked was #24 and
+      #25. The evidence only ever supported that narrower claim. `agent_turns`
+      empty proves the loop had never run (#24); the `✅ web_search completed.`
+      reply shape is the branch #24 deleted. `brain_directives` empty proves
+      nothing about the code version at all — a directive has simply never been
+      approved.
 - [ ] **Re-authorise Google.** Publishing does not heal tokens minted under
       Testing — `rm token_*.json`, then `python3 auth_setup.py`. If the client
       secret is being rotated, do that *first*: the token files embed the
@@ -106,41 +111,46 @@ no `loop_break` row simply ran to an answer.
 page before the worker is back writing real ones. It writes to the real project
 and carries its own teardown.
 
-## Phase 3 — Prune · *next*
+## Phase 3 — Prune · *done*
 
-The feature surface is wider than the usage, and every unused job is something
+The feature surface was wider than the usage, and every unused path is something
 that can break quietly while nobody is watching — which is what produced the
-gap. Some of the evidence already exists, read from the live database on
-2026-09-01:
+dormancy. Decided on evidence read from the live database on 2026-09-01, not on
+taste.
 
-| Candidate | Evidence | Call |
+**Cut:**
+
+| What | Evidence | What went |
 |---|---|---|
-| The two-user constraint | `auth.users` = **1** | Cut. It serves a user who does not exist. |
-| Inventory | **0 rows**, ever | Cut. |
-| `meal_checkin` | `last_executed_at` **NULL** | Cut. It has never fired at all — see below. |
-| `morning_briefing` | `last_executed_at` **NULL**, duplicates `daily_brief` | Cut. |
-| Health logging | 8 rows total | Keep; the meal job going does not take the page with it. |
-| `news_fetch` | unanswerable — see below | Instrument first. |
+| The two-user constraint | `auth.users` = **1** | Four `get_active_users()` fan-out loops in `jobs.py`, and the `send_daily_brief_for_all_users` wrapper |
+| Inventory | **0 rows**, ever | The page, the More entry, the approvals label, and a `TOOL_TIER_MAP` entry for a tool that never existed |
+| `news_fetch` | decided without measuring — see below | `executors/news_ops.py`, the job handler, the `news_items` reads in both briefs, and `morning_briefing`'s four regional `web_search` calls |
 
-**The news_fetch question cannot be answered by the data we keep.**
-`user_llm_ledger` records `(user_id, ledger_date, model, request_count)` and has
-no caller dimension, so "what share of the budget does news_fetch eat" has no
-answer. What is visible: 158 requests all-time, busiest day **33** against a cap
-of 250. The budget pressure that motivated this item does not appear in the
-data. Phase 3 therefore opens with one `source` column on the ledger, not with
-a deletion.
+**Kept:** `meal_checkin` and `morning_briefing` — both have `last_executed_at`
+NULL and have never fired, but they stay by choice. Every table stays too,
+including `inventory` and `news_items`; this was a code-and-UI prune, and the
+only migration disables the orphaned `news_fetch` job row.
 
-The original four, for the record:
+**The fan-out has a guard, not just a deletion.** `utils.resolve_user` raises
+`MultipleUsers` if a second `user_profile` row ever appears. Deleting the loops
+without it would mean a second user silently gets nothing — no brief, no
+calendar prep, no nudges — with nothing in the log to say why. It also fixed a
+greeting: `get_active_users()` returns `user_profile.name`, which is NULL, so
+the old code fell back to the email prefix and greeted the user as their login.
 
-- **Inventory** — a page and a tier entry, in no roadmap and no handover.
-- **Meal check-ins / health logging** — thought to be firing at 11pm and 5am;
-  the live table says `last_executed_at` is NULL, so it has never fired.
-- **News fetch** — six feeds twice daily plus a `web_search` fallback, against
-  the same 250/day budget as conversation. Measure its share first.
-- **The two-user constraint** — shared budgets, `get_active_users` loops and
-  deferred context isolation all serve a second user. If that user is
-  hypothetical, this is complexity bought against a requirement that does not
-  exist, and Sprint 5's isolation work disappears with it.
+**`news_fetch` was cut without measurement, deliberately.** `user_llm_ledger`
+records `(user_id, ledger_date, model, request_count)` and has no caller
+dimension, so its share of the budget was never knowable. What was visible: 158
+requests all-time, busiest day **33** against a cap of 250 — the budget pressure
+that motivated the item does not appear in the data. If the question ever
+matters, the answer is one `source` column on the ledger and one argument
+threaded through `check_and_increment`.
+
+**Still open, found while pruning:** `meal_checkin` upserts a
+`meal_checkin_retry` row into `scheduled_jobs` that has no registered handler,
+so the scheduler logs "no handler for job" whenever it matches. Left alone
+rather than silently disabled — the row is a symptom, and `meal_checkin` is
+staying, so the fix is a decision about what that retry should do.
 
 ---
 
