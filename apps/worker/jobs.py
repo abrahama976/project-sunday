@@ -628,6 +628,35 @@ async def cold_storage_archive(client: Client, gemini_api_key: str) -> None:
     except Exception as e:
         print(f"[cold_storage_archive] error: {e}")
 
+def _as_markdown(lines: list[str]) -> str:
+    """Join brief lines so a markdown renderer sees the blocks we meant.
+
+    `"\\n".join(...)` looks right in a terminal and is wrong in markdown: a
+    single newline is a soft break, so consecutive lines collapse into one
+    paragraph. That is why the brief arrived reading
+    "**Friday, 12 June 2026** Today's weather (Sydney): Drizzle…" — two lines
+    written, one line rendered.
+
+    Blocks are separated by a blank line; runs of bullets stay on single
+    newlines so the list renders tight rather than spaced out.
+    """
+    blocks: list[str] = []
+    bullets: list[str] = []
+
+    for line in lines:
+        if line.startswith("- "):
+            bullets.append(line)
+            continue
+        if bullets:
+            blocks.append("\n".join(bullets))
+            bullets = []
+        blocks.append(line)
+
+    if bullets:
+        blocks.append("\n".join(bullets))
+    return "\n\n".join(blocks)
+
+
 async def send_daily_brief(client: Client, user_id: str) -> None:
     import datetime
     import json
@@ -723,9 +752,9 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     except Exception as e:
         out.append("- *Nothing to report*")
 
-    full_text = "\n".join(out)
-    if len(full_text) > 800:
-        full_text = full_text[:797] + "..."
+    full_text = _as_markdown(out)
+    if len(full_text) > 900:
+        full_text = full_text[:897] + "..."
 
     try:
         await asyncio.to_thread(

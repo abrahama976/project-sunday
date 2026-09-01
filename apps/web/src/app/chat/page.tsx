@@ -203,10 +203,22 @@ export default function ChatPage() {
       setMessages((prev) => {
         const byId = new Map<string, Message>();
         for (const m of prev) byId.set(m.id, m);
+
+        // Return `prev` untouched when the poll brought nothing new. Building a
+        // fresh array every 4 seconds gave `messages` a new identity on every
+        // poll, which re-ran the scroll effect and yanked the view back to the
+        // bottom — making it impossible to read anything but the last message.
+        let changed = false;
         for (const m of rows) {
           seen.add(m.id);
-          byId.set(m.id, m);
+          const known = byId.get(m.id);
+          if (!known || known.content !== m.content || known.model_used !== m.model_used) {
+            byId.set(m.id, m);
+            changed = true;
+          }
         }
+        if (!changed) return prev;
+
         return Array.from(byId.values()).sort((a, b) =>
           a.created_at.localeCompare(b.created_at)
         );
@@ -226,7 +238,10 @@ export default function ChatPage() {
         .from("messages")
         .select("*")
         .eq("user_id", user.id)
-        .order("created_at", { ascending: true })
+        // Descending, so the limit takes the NEWEST hundred. Ascending + limit
+        // returns the OLDEST hundred, which is why the chat was showing June's
+        // briefings and nothing since. mergeMessages sorts, so order in is free.
+        .order("created_at", { ascending: false })
         .limit(MAX_MESSAGES_LOADED);
 
       if (cancelled) return;
@@ -317,9 +332,13 @@ export default function ChatPage() {
     };
   }, [supabase]);
 
+  // Keyed on the last message's id, not on the array. Scrolling belongs to "a
+  // new message arrived", not to "state was set" — otherwise loading older
+  // history also drags you to the bottom.
+  const lastMessageId = messages.length ? messages[messages.length - 1].id : null;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [lastMessageId]);
 
   /* Auto-resize textarea */
   useEffect(() => {
