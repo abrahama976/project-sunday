@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 
 /* ── Shapes ─────────────────────────────────────────────── */
@@ -98,6 +99,13 @@ const TONE_COLOR: Record<Tone, string> = {
   warn: "var(--color-warning)",
   bad: "var(--color-danger)",
 };
+
+/* Two different absences, and saying "cleared" for both would be a lie half the
+   time. `message_id` is nullable: a run that never had a message (a scheduled
+   job driving the loop) is not a run whose message was deleted. */
+function missingPromptLabel(run: TurnRow): string {
+  return run.message_id ? "(message deleted)" : "(background run — no message)";
+}
 
 const TONE_BG: Record<Tone, string> = {
   ok: "var(--color-success-faint)",
@@ -244,12 +252,13 @@ function RunCard({
   run,
   prompt,
   breakRow,
+  supabase,
 }: {
   run: TurnRow;
   prompt: string | null;
   breakRow: TurnRow | undefined;
+  supabase: SupabaseClient;
 }) {
-  const supabase = useMemo(() => createClient(), []);
   const [open, setOpen] = useState(false);
   const [steps, setSteps] = useState<TurnRow[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -304,8 +313,9 @@ function RunCard({
           alignItems: "flex-start",
         }}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
+        {/* Spans, not divs: a <button>'s content model is phrasing content. */}
+        <span style={{ display: "block", flex: 1, minWidth: 0 }}>
+          <span
             style={{
               fontSize: "0.9375rem",
               fontWeight: 500,
@@ -317,10 +327,10 @@ function RunCard({
               color: prompt ? "var(--color-text)" : "var(--color-text-faint)",
             }}
           >
-            {prompt ?? "(message cleared)"}
-          </div>
+            {prompt ?? missingPromptLabel(run)}
+          </span>
 
-          <div
+          <span
             style={{
               display: "flex",
               alignItems: "center",
@@ -345,8 +355,8 @@ function RunCard({
             <span>{formatWhen(run.created_at)}</span>
             {run.model && run.model !== "system" && <span>{run.model}</span>}
             {run.latency_ms !== null && <span>{formatMs(run.latency_ms)}</span>}
-          </div>
-        </div>
+          </span>
+        </span>
 
         <svg
           width="16"
@@ -444,14 +454,22 @@ export default function TracesPage() {
       }
 
       // Set together: showing the runs before their prompts arrive would flash
-      // "(message cleared)" across every card, which reads as data loss.
+      // "(message deleted)" across every card, which reads as data loss.
       setBreaks(byRun);
       setPrompts(byId);
       setRuns(rows);
       setLoading(false);
     };
 
-    void load();
+    // Without this, a rejection anywhere in `load` — a dropped connection
+    // during the second stage, say — is swallowed by the un-awaited call and
+    // the page sits on "Loading…" forever with nothing to show for it.
+    void load().catch((e: unknown) => {
+      if (cancelled) return;
+      setError(e instanceof Error ? e.message : "Could not load traces.");
+      setLoading(false);
+    });
+
     return () => {
       cancelled = true;
     };
@@ -544,6 +562,7 @@ export default function TracesPage() {
             run={run}
             prompt={run.message_id ? (prompts[run.message_id] ?? null) : null}
             breakRow={breaks[run.run_id]}
+            supabase={supabase}
           />
         ))}
       </div>
