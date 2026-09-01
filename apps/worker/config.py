@@ -28,6 +28,13 @@ GLOBAL_FLASH_CEILING = 200
 DAILY_LITE_LIMIT = 300
 GLOBAL_LITE_CEILING = 500
 
+# ── Agentic loop ───────────────────────────────────────────────────────────
+# Maximum think→act→observe rounds in a single user turn. Each round is a
+# model call against the same 250/day budget as conversation, so this is a
+# spend ceiling as much as a runaway guard. Five covers the chains that
+# actually come up (calendar → travel, gmail search → read → draft).
+MAX_TOOL_ITERS = 5
+
 # ── Learning brain ─────────────────────────────────────────────────────────
 # Learned directives ride in the system prompt on EVERY request, so these caps
 # are a budget control as much as a quality one: 40 rules at ~120 chars is

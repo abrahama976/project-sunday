@@ -91,6 +91,14 @@ class Scheduler:
         self._client = client
         self._gemini_api_key = gemini_api_key
         self._handlers: dict[str, object] = {}
+        # Jobs currently executing. Without this, a job slower than the tick
+        # interval is re-fired while the previous run is still going: the
+        # last_run_at guard below only blocks a second fire within the same
+        # MINUTE, and catch-up fires regardless of cron match. A worker
+        # returning from a long outage therefore ran sync_calendar and
+        # calendar_prep several times concurrently, and each concurrent
+        # Google call opened its own browser OAuth flow on its own port.
+        self._in_flight: set[str] = set()
 
     def register_handler(self, job_name: str, handler):
         """Register an async handler function for a job name."""
@@ -129,6 +137,10 @@ class Scheduler:
             last_run = job.get("last_run_at")
 
             if not cron_expr:
+                continue
+
+            # Already running from an earlier tick — never start a second copy.
+            if job_name in self._in_flight:
                 continue
 
             # Use job's timezone if different
@@ -175,9 +187,13 @@ class Scheduler:
             handler = self._handlers.get(job_name)
             if handler:
                 print(f"[scheduler] running job: {job_name}")
+                # Marked before the task is scheduled, not inside it: the next
+                # tick can arrive before the coroutine gets its first slice.
+                self._in_flight.add(job_name)
                 try:
                     asyncio.create_task(self._run_job(job, handler))
                 except Exception as e:
+                    self._in_flight.discard(job_name)
                     print(f"[scheduler] failed to start job {job_name}: {e}")
             else:
                 print(f"[scheduler] no handler for job: {job_name}")
@@ -200,3 +216,7 @@ class Scheduler:
             print(f"[scheduler] completed job: {job_name}")
         except Exception as e:
             print(f"[scheduler] job {job_name} failed: {e}")
+        finally:
+            # Released even when the handler raised, or the job would never run
+            # again for the lifetime of this worker.
+            self._in_flight.discard(job_name)

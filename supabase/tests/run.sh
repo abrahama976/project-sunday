@@ -49,6 +49,8 @@ run "$PGBIN/pg_ctl -D $WORK/data -o \"-c listen_addresses='' -k $WORK\" -l $WORK
 # The watchdog migration's CREATE EXTENSION lines cannot work locally.
 grep -v '^CREATE EXTENSION' "$MIGRATIONS/20260828140000_heartbeat_watchdog.sql" \
   > "$WORK/watchdog.sql"
+# The duration fix replaces check_worker_heartbeat and adds format_outage.
+cp "$MIGRATIONS/20260831000000_fix_watchdog_duration.sql" "$WORK/watchdog_fix.sql"
 cp "$MIGRATIONS/20260828150000_create_brain_directives.sql" "$WORK/brain.sql"
 cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql "$WORK/"
 chmod -R a+r "$WORK"
@@ -59,8 +61,9 @@ psql_run() {
 
 echo "→ applying stubs and migrations"
 psql_run _stubs.sql  >/dev/null
-psql_run watchdog.sql >/dev/null
-psql_run brain.sql    >/dev/null
+psql_run watchdog.sql     >/dev/null
+psql_run watchdog_fix.sql >/dev/null
+psql_run brain.sql        >/dev/null
 
 echo
 echo "── watchdog ──────────────────────────────────────────"

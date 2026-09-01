@@ -33,6 +33,32 @@ These are project rules, not preferences. Do not relax them without asking:
 
 Facts go to `update_profile`; rules go to `brain_learn`. Keep them separate.
 
+## The agentic loop
+
+`agent_loop.py` is the only thing that talks to the model on the chat path, and
+the only writer of `agent_turns`. When touching it:
+
+- **The budget gate runs every round.** `route_turn` is the loop's only path to
+  a model, so five rounds cost five requests against the 250/day cap. Never add
+  a model call outside it.
+- **Only the `final` row reaches chat.** Intermediate steps are telemetry. An
+  insert into `messages` from inside the loop turns one answer into five.
+- **Write-tier halts.** The queued `action_queue` payload must stand alone —
+  `execute_action` runs it later with no loop context.
+- **Nothing in the loop raises for a bad tool.** An unknown name or a throwing
+  executor is fed back as an observation so the model can recover; raising
+  loses the whole turn.
+- **Telemetry never breaks the answer.** `log_turn` swallows its own errors.
+
+## Two failure modes this project has already paid for
+
+- **`maybe_single()` returns `None`**, not a response with `data=None`, when no
+  row matches. `res.data` on that raises. Always go through `utils.row()`.
+- **Background code never opens an OAuth browser flow.** `google_auth` raises
+  `ReauthRequired` unless `allow_interactive_auth()` was called, and only
+  `auth_setup.py` calls it. Seven catch-up jobs once opened seven consent URLs
+  on seven ports, none completable.
+
 ## Conventions
 
 - Python: `supabase-py` uses **snake_case** (`maybe_single()`, not
@@ -40,6 +66,8 @@ Facts go to `update_profile`; rules go to `brain_learn`. Keep them separate.
 - Wrap blocking Supabase calls in `asyncio.to_thread`.
 - Background tasks get an `add_done_callback` that escalates to `sys.exit(1)`
   so `launchd` recycles the worker. Do not add a bare `create_task`.
+- The scheduler holds an `_in_flight` set: a job slower than the tick must not
+  be started twice. Release it in a `finally`, or a raising job never runs again.
 - Scheduler jobs store **local** hours against their `timezone` column;
   `scheduler.py` honours it. Do not pre-convert to UTC — it drifts under DST.
 - New tools need three edits: `tools/registry.py` (declaration),

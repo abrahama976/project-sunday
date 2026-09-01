@@ -9,6 +9,7 @@ import asyncio
 from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import Client
+from utils import row
 import json
 import gzip
 import io
@@ -46,7 +47,8 @@ async def morning_briefing(client: Client, gemini_api_key: str) -> None:
             .maybe_single()
             .execute()
         )
-        if existing.data:
+
+        if row(existing):
             print(f"[briefing] already generated for {name} on {today_str}")
             continue
 
@@ -225,7 +227,7 @@ async def meal_checkin(client: Client, gemini_api_key: str) -> None:
         loc_result = await asyncio.to_thread(
             lambda: client.table("user_location").select("timezone").eq("user_id", uid).limit(1).maybe_single().execute()
         )
-        tz_str = loc_result.data.get("timezone", "Australia/Sydney") if loc_result.data else "Australia/Sydney"
+        tz_str = row(loc_result).get("timezone") or "Australia/Sydney"
         now = datetime.now(ZoneInfo(tz_str))
 
         try:
@@ -405,7 +407,7 @@ async def calendar_prep(client: Client, gemini_api_key: str) -> None:
             loc_result = await asyncio.to_thread(
                 lambda: client.table("user_location").select("lat, lng").eq("user_id", uid).limit(1).maybe_single().execute()
             )
-            loc_data = loc_result.data or {}
+            loc_data = row(loc_result)
             origin_lat = loc_data.get("lat")
             origin_lng = loc_data.get("lng")
 
@@ -491,9 +493,12 @@ async def task_tracker(client: Client, gemini_api_key: str) -> None:
     )
     user_tz_map: dict[str, str] = {}
     if loc_res.data:
-        for row in loc_res.data:
-            uid = row.get("user_id")
-            tz = row.get("timezone")
+        # Named `loc`, not `row` — `row` is the maybe_single helper imported at
+        # the top of this module, and shadowing it here would turn any later
+        # row(...) call in this function into "'dict' object is not callable".
+        for loc in loc_res.data:
+            uid = loc.get("user_id")
+            tz = loc.get("timezone")
             if uid and tz:
                 user_tz_map[uid] = tz
 
@@ -706,10 +711,10 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     
     # User Profile
     profile_res = await asyncio.to_thread(lambda: client.table("user_profile").select("name").eq("user_id", user_id).limit(1).maybe_single().execute())
-    name = profile_res.data.get("name", "there") if (profile_res and profile_res.data) else "there"
+    name = row(profile_res).get("name") or "there"
     
     loc_result = await asyncio.to_thread(lambda: client.table("user_location").select("timezone").eq("user_id", user_id).limit(1).maybe_single().execute())
-    tz_str = loc_result.data.get("timezone", "Australia/Sydney") if (loc_result and loc_result.data) else "Australia/Sydney"
+    tz_str = row(loc_result).get("timezone") or "Australia/Sydney"
     
     tz = ZoneInfo(tz_str)
     today = datetime.datetime.now(tz)

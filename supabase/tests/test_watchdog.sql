@@ -50,7 +50,25 @@ SELECT assert('alert is high priority',
 SELECT assert('alert carries the configured topic',
               (SELECT body->>'topic' FROM public.sent_alerts ORDER BY id DESC LIMIT 1) = 'test-topic');
 SELECT assert('alert names the outage duration',
-              (SELECT body->>'message' FROM public.sent_alerts ORDER BY id DESC LIMIT 1) LIKE '%03:00%');
+              (SELECT body->>'message' FROM public.sent_alerts ORDER BY id DESC LIMIT 1) LIKE '%3h 0m%');
+
+-- ── Duration formatting ───────────────────────────────────────────────────
+-- The original used to_char(interval, 'HH24:MI'), which silently drops the
+-- days field. It shipped, and the very first real alert reported a 60-day
+-- outage as "07:12". A clean 24-hour outage would have read "00:00" — zero.
+-- The old assertion above passed throughout, because it only ever tested a
+-- 3-hour outage. These are the cases that would have caught it.
+SELECT assert('multi-day outages report days',
+              public.format_outage(INTERVAL '60 days 07:12:24') = '60d 7h');
+SELECT assert('exactly one day is not reported as zero',
+              public.format_outage(INTERVAL '1 day') = '1d 0h');
+SELECT assert('sub-hour outages read in minutes',
+              public.format_outage(INTERVAL '45 minutes') = '45 minutes');
+SELECT assert('hour-scale outages read in hours and minutes',
+              public.format_outage(INTERVAL '7 hours 12 minutes') = '7h 12m');
+SELECT assert('no outage duration is ever formatted as all-zero',
+              public.format_outage(INTERVAL '25 hours') <> '00:00'
+              AND public.format_outage(INTERVAL '25 hours') = '1d 1h');
 SELECT assert('latch is set', (SELECT last_alerted_at IS NOT NULL FROM public.watchdog_config));
 
 -- ── 3. Still stale, inside realert window → stays quiet ───────────────────

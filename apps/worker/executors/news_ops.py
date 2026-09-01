@@ -5,6 +5,7 @@ relevance, and stores them in the news_items Supabase table.
 """
 import asyncio
 import hashlib
+from utils import row
 from datetime import datetime, timezone
 from xml.etree import ElementTree
 
@@ -196,7 +197,7 @@ async def news_fetch_and_store(
     user_res = await asyncio.to_thread(
         lambda: client.table("user_profile").select("user_id").limit(1).maybe_single().execute()
     )
-    news_uid = user_res.data.get("user_id") if user_res.data else None
+    news_uid = row(user_res).get("user_id")
 
     # Score with Gemini (budget-gated)
     scored = await _score_articles(all_articles, gemini_api_key, db_client=client, user_id=news_uid)

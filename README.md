@@ -6,9 +6,9 @@ worker on a Mac for the actions, Supabase in between holding all state.
 Built to run at zero recurring cost: Gemini's free tier as the primary brain,
 with a cascade down through Groq to local Ollama when the daily budget runs out.
 
-> **Status.** The worker is not currently running and Google OAuth tokens have
-> expired. See [ROADMAP.md](./ROADMAP.md) for what is built, what is not, and
-> the order to bring it back.
+> **Status.** The consent screen is published and the watchdog is armed and
+> proven. The worker is still stopped — it needs one Google re-authorisation
+> before it will start. See [ROADMAP.md](./ROADMAP.md).
 
 ---
 
@@ -79,6 +79,27 @@ version-controlled, never machine-edited.
 
 ---
 
+## How a turn runs
+
+A message goes to `agent_loop.run_agent_loop`, which iterates **think → act →
+observe** for up to `MAX_TOOL_ITERS` (5) rounds:
+
+1. **Think** — `route_turn` picks a model through the budget gate and asks. The
+   gate runs *every round*, not once per turn.
+2. **Act** — an `auto` tool runs inline. A write-tier tool is queued for
+   approval and the loop **halts** there.
+3. **Observe** — the result is truncated per tool and fed back as a
+   `function_response`, so the next round can build on it.
+
+The loop stops early on: no tool wanted (that's the answer), a write-tier call,
+budget exhaustion, the same tool called twice with identical args, or the cap.
+Every ending writes a `final` row.
+
+Only `final` reaches your chat. Intermediate steps go to `agent_turns` — a
+five-step answer should arrive as one message, not five. That makes
+`agent_turns` the only record of *how* an answer was reached, which is what the
+Phase 2 trace view is for.
+
 ## Approval tiers
 
 No write happens without a tap. Tools are classified in `config.py`:
@@ -105,6 +126,8 @@ apps/
       tasks/ schedule/ health/ inventory/ settings/ more/
   worker/               Python 3.13 asyncio worker — local Mac only
     main.py             Entry point, poll loops, action dispatch
+    auth_setup.py       The ONLY place the browser OAuth flow may run
+    agent_loop.py       think → act → observe; the only writer of agent_turns
     router.py           Cascading LLM router + system prompt assembly
     budget_gate.py      The only path to an LLM call; enforces daily caps
     scheduler.py        Cron scheduler, honours per-job timezones
@@ -114,12 +137,15 @@ apps/
     context/
       brain_growth.md   The constitution (static)
       loader.py         Caches profile + directives for the prompt hot path
-    tests/              Dependency-free unit tests — python3 tests/test_brain.py
+    tests/              test_brain.py runs anywhere; test_agent_loop.py needs
+                        the worker's deps and skips cleanly without them
 supabase/
   migrations/           Schema history
   tests/                SQL suites — ./supabase/tests/run.sh
 docs/
-  sprint_3_design.md    Agentic loop design (not yet implemented)
+  sprint_3_design.md    Agentic loop design (implemented; ROADMAP notes the
+                        three deliberate deviations)
+  runbook.md            Manual steps: OAuth publishing, arming the watchdog
 ```
 
 ---
@@ -151,8 +177,13 @@ cd apps/web && npm install && npm run dev
 cd apps/worker
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python3 auth_setup.py    # once, interactively — authorises Google
 python3 main.py
 ```
+
+`auth_setup.py` is the only place the browser OAuth flow runs. The worker
+itself never opens one: a background job that needs Google fails with
+`ReauthRequired` and says what to run. That is deliberate — see the runbook.
 
 The worker is normally managed by `launchd` via
 `apps/worker/com.projectsunday.worker.plist`, which restarts it when it exits.
@@ -174,9 +205,18 @@ easy to get subtly wrong:
 ## Tests
 
 ```bash
-python3 apps/worker/tests/test_brain.py     # brain logic, no dependencies
-./supabase/tests/run.sh                     # watchdog + schema, throwaway PG
+python3 apps/worker/tests/test_brain.py       # brain logic, no dependencies
+python3 apps/worker/tests/test_scheduler.py   # cron + in-flight guard, no deps
+python3 apps/worker/tests/test_agent_loop.py  # the loop, against a scripted
+                                              # model; needs the worker's deps
+./supabase/tests/run.sh                       # watchdog + schema, throwaway PG
 ```
+
+`test_agent_loop.py` drives the real loop with a fake model and fake tools, so
+control flow, telemetry and the `function_call`/`function_response` threading
+are all exercised without a network call. It builds genuine `google.genai`
+Content objects — proving the shape Gemini would actually accept — so it needs
+`requirements.txt` installed, and skips with a clear message if not.
 
 ---
 
