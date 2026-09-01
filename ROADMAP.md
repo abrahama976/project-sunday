@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-08-31**
+Last updated: **2026-09-01**
 
 ---
 
@@ -22,7 +22,7 @@ Last updated: **2026-08-31**
 | Watchdog | **Armed & proven** | Topic set; ntfy returned 200 on a live alert |
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
-| Agent trace UI | Not built | Sprint 3.T4 |
+| Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
 
 ---
 
@@ -77,16 +77,25 @@ Tools can chain now. *"What's on tomorrow and when do I need to leave?"* runs
    router gave a real reply would have been a straight regression. Mid-loop
    the design's rule stands: gathered evidence beats starting over.
 
-## Phase 2 — Make it legible (Sprint 3.T4) · *next*
+## Phase 2 — Make it legible (Sprint 3.T4) · *done*
 
-Sunday now chains up to five steps, and the chat transcript cannot tell you
-what it did or why it stopped — only the `final` row reaches chat. `agent_turns`
-is indexed on `run_id` for exactly this query, and now has rows in it.
+Sunday chains up to five steps, and the chat transcript could not tell you what
+it did or why it stopped — only the `final` row reaches chat. **More → Traces**
+now reads `agent_turns` back, which is what it was indexed on `run_id` for.
 
-- [ ] Trace view grouped by `run_id`, reachable from More
-- [ ] Per run: steps in order, tool args, truncated results, termination reason
+- [x] Trace view grouped by `run_id`, reachable from More
+- [x] Per run: steps in order, tool args, truncated results, termination reason
 
-## Phase 3 — Prune
+The run list reads `final` rows — every loop exit writes exactly one, so that
+*is* the list of runs. Termination reasons come from the `loop_break` row's
+`error`, rendered as English rather than the slug the worker stores; a run with
+no `loop_break` row simply ran to an answer.
+
+`supabase/tests/seed_trace_demo.sql` seeds one synthetic run for looking at the
+page before the worker is back writing real ones. It writes to the real project
+and carries its own teardown.
+
+## Phase 3 — Prune · *next*
 
 The feature surface is wider than the usage, and every unused job is something
 that can break quietly while nobody is watching — which is what produced the
