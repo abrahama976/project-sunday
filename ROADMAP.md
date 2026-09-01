@@ -48,11 +48,16 @@ Last updated: **2026-09-01**
       database, not the ledger: `pg_net` 0.20.0 and `pg_cron` 1.6.4 installed,
       the cron job active on `*/5 * * * *`, and ntfy returning **200** for a
       real alert.
-- [ ] **`git pull` on the Mac.** The worker is running, but on a checkout that
-      predates #23 — proven three ways: `agent_turns` is empty (the loop is its
-      only writer), `brain_directives` is empty, and replies still arrive in the
-      `✅ web_search completed.` shape #24 deleted. Nothing built since June is
-      actually in effect.
+- [x] **`git pull` on the Mac** — done 2026-09-01, fast-forward
+      `a5f8ad9..b3d1167`.
+
+      An earlier revision of this line said the checkout "predates #23". Wrong
+      by one: it was *at* `a5f8ad9`, which is #23 — what it lacked was #24 and
+      #25. The evidence only ever supported that narrower claim. `agent_turns`
+      empty proves the loop had never run (#24); the `✅ web_search completed.`
+      reply shape is the branch #24 deleted. `brain_directives` empty proves
+      nothing about the code version at all — a directive has simply never been
+      approved.
 - [ ] **Re-authorise Google.** Publishing does not heal tokens minted under
       Testing — `rm token_*.json`, then `python3 auth_setup.py`. If the client
       secret is being rotated, do that *first*: the token files embed the
