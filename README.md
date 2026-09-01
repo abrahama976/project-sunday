@@ -7,8 +7,10 @@ Built to run at zero recurring cost: Gemini's free tier as the primary brain,
 with a cascade down through Groq to local Ollama when the daily budget runs out.
 
 > **Status.** The consent screen is published and the watchdog is armed and
-> proven. The worker is still stopped — it needs one Google re-authorisation
-> before it will start. See [ROADMAP.md](./ROADMAP.md).
+> proven. The worker is **running, on an old checkout** — `agent_turns` and
+> `brain_directives` are both empty, so neither the agentic loop nor the
+> learning brain has ever executed. It needs a `git pull` and one Google
+> re-authorisation. See [ROADMAP.md](./ROADMAP.md).
 
 ---
 
@@ -97,8 +99,9 @@ Every ending writes a `final` row.
 
 Only `final` reaches your chat. Intermediate steps go to `agent_turns` — a
 five-step answer should arrive as one message, not five. That makes
-`agent_turns` the only record of *how* an answer was reached, which is what the
-Phase 2 trace view is for.
+`agent_turns` the only record of *how* an answer was reached, which is what
+**Traces** (More → Traces) reads back: every run, its steps in order, and why
+it stopped.
 
 ## Approval tiers
 
@@ -123,6 +126,7 @@ apps/
       chat/             Conversation
       approvals/        Pending actions, with per-type preview cards
       profile/          Profile editor + the learned-rules panel
+      traces/           How each answer was reached, from agent_turns
       tasks/ schedule/ health/ inventory/ settings/ more/
   worker/               Python 3.13 asyncio worker — local Mac only
     main.py             Entry point, poll loops, action dispatch
@@ -142,6 +146,8 @@ apps/
 supabase/
   migrations/           Schema history
   tests/                SQL suites — ./supabase/tests/run.sh
+                        seed_trace_demo.sql seeds one run for /traces; it
+                        WRITES, and is the one file here that is not a test
 docs/
   sprint_3_design.md    Agentic loop design (implemented; ROADMAP notes the
                         three deliberate deviations)
