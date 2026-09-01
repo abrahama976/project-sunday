@@ -184,8 +184,10 @@ export default function ChatPage() {
         .limit(1)
         .maybeSingle();
       if (profile?.content) {
-        const match = profile.content.match(/^#\s+(.+)/m);
-        if (match) { setUserName(match[1].trim()); return; }
+        // The `**Name:**` line, not the H1 — the H1 is "# About Me", so the
+        // old heading match greeted you as "Hey, About Me."
+        const match = profile.content.match(/^\*\*Name:\*\*\s*(.+?)\s*$/m);
+        if (match) { setUserName(match[1].split(/\s+/)[0]); return; }
       }
       if (user?.email) setUserName(user.email.split("@")[0]);
     })();

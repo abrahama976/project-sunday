@@ -15,7 +15,7 @@ Last updated: **2026-09-01**
 |---|---|---|
 | Supabase | Up | Migrations through `20260831000000` |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Settings, Inventory |
-| `apps/worker` | **Not running** | Silent since 2026-07-01. Needs re-auth, then start |
+| `apps/worker` | **Running, old code** | Jobs firing; `agent_turns` and `brain_directives` both empty. Needs `git pull` + re-auth |
 | Google OAuth | **In production** | 7-day expiry retired. Tokens minted in Testing still need one re-auth |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -30,9 +30,12 @@ Last updated: **2026-09-01**
 
 - [x] Repair the learning loop — `maybe_single()`, summariser call signature
 - [x] `mac_heartbeat.status` migration (written by the worker, never migrated)
-- [x] Scheduler timezones — `meal_checkin` was firing at 23:00 and 05:00 Sydney,
-      `cold_storage_archive` on Sunday afternoons. (`daily_brief` was already
-      correct — pinned, not fixed.)
+- [x] Scheduler timezones — `meal_checkin`'s hours were being read as UTC, and
+      `cold_storage_archive` ran on Sunday afternoons. (`daily_brief` was already
+      correct — pinned, not fixed.) Note the live table shows `meal_checkin`
+      with `last_executed_at` NULL while every other job has a value, so the
+      earlier claim that it *was* firing at 23:00 and 05:00 looks wrong: it
+      appears never to have fired at all.
 - [x] `schedule_reminder` explicit in `TOOL_TIER_MAP`
 - [x] Dead-man's watchdog outside the Mac
 - [x] The learning brain
@@ -45,9 +48,17 @@ Last updated: **2026-09-01**
       database, not the ledger: `pg_net` 0.20.0 and `pg_cron` 1.6.4 installed,
       the cron job active on `*/5 * * * *`, and ntfy returning **200** for a
       real alert.
-- [ ] **Re-authorise Google**, then start the worker. Publishing does not heal
-      tokens minted under Testing — `rm token_*.json`, run `main.py`, approve
-      both consent screens. Expect a "Sunday is back" push once it comes up.
+- [ ] **`git pull` on the Mac.** The worker is running, but on a checkout that
+      predates #23 — proven three ways: `agent_turns` is empty (the loop is its
+      only writer), `brain_directives` is empty, and replies still arrive in the
+      `✅ web_search completed.` shape #24 deleted. Nothing built since June is
+      actually in effect.
+- [ ] **Re-authorise Google.** Publishing does not heal tokens minted under
+      Testing — `rm token_*.json`, then `python3 auth_setup.py`. If the client
+      secret is being rotated, do that *first*: the token files embed the
+      secret they were minted with, so rotating afterwards means two rounds of
+      consent screens.
+- [ ] Set `NTFY_TOPIC` in `apps/worker/.env`, and start Ollama
 - [ ] Watch one full scheduler cycle
 
 ## Phase 1 — The agentic loop (Sprint 3.T1) · *done*
@@ -99,11 +110,31 @@ and carries its own teardown.
 
 The feature surface is wider than the usage, and every unused job is something
 that can break quietly while nobody is watching — which is what produced the
-twelve-week gap. Decide each on evidence after a fortnight of real use:
+gap. Some of the evidence already exists, read from the live database on
+2026-09-01:
+
+| Candidate | Evidence | Call |
+|---|---|---|
+| The two-user constraint | `auth.users` = **1** | Cut. It serves a user who does not exist. |
+| Inventory | **0 rows**, ever | Cut. |
+| `meal_checkin` | `last_executed_at` **NULL** | Cut. It has never fired at all — see below. |
+| `morning_briefing` | `last_executed_at` **NULL**, duplicates `daily_brief` | Cut. |
+| Health logging | 8 rows total | Keep; the meal job going does not take the page with it. |
+| `news_fetch` | unanswerable — see below | Instrument first. |
+
+**The news_fetch question cannot be answered by the data we keep.**
+`user_llm_ledger` records `(user_id, ledger_date, model, request_count)` and has
+no caller dimension, so "what share of the budget does news_fetch eat" has no
+answer. What is visible: 158 requests all-time, busiest day **33** against a cap
+of 250. The budget pressure that motivated this item does not appear in the
+data. Phase 3 therefore opens with one `source` column on the ledger, not with
+a deletion.
+
+The original four, for the record:
 
 - **Inventory** — a page and a tier entry, in no roadmap and no handover.
-- **Meal check-ins / health logging** — has been firing at 11pm and 5am, so
-  there is no honest signal on whether it works. Now fixed; judge it after use.
+- **Meal check-ins / health logging** — thought to be firing at 11pm and 5am;
+  the live table says `last_executed_at` is NULL, so it has never fired.
 - **News fetch** — six feeds twice daily plus a `web_search` fallback, against
   the same 250/day budget as conversation. Measure its share first.
 - **The two-user constraint** — shared budgets, `get_active_users` loops and

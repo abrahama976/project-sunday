@@ -1,4 +1,6 @@
 import asyncio
+import re
+
 from google.api_core import exceptions
 
 
@@ -17,6 +19,28 @@ def row(result) -> dict:
     if result is None:
         return {}
     return getattr(result, "data", None) or {}
+
+# The profile editor writes the name into the markdown blob, not the column.
+_NAME_LINE = re.compile(r"^\*\*Name:\*\*\s*(.+?)\s*$", re.MULTILINE)
+
+
+def display_name(profile: dict, fallback: str = "there") -> str:
+    """The user's first name, from wherever the profile actually keeps it.
+
+    `user_profile.name` is the obvious place and is NULL in practice — the name
+    lives in `content` as `**Name:** …`. Reading only the column is what put
+    **"Good morning, None"** at the top of the daily brief every morning:
+    `.get("name", "there")` returns its default when the *key* is missing, not
+    when the value is NULL, so the None went straight into the f-string.
+
+    Returns the first name only. Every caller is a greeting.
+    """
+    name = (profile.get("name") or "").strip()
+    if not name:
+        match = _NAME_LINE.search(profile.get("content") or "")
+        name = match.group(1).strip() if match else ""
+    return name.split()[0] if name else fallback
+
 
 async def generate_with_retry(fn, max_retries=3, base_delay=2.0):
     """

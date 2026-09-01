@@ -9,7 +9,7 @@ import asyncio
 from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import Client
-from utils import row
+from utils import display_name, row
 import json
 import gzip
 import io
@@ -710,8 +710,10 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
     from zoneinfo import ZoneInfo
     
     # User Profile
-    profile_res = await asyncio.to_thread(lambda: client.table("user_profile").select("name").eq("user_id", user_id).limit(1).maybe_single().execute())
-    name = row(profile_res).get("name") or "there"
+    # `content` as well as `name`: the column is NULL and the name is in the
+    # markdown. See utils.display_name — this line printed "Good morning, None".
+    profile_res = await asyncio.to_thread(lambda: client.table("user_profile").select("name, content").eq("user_id", user_id).limit(1).maybe_single().execute())
+    name = display_name(row(profile_res))
     
     loc_result = await asyncio.to_thread(lambda: client.table("user_location").select("timezone").eq("user_id", user_id).limit(1).maybe_single().execute())
     tz_str = row(loc_result).get("timezone") or "Australia/Sydney"

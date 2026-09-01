@@ -7,8 +7,10 @@ Built to run at zero recurring cost: Gemini's free tier as the primary brain,
 with a cascade down through Groq to local Ollama when the daily budget runs out.
 
 > **Status.** The consent screen is published and the watchdog is armed and
-> proven. The worker is still stopped — it needs one Google re-authorisation
-> before it will start. See [ROADMAP.md](./ROADMAP.md).
+> proven. The worker is **running, on an old checkout** — `agent_turns` and
+> `brain_directives` are both empty, so neither the agentic loop nor the
+> learning brain has ever executed. It needs a `git pull` and one Google
+> re-authorisation. See [ROADMAP.md](./ROADMAP.md).
 
 ---
 
