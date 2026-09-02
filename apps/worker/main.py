@@ -553,6 +553,32 @@ async def main():
     sched.register_handler("refresh_nearby_services", refresh_nearby_services)
     scheduler_task = asyncio.create_task(sched.run())
 
+    # Bootstrap the local transit network if it has never been discovered.
+    #
+    # refresh_nearby_services runs weekly (Sunday 04:00), which is right for
+    # keeping it fresh and useless for filling it: deploy on a Wednesday and
+    # trip planning has no boarding points until the weekend, so it silently
+    # degrades to the single baseline query the whole feature exists to
+    # replace. Through run_now, so it takes the same _in_flight guard as a tick
+    # and cannot double-fire against the scheduler.
+    async def _bootstrap_nearby_services():
+        try:
+            existing = await asyncio.to_thread(
+                lambda: client.table("nearby_services")
+                .select("id", count="exact", head=True).limit(1).execute()
+            )
+            if (getattr(existing, "count", None) or 0) > 0:
+                return
+            print("[worker] no local transit network yet — discovering it now", flush=True)
+            await sched.run_now("refresh_nearby_services")
+        except Exception as e:
+            # Never fatal: an empty inventory costs a narrower search, not a
+            # broken worker.
+            print(f"[worker] could not bootstrap nearby services: {e}", flush=True)
+
+    bootstrap_task = asyncio.create_task(_bootstrap_nearby_services())
+    bootstrap_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
     def _on_scheduler_done(task):
         if not task.cancelled() and task.exception():
             print(f"[scheduler] CRITICAL: scheduler died: {task.exception()}", 

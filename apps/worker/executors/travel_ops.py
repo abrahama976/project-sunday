@@ -869,8 +869,20 @@ def _route_minutes_km(data: dict):
     return (int(round(seconds / 60)), metres / 1000)
 
 
+def as_efa_coord(latlng) -> str:
+    """(lat, lng) as EFA's "lon:lat:EPSG:4326". Longitude FIRST.
+
+    EFA is the one thing in this project that wants the pair the other way
+    round, and getting it backwards does not fail — it silently plans a journey
+    from the middle of the Indian Ocean and returns nothing, which is
+    indistinguishable from "no services". Hence its own function and its own
+    test.
+    """
+    return f"{float(latlng[1])}:{float(latlng[0])}:EPSG:4326"
+
+
 def _trip_params(origin, destination, arrive_by=None, depart_at=None,
-                 origin_type="any") -> dict:
+                 origin_type="any", destination_type="any") -> dict:
     """Query parameters for one TfNSW trip search."""
     params = {
         "outputFormat": "rapidJSON",
@@ -878,7 +890,7 @@ def _trip_params(origin, destination, arrive_by=None, depart_at=None,
         "depArrMacro": "arr" if arrive_by else "dep",
         "type_origin": origin_type,
         "name_origin": origin,
-        "type_destination": "any",
+        "type_destination": destination_type,
         "name_destination": destination,
         "calcNumberOfTrips": 5,     # several, so there is something to rank
         "TfNSWTR": "true",          # real-time where it exists
@@ -907,10 +919,24 @@ async def _fetch_journeys(http, headers, params) -> list:
     try:
         res = await http.get(TRIP_URL, headers=headers, params=params, timeout=ORS_TIMEOUT)
         res.raise_for_status()
-        return (res.json() or {}).get("journeys") or []
+        data = res.json() or {}
     except Exception as e:
         print(f"[trip] a search failed, continuing without it: {e}", flush=True)
         return []
+
+    journeys = data.get("journeys") or []
+    if not journeys:
+        # EFA explains itself here and we used to throw it away, which is how an
+        # unresolvable address spent months looking like "no services run".
+        notes = "; ".join(
+            str(m.get("text") or m.get("error") or m)
+            for m in (data.get("systemMessages") or [])
+        )
+        print(f"[trip] no journeys for {params.get('name_origin')} → "
+              f"{params.get('name_destination')}"
+              + (f" — TfNSW said: {notes}" if notes else " — TfNSW gave no reason"),
+              flush=True)
+    return journeys
 
 
 async def _ors_route(http, start, end, profile="driving-car"):
@@ -928,6 +954,36 @@ async def _ors_route(http, start, end, profile="driving-car"):
     except Exception as e:
         print(f"[trip] ORS route failed: {e}", flush=True)
         return (None, None)
+
+
+async def _tfnsw_geocode(http, headers, text):
+    """An address to (lat, lng) via TfNSW stop_finder, or None. Never raises.
+
+    Exists so the transit half of this project does not depend on a driving
+    directions provider. stop_finder takes free text and returns coordinates,
+    on the key and endpoint the job already uses.
+    """
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "type_sf": "any",
+        "name_sf": text,
+        "TfNSWSF": "true",
+        "version": "10.2.1.42",
+    }
+    try:
+        res = await http.get(STOP_FINDER_URL, headers=headers, params=params, timeout=20.0)
+        res.raise_for_status()
+        locations = (res.json() or {}).get("locations") or []
+    except Exception as e:
+        print(f"[trip] TfNSW geocode failed: {e}")
+        return None
+
+    for loc in locations:
+        coord = _coord_pair(loc.get("coord"))
+        if coord:
+            return coord
+    return None
 
 
 async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
@@ -975,7 +1031,8 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
 
 
 async def _drive_and_park_ride(http, headers, origin, destination,
-                               arrive_by=None, depart_at=None):
+                               arrive_by=None, depart_at=None,
+                               origin_ll=None, dest_ll=None):
     """The driving comparison, and any park-and-ride worth considering.
 
     Both need the same two geocodes, so they share them. Returns
@@ -987,12 +1044,18 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     explicitly by `add_access_leg`, plus a parking allowance. Without that the
     option would be ranked as though you teleported to the car park.
     """
-    try:
-        start = _as_lonlat(origin) or await _ors_geocode(http, origin)
-        end = _as_lonlat(destination) or await _ors_geocode(http, destination)
-    except Exception as e:
-        print(f"[trip] geocode failed: {e}", flush=True)
-        return (None, [])
+    # plan_journeys has already resolved both ends through TfNSW, so reuse them
+    # rather than paying ORS for the same answer — and so this works at all when
+    # there is no ORS geocoding quota left.
+    start = [origin_ll[1], origin_ll[0]] if origin_ll else None
+    end = [dest_ll[1], dest_ll[0]] if dest_ll else None
+    if not start or not end:
+        try:
+            start = start or _as_lonlat(origin) or await _ors_geocode(http, origin)
+            end = end or _as_lonlat(destination) or await _ors_geocode(http, destination)
+        except Exception as e:
+            print(f"[trip] geocode failed: {e}", flush=True)
+            return (None, [])
     if not start or not end:
         return (None, [])
 
@@ -1116,11 +1179,41 @@ async def plan_journeys(
 
     # `http`, not `client`: `client` is the Supabase handle this function takes.
     async with httpx.AsyncClient() as http:
-        baseline_params = _trip_params(origin, destination, arrive_by, depart_at)
+        # Resolve both ends to coordinates FIRST. /trip with type=any and a
+        # free-text postal address does not error when it cannot place the
+        # address — it returns an empty journeys array, which is
+        # indistinguishable from "no services run". That is why every trip this
+        # project has ever planned came back empty. stop_finder resolves the
+        # same text happily, so it goes through there first.
+        origin_ll = _as_lonlat(origin)
+        origin_ll = (origin_ll[1], origin_ll[0]) if origin_ll else \
+            await _tfnsw_geocode(http, headers, origin)
+        dest_ll = _as_lonlat(destination)
+        dest_ll = (dest_ll[1], dest_ll[0]) if dest_ll else \
+            await _tfnsw_geocode(http, headers, destination)
+
+        if not dest_ll:
+            return {"ok": False, "error": (
+                f"I couldn't find '{destination}' on the transit map. Try a stop "
+                "name, a suburb, or a more specific address.")}
+        if not origin_ll:
+            return {"ok": False, "error": (
+                f"I couldn't find '{origin}' on the transit map, so I don't know "
+                "where to start from.")}
+
+        # Coordinates from here on: unambiguous, and they cannot be
+        # re-interpreted differently by each query in the fan-out.
+        origin_ref, origin_kind = as_efa_coord(origin_ll), "coord"
+        dest_ref, dest_kind = as_efa_coord(dest_ll), "coord"
+
+        baseline_params = _trip_params(origin_ref, dest_ref, arrive_by, depart_at,
+                                       origin_type=origin_kind,
+                                       destination_type=dest_kind)
         boarding_params = [
             _trip_params(service.get("stop_id") or service.get("stop_name"),
-                         destination, arrive_by, depart_at,
-                         origin_type="stop" if service.get("stop_id") else "any")
+                         dest_ref, arrive_by, depart_at,
+                         origin_type="stop" if service.get("stop_id") else "any",
+                         destination_type=dest_kind)
             for service in boarding
         ]
 
@@ -1153,12 +1246,19 @@ async def plan_journeys(
         drive = None
         if full and OPENROUTESERVICE_API_KEY:
             drive, park_ride = await _drive_and_park_ride(
-                http, headers, origin, destination, arrive_by, depart_at)
+                http, headers, origin, destination, arrive_by, depart_at,
+                origin_ll=origin_ll, dest_ll=dest_ll)
             summaries.extend(park_ride)
 
     if not summaries:
-        return {"ok": False,
-                "error": f"No public transport journeys found from {origin} to {destination}."}
+        # Both ends resolved — otherwise we returned above — so this really is
+        # "found the places, no services", not "couldn't find the places". The
+        # distinction matters: the old message claimed the latter was the
+        # former, and Sunday repeated that to the user as fact.
+        when = "around then" if (arrive_by or depart_at) else "right now"
+        return {"ok": False, "error": (
+            f"I found both places, but TfNSW has no public transport journeys "
+            f"from there to {destination} {when}. Worth trying a different time.")}
 
     deduped = dedupe_journeys(summaries)
     checked = verify_journeys(deduped, _dt_now_utc(), _parse_time(arrive_by),

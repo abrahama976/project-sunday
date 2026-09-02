@@ -21,7 +21,15 @@ async def update_profile(client: Client, user_id: str, section: str, content: st
     else:
         text = text.rstrip() + f"\n\n## {section}\n- {content}\n"
         
-    await asyncio.to_thread(lambda: client.table("user_profile").upsert({"user_id": user_id, "content": text}).execute())
+    # on_conflict is not optional here. The primary key is `id`; `user_id` has
+    # its own UNIQUE constraint. Without naming it, PostgREST resolves against
+    # the primary key, generates a fresh id, finds no conflict, INSERTs — and
+    # dies on user_profile_user_id_key. Which is exactly what it did.
+    await asyncio.to_thread(
+        lambda: client.table("user_profile")
+        .upsert({"user_id": user_id, "content": text}, on_conflict="user_id")
+        .execute()
+    )
     await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
     
     return f"Profile updated: added to section '{section}'"

@@ -251,11 +251,17 @@ TOOLS = [
     },
     {
         "name": "calendar_update",
-        "description": "Update an existing Google Calendar event by ID. Requires approval.",
+        "description": (
+            "Update an existing Google Calendar event. Requires approval. The "
+            "event_id MUST come from a calendar_query result — call that first "
+            "and copy the id it returns. Never construct, guess or use a "
+            "placeholder id: there is no id format to infer, and a made-up one "
+            "reaches the approval queue looking real and then fails."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "event_id": {"type": "string", "description": "Google Calendar event ID to update"},
+                "event_id": {"type": "string", "description": "Event ID exactly as returned by calendar_query"},
                 "summary": {"type": "string", "description": "New event title (optional)"},
                 "start": {"type": "string", "description": "New start time in ISO 8601 format (optional)"},
                 "end": {"type": "string", "description": "New end time in ISO 8601 format (optional)"},
