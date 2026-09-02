@@ -147,16 +147,17 @@ async def transit_departures(stop_keyword: str) -> str:
         mode = transportation.get("product", {"class": 0}).get("class") # 1=Train, 5=Bus, 4=Light Rail, 9=Ferry
         mode_str = "Train" if mode == 1 else "Bus" if mode == 5 else "Light Rail" if mode == 4 else "Ferry" if mode == 9 else "Service"
         
-        # Real-time departure if available, otherwise scheduled
-        dep_time = event.get("departureTimeEstimated") or event.get("departureTimePlanned")
-        if dep_time:
-            # The time is usually in format "2023-10-27T14:30:00Z"
-            import dateutil.parser
-            from zoneinfo import ZoneInfo
-            dt = dateutil.parser.isoparse(dep_time).astimezone(ZoneInfo("Australia/Sydney"))
-            time_str = dt.strftime("%I:%M %p")
-        else:
-            time_str = "Unknown time"
+        # Real-time departure if available, otherwise scheduled.
+        # Parsed with the module's own `_parse_time` rather than dateutil:
+        # dateutil was imported here but never declared in requirements.txt —
+        # it arrives transitively today, and this line breaks the moment
+        # whatever drags it in stops doing so. It also raises on a malformed
+        # timestamp, where _parse_time returns None and the row degrades to
+        # "Unknown time" instead of taking the whole departure board down.
+        from zoneinfo import ZoneInfo
+        dt = _parse_time(event.get("departureTimeEstimated")
+                         or event.get("departureTimePlanned"))
+        time_str = dt.astimezone(ZoneInfo("Australia/Sydney")).strftime("%-I:%M %p") if dt else "Unknown time"
             
         platform = event.get("location", {}).get("properties", {}).get("platform", "")
         platform_str = f" (Plat {platform})" if platform else ""

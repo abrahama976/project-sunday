@@ -32,6 +32,7 @@ _keep = [
 ]
 _g = {"__name__": "pure"}
 exec(compile(ast.Module(body=_keep, type_ignores=[]), "travel_ops.py", "exec"), _g)
+_parse_time = _g["_parse_time"]
 summarise_journey = _g["summarise_journey"]
 rank_journeys = _g["rank_journeys"]
 describe_alternative = _g["describe_alternative"]
@@ -115,6 +116,20 @@ check_true("a journey with no legs is dropped", summarise_journey({"legs": []}) 
 check_true("a journey with no usable times is dropped",
            summarise_journey({"legs": [{"duration": 600, "origin": {}, "destination": {},
                                         "transportation": {"product": {"class": 1}}}]}) is None)
+
+
+print("\n── _parse_time() ─────────────────────────────────────")
+
+# transit_departures used dateutil.parser.isoparse here, which is undeclared in
+# requirements.txt AND raises on bad input — one malformed timestamp would take
+# the whole departure board down. This returns None instead.
+check_true("a Z-suffixed time parses", _parse_time("2026-09-03T08:00:00Z") is not None)
+check_true("an offset time parses", _parse_time("2026-09-03T08:00:00+10:00") is not None)
+check_true("a naive time is assumed UTC",
+           _parse_time("2026-09-03T08:00:00").tzinfo is not None)
+check("malformed input is None, not an exception", _parse_time("not a time"), None)
+check("None input is None", _parse_time(None), None)
+check("empty input is None", _parse_time(""), None)
 
 
 print("\n── fares ─────────────────────────────────────────────")
