@@ -1,0 +1,27 @@
+-- Drop get_active_users: a SECURITY DEFINER function that anon could execute.
+--
+-- The function was:
+--
+--     CREATE FUNCTION public.get_active_users()
+--      RETURNS TABLE(user_id uuid, email text, name text)
+--      SECURITY DEFINER
+--     AS $$ SELECT u.id, u.email::text, p.name
+--             FROM auth.users u
+--             LEFT JOIN public.user_profile p ON p.user_id = u.id $$;
+--
+-- SECURITY DEFINER means it runs with the owner's rights and ignores RLS
+-- entirely. Its ACL granted EXECUTE to PUBLIC and to `anon` — and the anon key
+-- is not a secret, it ships inside the web bundle. So anyone who opened the app
+-- could call this RPC and read email addresses straight out of `auth.users`, a
+-- table RLS otherwise makes completely unreachable. One user today, so the
+-- blast radius was one address; the shape of the hole is the point.
+--
+-- It is also dead code. Phase 3 removed every caller when the two-user fan-out
+-- was collapsed into utils.resolve_user, which reads user_profile under the
+-- service-role key from the worker and needs no RPC at all.
+--
+-- DROP rather than REVOKE deliberately: nothing calls it, and a revoked
+-- function is one well-meaning `GRANT EXECUTE ... TO anon` away from being
+-- reachable again.
+
+DROP FUNCTION IF EXISTS public.get_active_users();
