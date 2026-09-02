@@ -1,4 +1,4 @@
-"""Tests for utils.row, utils.display_name and utils.resolve_user.
+"""Tests for utils.row, display_name, resolve_user and resolve_origin.
 
 Each exists because of a live bug or a live assumption, so each is worth
 pinning. Dependency-free: the functions are lifted straight out of the source,
@@ -10,6 +10,7 @@ makes exactly one outside call and that is it.
 """
 import ast
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import sys
@@ -21,9 +22,10 @@ _tree = ast.parse(_SRC)
 _keep = [
     n for n in _tree.body
     if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name in {"row", "display_name", "resolve_user"})
+        and n.name in {"row", "display_name", "resolve_user", "resolve_origin", "_is_fresh"})
     or (isinstance(n, ast.ClassDef) and n.name == "MultipleUsers")
-    or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_NAME_LINE")
+    or (isinstance(n, ast.Assign)
+        and getattr(n.targets[0], "id", "") in {"_NAME_LINE", "LIVE_LOCATION_FRESH_MINUTES"})
 ]
 
 
@@ -34,11 +36,13 @@ class _Thread:
         return fn()
 
 
-_g = {"re": re, "asyncio": _Thread, "__name__": "pure"}
+_g = {"re": re, "asyncio": _Thread, "datetime": datetime, "timedelta": timedelta,
+      "timezone": timezone, "__name__": "pure"}
 exec(compile(ast.Module(body=_keep, type_ignores=[]), "utils.py", "exec"), _g)
 row = _g["row"]
 display_name = _g["display_name"]
 resolve_user = _g["resolve_user"]
+resolve_origin = _g["resolve_origin"]
 MultipleUsers = _g["MultipleUsers"]
 
 failures = []
@@ -168,6 +172,77 @@ check_true("rows without a user_id do not count",
            raises([{"user_id": None, "content": PROFILE}]) is not None)
 check("one real row beside a null one still resolves",
       resolved([{"user_id": None}, {"user_id": "u-1", "content": PROFILE}])["user_id"], "u-1")
+
+
+print("\n── resolve_origin() ──────────────────────────────────")
+
+
+class PlacesClient:
+    """user_location and saved_places, both reached through .table()."""
+
+    def __init__(self, live=None, place=None):
+        self._live, self._place = live, place
+        self._target = None
+
+    def table(self, name):
+        self._target = name
+        return self
+
+    def select(self, _cols):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def execute(self):
+        # supabase-py returns None itself when maybe_single matches nothing.
+        data = self._live if self._target == "user_location" else self._place
+        return Res(data) if data is not None else None
+
+
+def origin_of(live=None, place=None):
+    return asyncio.run(resolve_origin(PlacesClient(live, place), "u-1"))
+
+
+def ago(minutes):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+HOME = {"label": "home", "address": "1 Test St", "lat": -33.9, "lng": 151.1}
+
+# A fresh fix wins: you are somewhere, and that somewhere is where you start.
+fresh = origin_of(live={"lat": -33.86, "lng": 151.2, "updated_at": ago(2)}, place=HOME)
+check("a fresh GPS fix is used", fresh["origin"], "-33.86,151.2")
+check("...and says so", fresh["source"], "your current location")
+
+# A stale one does not. This is the case that matters: an old fix looks current
+# and would silently route you from the wrong suburb.
+stale = origin_of(live={"lat": -33.86, "lng": 151.2, "updated_at": ago(120)}, place=HOME)
+check("a stale fix falls back to the saved place", stale["origin"], "-33.9,151.1")
+check("...and names the place", stale["source"], "home")
+
+check("no live row at all falls back", origin_of(place=HOME)["origin"], "-33.9,151.1")
+check("a live row with no coordinates falls back",
+      origin_of(live={"lat": None, "lng": None, "updated_at": ago(1)}, place=HOME)["origin"],
+      "-33.9,151.1")
+check("an unparseable timestamp is treated as stale",
+      origin_of(live={"lat": -33.86, "lng": 151.2, "updated_at": "not a date"}, place=HOME)["origin"],
+      "-33.9,151.1")
+
+# Coordinates beat the address string — they cannot be mis-geocoded.
+check("a place without coordinates uses its address",
+      origin_of(place={"label": "work", "address": "100 George St"})["origin"],
+      "100 George St")
+
+check_true("nothing known at all returns None", origin_of() is None)
+check_true("a place with neither address nor coordinates is not an origin",
+           origin_of(place={"label": "empty", "address": ""}) is None)
 
 
 print()

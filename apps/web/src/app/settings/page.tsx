@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import SavedPlaces from "./places";
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -90,6 +91,8 @@ export default function SettingsPage() {
             </button>
           </div>
         </section>
+
+        <SavedPlaces />
 
         {/* Worker Section */}
         <section>

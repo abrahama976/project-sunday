@@ -130,15 +130,20 @@ TOOLS = [
     # ── Travel ─────────────────────────────────────────────────
     {
         "name": "travel_directions",
-        "description": "Get routing, distance, and ETA using Google Maps API.",
+        "description": (
+            "Get routing, distance, and ETA using Google Maps. Omit `origin` to "
+            "start from the user's current location (or their saved home when "
+            "there is no recent GPS fix) — do NOT ask them where they are, just "
+            "leave it out."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "origin": {"type": "string", "description": "Starting location (e.g. 'Bondi', 'Central Station')"},
+                "origin": {"type": "string", "description": "Starting location. Omit to use the user's current or saved location."},
                 "destination": {"type": "string", "description": "Ending location"},
                 "mode": {"type": "string", "description": "Travel mode: 'driving', 'transit', 'walking', 'bicycling'"}
             },
-            "required": ["origin", "destination"]
+            "required": ["destination"]
         }
     },
     {

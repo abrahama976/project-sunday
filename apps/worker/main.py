@@ -56,7 +56,10 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "file_write":          file_write,
         "web_fetch":           web_fetch,
         "web_search":          web_search,
-        "travel_directions":   travel_directions,
+        # Bound like the other context-aware tools: without the client and
+        # user_id it cannot resolve an omitted origin.
+        "travel_directions":   lambda **kw: travel_directions(
+            client=client_ref[0], user_id=user_id_ref[0], **kw),
         "transit_departures":  transit_departures,
         "calendar_query":      calendar_query,
         "calendar_create":     calendar_create,
