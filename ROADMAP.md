@@ -193,11 +193,40 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4a — `trip_plan`, `transit_departures`, real-time vs timetable
 - [x] 4b — ranking, alternatives, `format_journeys`
 - [x] 4c — `leave_by`, `travel_watch`, `travel_alerts`, startup checks
+- [x] 4d — **the search** (below)
 - [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs
       `OPENROUTESERVICE_API_KEY` and a worker restart; the banner's
       `[worker] TfNSW: ✓` line is the answer four rounds of work rest on.
-- [ ] 4d — disruption alerts, and learning regular destinations from calendar
+- [ ] 4e — disruption alerts, and learning regular destinations from calendar
       history
+
+**4d — it searches now, rather than asking once.** One query returns five
+departures along the corridor TfNSW picked, which is why ranking them could
+never beat Maps: it never considered a second route. Four searches now run
+concurrently and pool their results — baseline, bus-biased (rail excluded,
+forcing nearby stands), rail-biased (bus excluded, forcing the station), and
+park-and-ride.
+
+**The constraint that shaped it.** Asking TfNSW for a trip "from Green Square
+Station" returns a journey beginning on the platform; the walk or drive to
+reach it is not in the response. Ranked against a baseline whose access walk
+*is* counted, that option wins on false pretences and sends you after a train
+you cannot reach. So every search but park-and-ride keeps the real origin and
+lets TfNSW cost the access itself; park-and-ride cannot, so `add_access_leg`
+puts the drive back explicitly. A test pins the failure directly — an option
+that wins without its drive leg loses with it.
+
+`verify_journeys` is the "calculate and verify" step that did not exist:
+departures already past, arrivals after the deadline, and park-and-ride that
+loses to simply driving are all dropped before ranking. Driving time is always
+shown for comparison, and park-and-ride states that parking availability is
+unchecked, because no feed covers it.
+
+`travel_watch` stopped re-planning every located event on every tick — the
+`travel_alerts` row now separates what was *planned* from what was *sent*, so
+an event five hours out is planned once and revisited as it nears. `alerted_at`
+is still written only after a successful push, so a failed notification still
+retries. The job runs the cheap baseline and escalates only when it looks poor.
 
 **Startup checks exist because a key being set proved nothing.** `check_tfnsw`
 and `check_openrouteservice` call the live APIs and print a ✓/✗ banner. They are
@@ -224,19 +253,12 @@ also the only part of the travel code with no test coverage, by necessity.
    migration closed the drift for anyone rebuilding from scratch. Prefer
    migrations over dashboard edits — this one cost an afternoon of uncertainty.
 3. **Global ntfy topic.** `poll_reminders` pushes to one topic for all users.
-4. **`travel_watch` re-plans on every tick.** `travel_alerts` is written only
-   after a push succeeds, which is right for retry — but it means every located
-   event inside the 6-hour window is planned afresh every 5 minutes until its
-   alert window arrives. An event five hours out costs ~60 TfNSW lookups before
-   it ever pushes. Correct, just wasteful; the fix is to remember a computed
-   leave time, not just a delivered alert. Left alone until the thing has run
-   against real trips and the actual request volume is visible.
-5. **Traces are still destroyable.** `agent_turns.message_id` is
+4. **Traces are still destroyable.** `agent_turns.message_id` is
    `ON DELETE CASCADE` and `cold_storage_archive` hard-deletes, so clearing the
    chat wipes the telemetry with it — which already happened once, taking every
    trace from before 2026-09-02. `ON DELETE SET NULL` is a one-line migration
    and the trace view already renders `(message deleted)` for orphans.
-6. **The dormancy was 60 days, not twelve weeks.** The last commit is
+5. **The dormancy was 60 days, not twelve weeks.** The last commit is
    2026-06-06 but `mac_heartbeat.last_seen` reads 2026-07-01 — the worker ran
    for three and a half weeks after the code went quiet. Worth remembering when
    reasoning about what "still worked" at the end.
