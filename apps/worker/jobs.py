@@ -1016,6 +1016,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
     from executors.travel_ops import (
         STOP_FINDER_URL, _coord_pair, _parse_time, headway_from_departures,
         haversine_m, _as_lonlat, _ors_geocode, _ors_route, _RAIL_CLASSES,
+        _tfnsw_geocode,
     )
     from config import TFNSW_API_KEY, WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M
 
@@ -1172,38 +1173,6 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
         })
     out.sort(key=lambda s: s["distance_m"])
     return out
-
-
-async def _tfnsw_geocode(http, headers, text):
-    """An address to (lat, lng) via TfNSW stop_finder, or None. Never raises.
-
-    Exists so the transit half of this project does not depend on a driving
-    directions provider. stop_finder takes free text and returns coordinates,
-    on the key and endpoint the job already uses.
-    """
-    from executors.travel_ops import STOP_FINDER_URL, _coord_pair
-
-    params = {
-        "outputFormat": "rapidJSON",
-        "coordOutputFormat": "EPSG:4326",
-        "type_sf": "any",
-        "name_sf": text,
-        "TfNSWSF": "true",
-        "version": "10.2.1.42",
-    }
-    try:
-        res = await http.get(STOP_FINDER_URL, headers=headers, params=params, timeout=20.0)
-        res.raise_for_status()
-        locations = (res.json() or {}).get("locations") or []
-    except Exception as e:
-        print(f"[nearby_services] TfNSW geocode failed: {e}")
-        return None
-
-    for loc in locations:
-        coord = _coord_pair(loc.get("coord"))
-        if coord:
-            return coord
-    return None
 
 
 async def _walk_minutes(http, origin_ll, stop):

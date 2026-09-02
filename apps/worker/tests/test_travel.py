@@ -29,7 +29,7 @@ _WANTED = {
     "verify_journeys", "describe_strategy", "_coord_pair",
     "_route_minutes_km", "_trip_params", "park_ride_depart_at",
     "headway_from_departures", "choose_boarding_points", "service_label",
-    "describe_frequency", "format_services",
+    "describe_frequency", "format_services", "as_efa_coord",
 }
 _keep = [
     n for n in _tree.body
@@ -68,6 +68,7 @@ choose_boarding_points = _g["choose_boarding_points"]
 service_label = _g["service_label"]
 describe_frequency = _g["describe_frequency"]
 format_services = _g["format_services"]
+as_efa_coord = _g["as_efa_coord"]
 _RAIL_CLASSES = _g["_RAIL_CLASSES"]
 PARK_RIDE_PARKING_MIN = _g["PARK_RIDE_PARKING_MIN"]
 
@@ -697,6 +698,70 @@ check_true("your own corrections are marked",
                                            source="user")], "home"))
 check_true("an empty inventory says so rather than implying nothing runs",
            "don't know what runs near" in format_services([], "home"))
+
+print("\n── as_efa_coord() / coordinate trip params ───────────")
+
+# EFA is the one thing here that wants longitude first. Getting it backwards
+# does not error — it plans from the Indian Ocean and returns nothing, which
+# reads exactly like "no services run". That is the bug that made every trip
+# this project ever planned come back empty.
+check("longitude comes first, latitude second",
+      as_efa_coord((-33.9068, 151.2010)), "151.201:-33.9068:EPSG:4326")
+check("a Central-ish coordinate round-trips",
+      as_efa_coord((-33.8832, 151.2065)), "151.2065:-33.8832:EPSG:4326")
+
+coord_params = _trip_params(as_efa_coord((-33.9068, 151.201)),
+                            as_efa_coord((-33.9900, 151.1300)),
+                            origin_type="coord", destination_type="coord")
+check("both ends are declared as coordinates",
+      (coord_params["type_origin"], coord_params["type_destination"]),
+      ("coord", "coord"))
+check("the origin is sent as lon:lat",
+      coord_params["name_origin"], "151.201:-33.9068:EPSG:4326")
+
+# A boarding point is a stop id, so it stays a stop — but the destination is
+# still the resolved coordinate.
+mixed = _trip_params("2000123", as_efa_coord((-33.99, 151.13)),
+                     origin_type="stop", destination_type="coord")
+check("a boarding point stays a stop id", mixed["type_origin"], "stop")
+check("...while the destination stays a coordinate", mixed["type_destination"], "coord")
+
+
+print("\n── is_placeholder_event_id() (calendar_ops) ──────────")
+
+# Lives in calendar_ops but is pure and guards the approval queue, so it is
+# pinned here rather than left untested for being in another file.
+_CAL = open(os.path.join(os.path.dirname(__file__), "..", "executors", "calendar_ops.py")).read()
+_ct = ast.parse(_CAL)
+_ckeep = [
+    n for n in _ct.body
+    if (isinstance(n, ast.FunctionDef) and n.name == "is_placeholder_event_id")
+    or (isinstance(n, ast.Assign)
+        and getattr(n.targets[0], "id", "") in {"_PLACEHOLDER_ID_MARKERS",
+                                                "_PLACEHOLDER_ID_EXACT"})
+]
+_cg = {"__name__": "pure"}
+exec(compile(ast.Module(body=_ckeep, type_ignores=[]), "calendar_ops.py", "exec"), _cg)
+is_placeholder_event_id = _cg["is_placeholder_event_id"]
+
+# The one that actually reached the approval queue and 404'd after approval.
+check_true("the id that failed in production is caught",
+           is_placeholder_event_id("Primary_xxxxxxxxxxxxxxxxxx"))
+check_true("an angle-bracket placeholder is caught",
+           is_placeholder_event_id("<event_id>"))
+check_true("the bare parameter name is caught", is_placeholder_event_id("event_id"))
+check_true("an empty id is caught", is_placeholder_event_id(""))
+check_true("whitespace is caught", is_placeholder_event_id("   "))
+check_true("None is caught", is_placeholder_event_id(None))
+check_true("'your_event_here' is caught", is_placeholder_event_id("your_event_here"))
+
+# Real Google event ids are opaque base32hex-ish strings. None of these may be
+# rejected, or the guard breaks the feature it is protecting.
+for real in ("4f8s0nk3q1p2r5t7v9x0y2z4a6",
+             "_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g",
+             "abc123XYZ"):
+    check_true(f"a real id is accepted: {real[:18]}…",
+               not is_placeholder_event_id(real))
 print()
 if failures:
     print(f"✗ {len(failures)} failure(s):\n")

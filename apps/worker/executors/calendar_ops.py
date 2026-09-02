@@ -251,6 +251,29 @@ async def calendar_create(
     )
 
 
+# Ids a model produces when it does not have a real one. `Primary_xxxxxxxxxxxx`
+# reached the approval queue looking perfectly legitimate and only failed, with
+# a raw 404, after it had been approved.
+_PLACEHOLDER_ID_MARKERS = ("xxxx", "<", ">", "your_", "example", "placeholder")
+_PLACEHOLDER_ID_EXACT = {"event_id", "eventid", "id", "primary", "string", "none", "null"}
+
+
+def is_placeholder_event_id(event_id: str) -> bool:
+    """True if this is obviously not a real Google Calendar event id.
+
+    Cheap and deliberately conservative — it only catches ids no real event
+    could have. Being asked to approve an action that cannot succeed is worse
+    than the failure itself, because it teaches you to stop reading the queue.
+    """
+    value = (event_id or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    if lowered in _PLACEHOLDER_ID_EXACT:
+        return True
+    return any(marker in lowered for marker in _PLACEHOLDER_ID_MARKERS)
+
+
 async def calendar_update(
     event_id: str,
     summary: str = "",
@@ -259,6 +282,9 @@ async def calendar_update(
     location: str = "",
     description: str = "",
 ) -> str:
+    if is_placeholder_event_id(event_id):
+        return (f"'{event_id}' is not a real event id. Call calendar_query first "
+                "and use the id it returns — event ids cannot be constructed.")
     return await asyncio.to_thread(
         _calendar_update_sync, event_id, summary, start, end, location, description
     )
