@@ -15,7 +15,14 @@ DAILY_FLASH2_LIMIT = 500
 GLOBAL_FLASH2_CEILING = 1000
 DAILY_FLASH15_LIMIT = 500
 GLOBAL_FLASH15_CEILING = 1000
-GEMINI_MAX_TOKENS = 2048
+# Thinking tokens are drawn from this same allowance on the 2.5 models, and
+# they are spent BEFORE any visible output. At 2048, a question needing a
+# couple of reasoning steps against ~20 tool declarations could burn the lot
+# and return a candidate with no parts at all — which the loop then reported
+# as "I couldn't complete that request with the current budget" on a day with
+# 4 requests used out of 100. The free tier is gated on requests per day, not
+# tokens, so a higher ceiling costs nothing against the 250/day cap.
+GEMINI_MAX_TOKENS = 8192
 GEMINI_TEMPERATURE = 0.3
 
 OLLAMA_MODEL = "llama3.2:latest"
