@@ -383,11 +383,15 @@ Return ONLY valid JSON (no markdown block)."""
                 # Check for travel
                 dest = ev.get("location")
                 if dest and origin_lat and origin_lng:
-                    from executors.travel_ops import travel_directions
+                    # trip_plan, not travel_directions: this asked Google for transit
+                    # directions, which needs Maps billing — so every travel task this
+                    # job tried to create has been failing silently. TfNSW does transit
+                    # better, live, and for free.
+                    from executors.travel_ops import trip_plan
                     origin_str = f"{origin_lat},{origin_lng}"
-                    travel_result = await travel_directions(origin=origin_str, destination=dest, mode="transit")
+                    travel_result = await trip_plan(destination=dest, origin=origin_str)
                     
-                    if "No directions" not in travel_result:
+                    if not travel_result.startswith(("Error", "No public transport", "No journeys")):
                         await asyncio.to_thread(
                             lambda: client.table("tasks").insert({
                                 "user_id": uid,

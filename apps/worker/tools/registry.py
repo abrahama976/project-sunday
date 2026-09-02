@@ -131,17 +131,17 @@ TOOLS = [
     {
         "name": "travel_directions",
         "description": (
-            "Get routing, distance, and ETA using Google Maps. Omit `origin` to "
-            "start from the user's current location (or their saved home when "
-            "there is no recent GPS fix) — do NOT ask them where they are, just "
-            "leave it out."
+            "Driving, walking or cycling directions. NOT public transport — for "
+            "transit use trip_plan instead. Omit `origin` to start from the user's "
+            "current location (or their saved home when there is no recent GPS "
+            "fix) — do NOT ask them where they are, just leave it out."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "origin": {"type": "string", "description": "Starting location. Omit to use the user's current or saved location."},
                 "destination": {"type": "string", "description": "Ending location"},
-                "mode": {"type": "string", "description": "Travel mode: 'driving', 'transit', 'walking', 'bicycling'"}
+                "mode": {"type": "string", "description": "'driving', 'walking' or 'cycling'. Transit is not supported here — use trip_plan."}
             },
             "required": ["destination"]
         }
@@ -149,11 +149,13 @@ TOOLS = [
     {
         "name": "trip_plan",
         "description": (
-            "Plan a public transport journey in Sydney using TfNSW live data, and "
-            "compare the options. Prefer this over travel_directions for transit: it "
-            "carries real-time departures, surfaces routes Google does not, and reports "
-            "waiting time per option. Omit `origin` to start from the user's current or "
-            "saved location. Give `arrive_by` when there is something to be on time for."
+            "THE tool for how to get somewhere in Sydney. Plans a public transport "
+            "journey on live TfNSW data and ranks the options by arrival, then "
+            "waiting time, then changes. Use this by default for 'how do I get to X' "
+            "— only reach for travel_directions when the user specifically wants to "
+            "drive, walk or cycle. Omit `origin` to start from the user's current or "
+            "saved location; do NOT ask where they are. Give `arrive_by` when there "
+            "is something to be on time for."
         ),
         "parameters": {
             "type": "object",

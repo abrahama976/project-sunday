@@ -64,7 +64,11 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+# OpenRouteService replaced Google Maps: the Directions API refuses every
+# request without a billing account attached, which this project will not
+# have. ORS is key-only with no card, 2000 directions/day, and returns 403
+# at the cap rather than a bill.
+OPENROUTESERVICE_API_KEY = os.environ.get("OPENROUTESERVICE_API_KEY", "")
 TFNSW_API_KEY = os.environ.get("TFNSW_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-versatile"

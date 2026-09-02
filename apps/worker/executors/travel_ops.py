@@ -1,31 +1,134 @@
 import httpx
 import json
-from config import GOOGLE_MAPS_API_KEY, TFNSW_API_KEY
+import re
+from config import OPENROUTESERVICE_API_KEY, TFNSW_API_KEY
 from utils import resolve_origin
+
+# ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
+# Was Google Maps. The Directions API returns REQUEST_DENIED without a billing
+# account attached to the Cloud project — which this project will not have, and
+# which had been failing silently in calendar_prep as well as in chat. ORS is
+# key-only, 2000 directions/day, and 403s at the cap instead of billing.
+#
+# The one real difference: ORS routes between COORDINATES, where Google would
+# accept a street address. So an address has to be geocoded first, which is a
+# second call and a second thing that can fail.
+
+ORS_BASE = "https://api.openrouteservice.org"
+ORS_TIMEOUT = 20.0
+
+# Sunday's modes → ORS profiles. Transit is deliberately absent: ORS does not
+# do public transport, and pretending otherwise would silently return a walking
+# route for a train journey.
+_ORS_PROFILES = {
+    "driving": "driving-car",
+    "car": "driving-car",
+    "walking": "foot-walking",
+    "foot": "foot-walking",
+    "cycling": "cycling-regular",
+    "bicycling": "cycling-regular",
+    "bike": "cycling-regular",
+}
+
+_COORD_PAIR = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def _as_lonlat(text: str):
+    """"lat,lng" → (lon, lat) for ORS, which wants them the other way round.
+
+    resolve_origin hands back "lat,lng" because that is the order everything
+    else in this project uses. Getting this backwards puts you in the Indian
+    Ocean rather than failing, so it is worth its own function and its own test.
+    """
+    match = _COORD_PAIR.match(text or "")
+    if not match:
+        return None
+    lat, lon = float(match.group(1)), float(match.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return [lon, lat]
+
+
+def _route_summary(data: dict, mode: str, origin_note: str = "") -> str:
+    """Format an ORS directions response. Pure, so it can be tested."""
+    features = data.get("features") or []
+    if not features:
+        return "No route found."
+
+    props = features[0].get("properties") or {}
+    summary = props.get("summary") or {}
+    seconds = summary.get("duration")
+    metres = summary.get("distance")
+    if seconds is None or metres is None:
+        return "No route found."
+
+    minutes = int(round(seconds / 60))
+    km = metres / 1000
+    out = [f"{mode.capitalize()}{origin_note}: {minutes} min, {km:.1f} km"]
+
+    steps = []
+    for segment in props.get("segments") or []:
+        steps.extend(segment.get("steps") or [])
+    for step in steps[:12]:
+        instruction = (step.get("instruction") or "").strip()
+        if not instruction:
+            continue
+        step_min = int(round((step.get("duration") or 0) / 60))
+        out.append(f"  · {instruction}" + (f" ({step_min} min)" if step_min else ""))
+    if len(steps) > 12:
+        out.append(f"  · …and {len(steps) - 12} more steps")
+
+    return "\n".join(out)
+
+
+async def _ors_geocode(http, text: str):
+    """Address → [lon, lat] via ORS geocoding, or None."""
+    res = await http.get(
+        f"{ORS_BASE}/geocode/search",
+        params={"api_key": OPENROUTESERVICE_API_KEY, "text": text,
+                "boundary.country": "AU", "size": 1},
+        timeout=ORS_TIMEOUT,
+    )
+    res.raise_for_status()
+    features = (res.json() or {}).get("features") or []
+    if not features:
+        return None
+    return (features[0].get("geometry") or {}).get("coordinates")
 
 
 async def travel_directions(
     destination: str,
     origin: str | None = None,
-    mode: str = "transit",
+    mode: str = "driving",
     client=None,
     user_id: str | None = None,
 ) -> str:
-    """Get directions from Google Maps API.
+    """Driving, walking or cycling directions via OpenRouteService.
 
-    `origin` is optional. Left out, it resolves to your live position when the
-    phone has reported recently, else your default saved place — so "when do I
-    need to leave for X?" is answerable without the model stopping to ask where
-    you are, which is what it did before saved places existed.
+    `origin` is optional: left out it resolves to the live position when the
+    phone has reported recently, else the default saved place.
+
+    Public transport is NOT handled here — see trip_plan, which has live TfNSW
+    data and ranks alternatives. Asking for transit returns a pointer to it
+    rather than a walking route in disguise.
     """
-    if not GOOGLE_MAPS_API_KEY:
-        return "Error: GOOGLE_MAPS_API_KEY is not set."
+    if mode and mode.lower() in {"transit", "public_transport", "pt"}:
+        return ("travel_directions does not do public transport. "
+                "Use trip_plan for transit journeys — it has live TfNSW times.")
+
+    profile = _ORS_PROFILES.get((mode or "driving").lower())
+    if not profile:
+        return (f"Unknown travel mode '{mode}'. "
+                f"Use one of: {', '.join(sorted(set(_ORS_PROFILES)))}.")
+
+    if not OPENROUTESERVICE_API_KEY:
+        return ("Error: OPENROUTESERVICE_API_KEY is not set. Get a free key at "
+                "openrouteservice.org/dev/#/signup and put it in apps/worker/.env.")
 
     origin_note = ""
     if not origin:
         if client is None or not user_id:
-            return ("Error: no origin given and no user context to look one up. "
-                    "Say where you are starting from.")
+            return "Error: no origin given and no user context to look one up."
         resolved = await resolve_origin(client, user_id)
         if not resolved:
             return ("I don't know where you're starting from — no recent location "
@@ -34,49 +137,36 @@ async def travel_directions(
         origin = resolved["origin"]
         origin_note = f" (from {resolved['source']})"
 
-    url = "https://maps.googleapis.com/maps/api/directions/json"
-    params = {
-        "origin": origin,
-        "destination": destination,
-        "mode": mode,
-        "key": GOOGLE_MAPS_API_KEY
-    }
-    
-    # Named `http`, not `client`: `client` is the Supabase handle this function
-    # now takes, and shadowing it here would break the next person who reaches
-    # for it inside this block.
+    # `http`, not `client`: `client` is the Supabase handle this function takes.
     async with httpx.AsyncClient() as http:
         try:
-            response = await http.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+            start = _as_lonlat(origin) or await _ors_geocode(http, origin)
+            end = _as_lonlat(destination) or await _ors_geocode(http, destination)
+        except Exception as e:
+            return f"Error looking up those locations: {e}"
+
+        if not start:
+            return f"I couldn't find '{origin}' on the map."
+        if not end:
+            return f"I couldn't find '{destination}' on the map."
+
+        try:
+            res = await http.post(
+                f"{ORS_BASE}/v2/directions/{profile}/geojson",
+                headers={"Authorization": OPENROUTESERVICE_API_KEY,
+                         "Content-Type": "application/json"},
+                json={"coordinates": [start, end]},
+                timeout=ORS_TIMEOUT,
+            )
+            if res.status_code == 403:
+                return ("OpenRouteService daily limit reached (2000 requests). "
+                        "It resets 24 hours after the first request of the day.")
+            res.raise_for_status()
+            data = res.json()
         except Exception as e:
             return f"Error fetching directions: {e}"
-            
-    if data.get("status") != "OK":
-        return f"Google Maps API Error: {data.get('status', 'Unknown')} - {data.get('error_message', '')}"
-        
-    try:
-        route = data["routes"][0]["legs"][0]
-        distance = route["distance"]["text"]
-        duration = route["duration"]["text"]
-        start_addr = route["start_address"]
-        end_addr = route["end_address"]
-        
-        output = [f"Directions: {start_addr} -> {end_addr}{origin_note}"]
-        output.append(f"Mode: {mode.capitalize()} | Distance: {distance} | ETA: {duration}")
-        output.append("Steps:")
-        
-        for idx, step in enumerate(route["steps"], 1):
-            # Clean HTML from instructions
-            import re
-            instructions = re.sub(r'<[^>]+>', ' ', step["html_instructions"])
-            instructions = re.sub(r'\s+', ' ', instructions).strip()
-            output.append(f"  {idx}. {instructions} ({step['duration']['text']})")
-            
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error parsing directions: {e}"
+
+    return _route_summary(data, mode, origin_note)
 
 
 async def transit_departures(stop_keyword: str) -> str:

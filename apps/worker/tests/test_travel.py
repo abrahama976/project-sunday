@@ -23,20 +23,25 @@ _tree = ast.parse(_SRC)
 _WANTED = {
     "_parse_time", "summarise_journey", "_journey_fare",
     "rank_journeys", "describe_alternative", "format_journeys",
+    "_as_lonlat", "_route_summary",
 }
 _keep = [
     n for n in _tree.body
     if (isinstance(n, ast.FunctionDef) and n.name in _WANTED)
     or (isinstance(n, ast.Assign)
-        and getattr(n.targets[0], "id", "") in {"_WALK_CLASSES", "_MODE_NAMES", "_ALT_MAX_LATER_MIN"})
+        and getattr(n.targets[0], "id", "") in {"_WALK_CLASSES", "_MODE_NAMES",
+                                                "_ALT_MAX_LATER_MIN", "_COORD_PAIR",
+                                                "_ORS_PROFILES"})
 ]
-_g = {"__name__": "pure"}
+_g = {"re": __import__("re"), "__name__": "pure"}
 exec(compile(ast.Module(body=_keep, type_ignores=[]), "travel_ops.py", "exec"), _g)
 _parse_time = _g["_parse_time"]
 summarise_journey = _g["summarise_journey"]
 rank_journeys = _g["rank_journeys"]
 describe_alternative = _g["describe_alternative"]
 format_journeys = _g["format_journeys"]
+_as_lonlat = _g["_as_lonlat"]
+_route_summary = _g["_route_summary"]
 
 failures = []
 
@@ -225,6 +230,51 @@ check_true("empty input does not crash", "No journeys" in format_journeys([]))
 
 sched_text = format_journeys(rank_journeys([summarise_journey(sched)]))
 check_true("a timetable-only journey is labelled", "timetable only" in sched_text, sched_text)
+
+print("\n── _as_lonlat() ──────────────────────────────────────")
+
+# resolve_origin returns "lat,lng" because that is the order the rest of this
+# project uses; ORS wants [lon, lat]. Getting it backwards puts you in the
+# Indian Ocean rather than erroring, which is why this is its own function.
+check("lat,lng is flipped to [lon, lat]", _as_lonlat("-33.92,151.20"), [151.20, -33.92])
+check("whitespace is tolerated", _as_lonlat("  -33.92 , 151.20 "), [151.20, -33.92])
+check("positive coordinates work", _as_lonlat("51.5,-0.12"), [-0.12, 51.5])
+check("an address is not coordinates", _as_lonlat("314 Gardeners Rd, Rosebery"), None)
+check("empty is None", _as_lonlat(""), None)
+check("out-of-range latitude is rejected", _as_lonlat("999,151.2"), None)
+check("out-of-range longitude is rejected", _as_lonlat("-33.9,999"), None)
+
+
+print("\n── _route_summary() ──────────────────────────────────")
+
+ORS = {"features": [{"properties": {
+    "summary": {"duration": 1380, "distance": 12400},
+    "segments": [{"steps": [
+        {"instruction": "Head north on Gardeners Road", "duration": 180},
+        {"instruction": "Turn right onto Botany Road", "duration": 600},
+        {"instruction": "Arrive at your destination", "duration": 0},
+    ]}],
+}}]}
+
+text = _route_summary(ORS, "driving", " (from home)")
+check_true("duration is in minutes", "23 min" in text, text)
+check_true("distance is in km", "12.4 km" in text, text)
+check_true("the origin is named", "(from home)" in text, text)
+check_true("steps are listed", "Botany Road" in text, text)
+check_true("a zero-duration step has no time", "Arrive at your destination\n" in text + "\n", text)
+
+check("no features is handled", _route_summary({}, "driving"), "No route found.")
+check("a feature with no summary is handled",
+      _route_summary({"features": [{"properties": {}}]}, "driving"), "No route found.")
+
+# Long routes get capped rather than flooding the model's context.
+many = {"features": [{"properties": {
+    "summary": {"duration": 600, "distance": 5000},
+    "segments": [{"steps": [{"instruction": f"Step {i}", "duration": 60} for i in range(20)]}],
+}}]}
+capped = _route_summary(many, "cycling")
+check_true("step lists are capped", "and 8 more steps" in capped, capped)
+
 
 print()
 if failures:
