@@ -74,6 +74,22 @@ the only writer of `agent_turns`. When touching it:
   `config.py` `TOOL_TIER_MAP` (tier), `main.py` `_make_registry` (executor).
   A missing tier falls through to `approve`, which is safe but implicit.
 
+## Merging
+
+**Push every commit before opening the PR.** A PR merges at the head it knew
+about, and pushes made after it is opened have three times been dropped
+silently — #27 and #28 each lost the same 340-line feature, #30 lost the one
+after it, and two migrations merged without ever reaching the database. The one
+PR where every commit was pushed *before* the PR existed (#29) landed intact.
+
+Never push to a branch that already has an open PR; open a new one instead.
+After any merge, verify the change is actually on `main` rather than trusting
+that the merge reported success:
+
+```bash
+git show origin/main:path/to/file | grep -c "the thing you added"
+```
+
 ## Tests
 
 ```bash
