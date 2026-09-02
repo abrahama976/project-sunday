@@ -18,7 +18,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile, fetch_and_cache_directives
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_job, send_daily_brief, sync_calendar_job
+from jobs import morning_briefing, email_scan, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_job, send_daily_brief, sync_calendar_job, travel_watch
 from executors.base import set_status
 from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
@@ -27,7 +27,7 @@ from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
 from utils import generate_with_retry, resolve_user
 from executors.web_search_ops import web_search
-from executors.travel_ops import travel_directions, transit_departures, trip_plan
+from executors.travel_ops import travel_directions, transit_departures, trip_plan, leave_by
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
@@ -62,6 +62,8 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
             client=client_ref[0], user_id=user_id_ref[0], **kw),
         "transit_departures":  transit_departures,
         "trip_plan":           lambda **kw: trip_plan(
+            client=client_ref[0], user_id=user_id_ref[0], **kw),
+        "leave_by":            lambda **kw: leave_by(
             client=client_ref[0], user_id=user_id_ref[0], **kw),
         "calendar_query":      calendar_query,
         "calendar_create":     calendar_create,
@@ -475,6 +477,19 @@ async def main():
         print("[worker] ntfy topic: ✗ NTFY_TOPIC unset — reminders and approval "
               "pushes will be silently dropped. Set it in apps/worker/.env")
 
+    # Travel depends entirely on these two now, and "the key is present" is not
+    # the same claim as "the key works" — which is the gap that let trip_plan
+    # ship three times without ever running. One real call each, so the banner
+    # states a fact. Non-fatal, like the ntfy check.
+    try:
+        from executors.travel_ops import check_tfnsw, check_openrouteservice
+        ok, detail = await check_tfnsw()
+        print(f"[worker] TfNSW: {'✓' if ok else '✗'} ({detail})")
+        ok, detail = await check_openrouteservice()
+        print(f"[worker] OpenRouteService: {'✓' if ok else '✗'} ({detail})")
+    except Exception as e:
+        print(f"[worker] travel service check failed to run: {e}")
+
     # Verify Ollama connectivity and list models
     try:
         from ollama import AsyncClient as OllamaClient
@@ -532,6 +547,7 @@ async def main():
     sched.register_handler("cold_storage_archive", cold_storage_archive)
     sched.register_handler("daily_brief", send_daily_brief_job)
     sched.register_handler("sync_calendar", sync_calendar_job)
+    sched.register_handler("travel_watch", travel_watch)
     scheduler_task = asyncio.create_task(sched.run())
 
     def _on_scheduler_done(task):

@@ -23,7 +23,7 @@ _tree = ast.parse(_SRC)
 _WANTED = {
     "_parse_time", "summarise_journey", "_journey_fare",
     "rank_journeys", "describe_alternative", "format_journeys",
-    "_as_lonlat", "_route_summary",
+    "_as_lonlat", "_route_summary", "leave_time_from",
 }
 _keep = [
     n for n in _tree.body
@@ -42,6 +42,7 @@ describe_alternative = _g["describe_alternative"]
 format_journeys = _g["format_journeys"]
 _as_lonlat = _g["_as_lonlat"]
 _route_summary = _g["_route_summary"]
+leave_time_from = _g["leave_time_from"]
 
 failures = []
 
@@ -274,6 +275,31 @@ many = {"features": [{"properties": {
 }}]}
 capped = _route_summary(many, "cycling")
 check_true("step lists are capped", "and 8 more steps" in capped, capped)
+
+
+print("\n── leave_time_from() ─────────────────────────────────")
+
+# The number an alert fires on. Five minutes wrong here is the whole ball game,
+# which is why it is pure and tested rather than buried in the job.
+journeys = rank_journeys([summarise_journey(direct)])          # departs 08:00
+check("the buffer is subtracted from the first departure",
+      leave_time_from(journeys, 5).astimezone(SYD).strftime("%H:%M"), "07:55")
+check("a zero buffer leaves the departure alone",
+      leave_time_from(journeys, 0).astimezone(SYD).strftime("%H:%M"), "08:00")
+check("a bigger buffer leaves earlier",
+      leave_time_from(journeys, 15).astimezone(SYD).strftime("%H:%M"), "07:45")
+
+# A negative buffer would tell you to leave AFTER the train goes.
+check("a negative buffer is clamped, not honoured",
+      leave_time_from(journeys, -10).astimezone(SYD).strftime("%H:%M"), "08:00")
+
+check_true("no journeys means no leave time", leave_time_from([], 5) is None)
+
+# It reads the FIRST journey, which rank_journeys has already put best-first.
+two = rank_journeys([summarise_journey({"legs": [walk_leg(30, 5), train_leg(35, 20)]}),
+                     summarise_journey(direct)])
+check("it uses the best-ranked journey, not the first supplied",
+      leave_time_from(two, 5).astimezone(SYD).strftime("%H:%M"), "07:55")
 
 
 print()
