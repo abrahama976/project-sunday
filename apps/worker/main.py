@@ -25,7 +25,7 @@ from executors.file_ops import file_read, file_list, file_write
 from executors.profile_ops import update_profile
 from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
-from utils import generate_with_retry
+from utils import generate_with_retry, resolve_user
 from executors.web_search_ops import web_search
 from executors.travel_ops import travel_directions, transit_departures
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
@@ -56,7 +56,10 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "file_write":          file_write,
         "web_fetch":           web_fetch,
         "web_search":          web_search,
-        "travel_directions":   travel_directions,
+        # Bound like the other context-aware tools: without the client and
+        # user_id it cannot resolve an omitted origin.
+        "travel_directions":   lambda **kw: travel_directions(
+            client=client_ref[0], user_id=user_id_ref[0], **kw),
         "transit_departures":  transit_departures,
         "calendar_query":      calendar_query,
         "calendar_create":     calendar_create,
@@ -517,6 +520,10 @@ async def main():
     sched.register_handler("morning_briefing", morning_briefing)
     sched.register_handler("email_scan", email_scan)
     sched.register_handler("meal_checkin", meal_checkin)
+    # meal_checkin upserts this row when it finds no free window, and
+    # deletes it again on success. Without a handler the scheduler just
+    # logged "no handler for job" and the retry never once ran.
+    sched.register_handler("meal_checkin_retry", meal_checkin)
     sched.register_handler("nightly_maintenance", nightly_maintenance)
     sched.register_handler("calendar_prep", calendar_prep)
     sched.register_handler("task_tracker", task_tracker)
@@ -555,8 +562,10 @@ async def main():
     except Exception as e:
         print(f"[worker] Failed to register sync_calendar job: {e}")
 
-    # Run calendar sync on startup
-    sync_cal_task = asyncio.create_task(sync_calendar_job(client, GEMINI_API_KEY))
+    # Run calendar sync on startup — via run_now, not by calling the handler
+    # directly. A direct call is invisible to the scheduler's in-flight guard,
+    # so this raced catch-up and ran sync_calendar twice on every start.
+    sync_cal_task = asyncio.create_task(sched.run_now("sync_calendar"))
 
     def _on_sync_calendar_done(task):
         if not task.cancelled() and task.exception():
@@ -569,20 +578,21 @@ async def main():
     import datetime as dt
     try:
         today = dt.date.today().isoformat()
-        profiles = await asyncio.to_thread(lambda: client.table("user_profile").select("user_id").execute())
-        for row in (profiles.data or []):
-            user_id = row.get("user_id")
-            if user_id:
-                existing = await asyncio.to_thread(
-                    lambda u=user_id: client.table("messages")
-                    .select("id")
-                    .eq("user_id", u)
-                    .eq("model_used", "system")
-                    .gte("created_at", today)
-                    .limit(1).execute()
-                )
-                if not existing.data:
-                    await send_daily_brief(client, user_id)
+        # Phase 3 collapsed the get_active_users fan-out and missed this site,
+        # which queried user_profile directly. Its loop variable was `row`,
+        # which is also the name of the utils helper — a shadow waiting for
+        # whoever imported it here next.
+        user_id = (await resolve_user(client))["user_id"]
+        existing = await asyncio.to_thread(
+            lambda u=user_id: client.table("messages")
+            .select("id")
+            .eq("user_id", u)
+            .eq("model_used", "system")
+            .gte("created_at", today)
+            .limit(1).execute()
+        )
+        if not existing.data:
+            await send_daily_brief(client, user_id)
     except Exception as e:
         print(f"[worker] Failed startup brief check: {e}")
 

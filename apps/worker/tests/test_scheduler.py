@@ -86,6 +86,20 @@ class FakeScheduler:
         finally:
             self._in_flight.discard(job_name)
 
+    async def run_now(self, job_name="slow_job"):
+        """Off-schedule run, sharing the guard with tick().
+
+        The real one is what startup calls instead of invoking the handler
+        directly — a direct call is invisible to _in_flight, which is how
+        sync_calendar came to run twice on every start.
+        """
+        if job_name in self._in_flight:
+            return False
+        self._in_flight.add(job_name)
+        self.starts += 1
+        await self._run_job(job_name)     # awaited, unlike tick's create_task
+        return True
+
 
 async def scenario_long_job():
     """A job slower than the tick interval must not be started twice.
@@ -138,9 +152,44 @@ async def scenario_independent_jobs():
     check("both started", s.starts, 2)
 
 
+async def scenario_run_now_vs_tick():
+    """The startup race, in miniature.
+
+    Startup fired sync_calendar directly while catch-up dispatched it from the
+    tick — two concurrent runs of a job that must not run twice. Routing the
+    startup call through run_now puts both on the same guard.
+    """
+    async def slow():
+        await asyncio.sleep(0.05)
+
+    s = FakeScheduler(slow)
+    asyncio.create_task(s.run_now())      # startup's run, still going
+    await asyncio.sleep(0)
+    check("tick does not double-start what run_now is running", await s.tick(), False)
+    check("exactly one run", s.starts, 1)
+
+    await asyncio.sleep(0.1)
+    check_true("guard released when run_now finished", len(s._in_flight) == 0)
+    check("the scheduler can run it again afterwards", await s.tick(), True)
+
+
+async def scenario_run_now_after_tick():
+    """And the other way round: a tick already running blocks the direct call."""
+    async def slow():
+        await asyncio.sleep(0.05)
+
+    s = FakeScheduler(slow)
+    await s.tick()
+    await asyncio.sleep(0)
+    check("run_now defers to a job already in flight", await s.run_now(), False)
+    check("still one run", s.starts, 1)
+
+
 asyncio.run(scenario_long_job())
 asyncio.run(scenario_raising_job())
 asyncio.run(scenario_independent_jobs())
+asyncio.run(scenario_run_now_vs_tick())
+asyncio.run(scenario_run_now_after_tick())
 
 print()
 if failures:

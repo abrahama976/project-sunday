@@ -194,6 +194,15 @@ async def run_agent_loop(
             client, run_id, user_id, message_id, step, "final",
             result=f"{text}{note}", model=model_used, latency_ms=elapsed,
         )
+        # The loop was otherwise silent on the happy path: the last thing in
+        # the log was "[router] Attempting generation…", so a finished turn and
+        # a hung one looked identical. agent_turns knew; the log did not.
+        rounds = step + 1
+        print(
+            f"[loop] answered in {rounds} round{'s' if rounds != 1 else ''} "
+            f"via {model_used} ({elapsed}ms){note}",
+            flush=True,
+        )
         await insert_reply(text, model_used)
         return True
 

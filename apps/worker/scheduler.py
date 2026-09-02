@@ -9,6 +9,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from supabase import Client
 
+from utils import row
+
 
 def _cron_matches(cron_expr: str, dt: datetime) -> bool:
     """Check if a cron expression matches the given datetime.
@@ -103,6 +105,49 @@ class Scheduler:
     def register_handler(self, job_name: str, handler):
         """Register an async handler function for a job name."""
         self._handlers[job_name] = handler
+
+    async def run_now(self, job_name: str) -> bool:
+        """Run a registered job off-schedule, through the same guard as a tick.
+
+        Startup used to call `sync_calendar_job` directly with `create_task`
+        while catch-up dispatched the same job from `_tick` — two concurrent
+        runs of a job whose whole point is that it must not run twice. The
+        `_in_flight` guard could not see the direct call, because the guard
+        lives on this side of that boundary. So anything wanting an
+        off-schedule run comes through here instead.
+
+        Delegating to `_run_job` also means the `last_run_at` write is reused,
+        which stops catch-up treating the job as overdue the moment this
+        finishes. Returns True if a run actually happened.
+        """
+        handler = self._handlers.get(job_name)
+        if handler is None:
+            print(f"[scheduler] run_now: no handler for job: {job_name}")
+            return False
+
+        if job_name in self._in_flight:
+            print(f"[scheduler] run_now: {job_name} already running — skipped")
+            return False
+
+        res = await asyncio.to_thread(
+            lambda: self._client.table("scheduled_jobs")
+            .select("*")
+            .eq("job_name", job_name)
+            .limit(1)
+            .maybe_single()
+            .execute()
+        )
+        job = row(res)
+        if not job:
+            print(f"[scheduler] run_now: no scheduled_jobs row for {job_name}")
+            return False
+
+        print(f"[scheduler] running job now: {job_name}")
+        self._in_flight.add(job_name)
+        # _run_job owns the release in its own `finally`, and swallows handler
+        # errors, so there is nothing to unwind here.
+        await self._run_job(job, handler)
+        return True
 
     async def run(self, check_interval: int = 30):
         """Main loop — check for due jobs every `check_interval` seconds."""

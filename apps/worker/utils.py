@@ -1,5 +1,6 @@
 import asyncio
 import re
+from datetime import datetime, timedelta, timezone
 
 from google.api_core import exceptions
 
@@ -82,6 +83,75 @@ async def resolve_user(client) -> dict:
         "name": display_name(profile),
         "content": profile.get("content") or "",
     }
+
+
+# How recent a GPS fix has to be before it beats your saved home address.
+# Long enough to survive a phone that reports every few minutes; short enough
+# that yesterday's position never routes you from the wrong suburb.
+LIVE_LOCATION_FRESH_MINUTES = 15
+
+
+async def resolve_origin(client, user_id: str) -> dict | None:
+    """Where to start a journey from: `{origin, source}`, or None if unknown.
+
+    Live position first, but only while it is fresh — `user_location` is
+    overwritten by POST /api/location whenever the phone reports in, and a
+    three-day-old fix is worse than a fixed address because it looks current.
+    Falls back to the default saved place.
+
+    `source` comes back so the answer can say "from home" or "from your current
+    location" instead of quietly guessing on your behalf. A journey planned
+    from the wrong place is worth naming.
+    """
+    live = row(await asyncio.to_thread(
+        lambda: client.table("user_location")
+        .select("lat, lng, updated_at")
+        .eq("user_id", user_id)
+        .limit(1)
+        .maybe_single()
+        .execute()
+    ))
+
+    if live.get("lat") is not None and live.get("lng") is not None:
+        updated = live.get("updated_at")
+        if updated and _is_fresh(updated, LIVE_LOCATION_FRESH_MINUTES):
+            return {
+                "origin": f"{live['lat']},{live['lng']}",
+                "source": "your current location",
+            }
+
+    place = row(await asyncio.to_thread(
+        lambda: client.table("saved_places")
+        .select("label, address, lat, lng")
+        .eq("user_id", user_id)
+        .eq("is_default", True)
+        .limit(1)
+        .maybe_single()
+        .execute()
+    ))
+    if not place:
+        return None
+
+    # Coordinates beat the address string: they cannot be mis-geocoded.
+    if place.get("lat") is not None and place.get("lng") is not None:
+        origin = f"{place['lat']},{place['lng']}"
+    else:
+        origin = place.get("address") or ""
+
+    if not origin:
+        return None
+    return {"origin": origin, "source": place.get("label") or "your saved place"}
+
+
+def _is_fresh(timestamp: str, minutes: int) -> bool:
+    """True if an ISO timestamp is within `minutes` of now. Never raises."""
+    try:
+        when = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when) <= timedelta(minutes=minutes)
 
 
 async def generate_with_retry(fn, max_retries=3, base_delay=2.0):

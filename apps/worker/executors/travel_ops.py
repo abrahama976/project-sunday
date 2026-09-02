@@ -1,12 +1,39 @@
 import httpx
 import json
 from config import GOOGLE_MAPS_API_KEY, TFNSW_API_KEY
+from utils import resolve_origin
 
-async def travel_directions(origin: str, destination: str, mode: str = "transit") -> str:
-    """Get directions from Google Maps API."""
+
+async def travel_directions(
+    destination: str,
+    origin: str | None = None,
+    mode: str = "transit",
+    client=None,
+    user_id: str | None = None,
+) -> str:
+    """Get directions from Google Maps API.
+
+    `origin` is optional. Left out, it resolves to your live position when the
+    phone has reported recently, else your default saved place — so "when do I
+    need to leave for X?" is answerable without the model stopping to ask where
+    you are, which is what it did before saved places existed.
+    """
     if not GOOGLE_MAPS_API_KEY:
         return "Error: GOOGLE_MAPS_API_KEY is not set."
-        
+
+    origin_note = ""
+    if not origin:
+        if client is None or not user_id:
+            return ("Error: no origin given and no user context to look one up. "
+                    "Say where you are starting from.")
+        resolved = await resolve_origin(client, user_id)
+        if not resolved:
+            return ("I don't know where you're starting from — no recent location "
+                    "and no default saved place. Add one under Settings → Places, "
+                    "or tell me the starting point.")
+        origin = resolved["origin"]
+        origin_note = f" (from {resolved['source']})"
+
     url = "https://maps.googleapis.com/maps/api/directions/json"
     params = {
         "origin": origin,
@@ -15,9 +42,12 @@ async def travel_directions(origin: str, destination: str, mode: str = "transit"
         "key": GOOGLE_MAPS_API_KEY
     }
     
-    async with httpx.AsyncClient() as client:
+    # Named `http`, not `client`: `client` is the Supabase handle this function
+    # now takes, and shadowing it here would break the next person who reaches
+    # for it inside this block.
+    async with httpx.AsyncClient() as http:
         try:
-            response = await client.get(url, params=params)
+            response = await http.get(url, params=params)
             response.raise_for_status()
             data = response.json()
         except Exception as e:
@@ -33,7 +63,7 @@ async def travel_directions(origin: str, destination: str, mode: str = "transit"
         start_addr = route["start_address"]
         end_addr = route["end_address"]
         
-        output = [f"Directions: {start_addr} -> {end_addr}"]
+        output = [f"Directions: {start_addr} -> {end_addr}{origin_note}"]
         output.append(f"Mode: {mode.capitalize()} | Distance: {distance} | ETA: {duration}")
         output.append("Steps:")
         
