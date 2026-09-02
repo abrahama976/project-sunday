@@ -49,7 +49,7 @@ from router import build_contents, route_special, route_turn
 # Full output is always persisted to agent_turns; only what goes back into the
 # model context is cut. Tools whose output is inherently bounded and structured
 # are left whole — truncating a calendar mid-event is worse than the tokens.
-_NO_TRUNCATE = {"calendar_query", "task_list"}
+_NO_TRUNCATE = {"calendar_query", "task_list", "trip_plan"}
 _HEAD_ONLY = {"web_fetch": 1000}
 _HEAD_TAIL = {"gmail_read_body": (800, 200)}
 _DEFAULT_HEAD = 800

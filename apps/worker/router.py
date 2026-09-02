@@ -310,6 +310,7 @@ async def route_turn(client: Client, contents: list, user_id: str, gemini_api_ke
 
             candidate = response.candidates[0].content
             parts = candidate.parts or []
+            finish = getattr(response.candidates[0], "finish_reason", None)
 
             text = "".join(p.text for p in parts if getattr(p, "text", None))
 
@@ -325,6 +326,24 @@ async def route_turn(client: Client, contents: list, user_id: str, gemini_api_ke
                         "args": dict(part.function_call.args or {}),
                     }
                     break
+
+            # A candidate with neither text nor a tool call is a failure, and
+            # it must not be mistaken for one. Left alone it fell through to
+            # best_partial_answer, which has nothing to offer and returns the
+            # budget-exhausted line — so a MAX_TOKENS truncation was reported
+            # to the user as an exhausted quota. Retrying down the cascade will
+            # not help either: the ceiling is ours, not the model's.
+            if not text and not function_call:
+                reason = getattr(finish, "name", None) or str(finish or "no reason given")
+                print(f"[router] {model_id} returned no content (finish_reason={reason})", flush=True)
+                return {
+                    "status": "error",
+                    "message": (
+                        "The model returned an empty response "
+                        f"(finish_reason={reason}). This is not a budget problem — "
+                        "try rephrasing, or ask for one thing at a time."
+                    ),
+                }
 
             return {
                 "status": "ok",

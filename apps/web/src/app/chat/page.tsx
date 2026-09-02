@@ -238,6 +238,9 @@ export default function ChatPage() {
         .from("messages")
         .select("*")
         .eq("user_id", user.id)
+        // Without this, soft-deleted messages come straight back — which is why
+        // Settings → Clear history looked like it did nothing at all.
+        .eq("is_deleted", false)
         // Descending, so the limit takes the NEWEST hundred. Ascending + limit
         // returns the OLDEST hundred, which is why the chat was showing June's
         // briefings and nothing since. mergeMessages sorts, so order in is free.
@@ -406,7 +409,15 @@ export default function ChatPage() {
             }
             const confirmed = window.confirm("Clear all chat history?");
             if (!confirmed) return;
-            await supabase.from("messages").delete().eq("user_id", userId);
+            // Soft delete. This was a hard DELETE, and it took the user's
+            // whole history with it — plus every agent_turns row, because
+            // message_id is ON DELETE CASCADE, so clearing the chat silently
+            // destroyed the trace view's data too. CLAUDE.md says soft-delete
+            // only for messages; this is the path that wasn't honouring it.
+            await supabase
+              .from("messages")
+              .update({ is_deleted: true })
+              .eq("user_id", userId);
             setMessages([]);
             console.log("[clear chat] done");
           }}
