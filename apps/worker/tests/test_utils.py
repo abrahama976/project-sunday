@@ -22,7 +22,8 @@ _tree = ast.parse(_SRC)
 _keep = [
     n for n in _tree.body
     if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name in {"row", "display_name", "resolve_user", "resolve_origin", "_is_fresh"})
+        and n.name in {"row", "display_name", "resolve_user", "resolve_origin",
+                       "_is_fresh", "as_datetime"})
     or (isinstance(n, ast.ClassDef) and n.name == "MultipleUsers")
     or (isinstance(n, ast.Assign)
         and getattr(n.targets[0], "id", "") in {"_NAME_LINE", "LIVE_LOCATION_FRESH_MINUTES"})
@@ -44,6 +45,7 @@ display_name = _g["display_name"]
 resolve_user = _g["resolve_user"]
 resolve_origin = _g["resolve_origin"]
 MultipleUsers = _g["MultipleUsers"]
+as_datetime = _g["as_datetime"]
 
 failures = []
 
@@ -244,6 +246,23 @@ check_true("nothing known at all returns None", origin_of() is None)
 check_true("a place with neither address nor coordinates is not an origin",
            origin_of(place={"label": "empty", "address": ""}) is None)
 
+
+
+print("\n── as_datetime() ─────────────────────────────────────")
+
+# Supabase returns timestamps as strings. A naive one compared against an aware
+# one raises in some orderings and silently misjudges in others, so everything
+# that comes back from the database goes through here first.
+check("an offset timestamp keeps its offset",
+      as_datetime("2026-09-02T08:00:00+10:00").utcoffset(), timedelta(hours=10))
+check("a Z suffix is understood",
+      as_datetime("2026-09-02T08:00:00Z").utcoffset(), timedelta(0))
+check("a naive timestamp is assumed UTC — what Postgres stored",
+      as_datetime("2026-09-02T08:00:00").utcoffset(), timedelta(0))
+check_true("None round-trips as None", as_datetime(None) is None)
+check_true("an empty string is not a time", as_datetime("") is None)
+check_true("nonsense is not a time, and does not raise",
+           as_datetime("not a timestamp") is None)
 
 print()
 if failures:

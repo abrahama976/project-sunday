@@ -9,7 +9,7 @@ import asyncio
 from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import Client
-from utils import display_name, resolve_user, row
+from utils import as_datetime, display_name, resolve_user, row
 import json
 import gzip
 import io
@@ -824,13 +824,50 @@ async def sync_calendar_job(client: Client, gemini_api_key: str) -> None:
 # to finish what you are doing; not so much that you forget it happened.
 TRAVEL_ALERT_LEAD_MINUTES = 10
 
+# Inside this many minutes of a planned leave time, re-plan on every tick: this
+# is the window where a delay still has time to move the alert and change what
+# you do. Outside it, re-planning is mostly redundant.
+TRAVEL_REPLAN_LEAD_MINUTES = 20
+# ...and outside that window, no more often than this. An event five hours out
+# used to cost a full search every five minutes — around sixty of them before
+# the alert was ever due. Nothing was learned from the fifty-nine that changed
+# nothing.
+TRAVEL_REPLAN_MIN_INTERVAL_MINUTES = 30
+
+
+def travel_replan_due(planned_at, planned_leave_at, now,
+                      lead_minutes=TRAVEL_REPLAN_LEAD_MINUTES,
+                      min_interval_minutes=TRAVEL_REPLAN_MIN_INTERVAL_MINUTES) -> bool:
+    """Should this event be planned again on this tick?
+
+    Pure, and separated from the job because it decides how much of the day's
+    TfNSW traffic exists. Three cases:
+
+    - Never planned → yes, obviously.
+    - Close to the planned leave time → yes, every tick. This is exactly when a
+      late train needs to move the alert, so cheapness stops mattering.
+    - Otherwise → only if the last plan has gone stale.
+    """
+    if planned_at is None or planned_leave_at is None:
+        return True
+    if (planned_leave_at - now) <= timedelta(minutes=lead_minutes):
+        return True
+    return (now - planned_at) >= timedelta(minutes=min_interval_minutes)
+
 
 async def travel_watch(client: Client, gemini_api_key: str) -> None:
     """Push a leave-now alert before calendar events that have a location.
 
-    Recomputes on every tick on purpose: a train running late should move the
-    alert rather than leave a stale one standing. `travel_alerts` is what stops
-    that same property pushing on every tick as well.
+    Recomputes as the leave time approaches on purpose: a train running late
+    should move the alert rather than leave a stale one standing. What it no
+    longer does is recompute an event that is still hours away on every single
+    tick — `travel_replan_due` decides that, and `travel_alerts` remembers both
+    what was planned and what was actually sent.
+
+    Runs the cheap search (`depth="baseline"`) by default and escalates to the
+    full multi-strategy one only when the baseline looks poor. A job on a
+    five-minute timer is the wrong place to spend four searches per event; a
+    bad-looking baseline is the right place to spend them.
 
     Makes NO model call. Everything here is a TfNSW lookup and arithmetic, so
     it costs nothing against the 250/day budget however often it runs.
@@ -869,20 +906,39 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
         if not location or not event_id:
             continue
 
-        # Already told them about this one. Checked before doing any work, so
-        # the common case costs one indexed lookup and no TfNSW request.
-        seen = row(await asyncio.to_thread(
-            lambda e=event_id: client.table("travel_alerts").select("id")
+        # One indexed lookup carries both answers: whether they have already
+        # been told, and when this event was last planned.
+        record = row(await asyncio.to_thread(
+            lambda e=event_id: client.table("travel_alerts")
+            .select("id, alerted_at, planned_at, planned_leave_at")
             .eq("user_id", uid).eq("event_id", e).limit(1).maybe_single().execute()
         ))
-        if seen:
+
+        # Already told them about this one. Nothing more to do, ever.
+        if record.get("alerted_at"):
+            continue
+
+        planned_at = as_datetime(record.get("planned_at"))
+        planned_leave = as_datetime(record.get("planned_leave_at"))
+        if not travel_replan_due(planned_at, planned_leave, now):
             continue
 
         try:
             result = await plan_journeys(
                 destination=location, arrive_by=event["start_time"],
-                client=client, user_id=uid,
+                client=client, user_id=uid, depth="baseline",
             )
+            # A long wait or a lot of changes is exactly the case the biased
+            # searches exist for, so it is worth paying for them here.
+            if result.get("ok"):
+                best = result["journeys"][0]
+                if best["wait_min"] >= 10 or best["changes"] >= 2:
+                    deeper = await plan_journeys(
+                        destination=location, arrive_by=event["start_time"],
+                        client=client, user_id=uid, depth="full",
+                    )
+                    if deeper.get("ok"):
+                        result = deeper
         except Exception as e:
             print(f"[travel_watch] planning failed for {event.get('title')}: {e}")
             continue
@@ -895,6 +951,19 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
         leave_at = leave_time_from(result["journeys"], TRAVEL_BUFFER_MINUTES)
         if leave_at is None:
             continue
+
+        # Remember what was decided, whether or not it is time to say it. This
+        # is what stops the next tick redoing the same search.
+        await asyncio.to_thread(
+            lambda e=event_id, la=leave_at, st=event["start_time"]:
+            client.table("travel_alerts").upsert({
+                "user_id": uid, "event_id": e,
+                "event_start": st,
+                "leave_at": la.isoformat(),
+                "planned_leave_at": la.isoformat(),
+                "planned_at": now.isoformat(),
+            }, on_conflict="user_id,event_id").execute()
+        )
 
         # Only inside the lead window. Earlier is noise; once it is past, the
         # alert has missed its moment and saying so late is worse than silence.
@@ -909,19 +978,20 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
             f" — {best['duration_min']} min, {best['changes']} change"
             f"{'s' if best['changes'] != 1 else ''}, arriving {local_arrive}."
         )
+        if best.get("drive_min"):
+            body += f" Drive {best['drive_min']} min to the station first."
         if not best["realtime"]:
             body += " (timetable only — no live data for this trip)"
 
         sent = await push("🚆 Time to go", body, priority="high", tags=["train"])
 
-        # Recorded only after a successful push, so a failed notification is
-        # retried on the next tick rather than silently marked as delivered.
+        # `alerted_at` is set only after a successful push, so a failed
+        # notification is retried on the next tick rather than silently marked
+        # as delivered. The planning columns above are already saved either way.
         if sent:
             await asyncio.to_thread(
-                lambda e=event_id, la=leave_at, st=event["start_time"]:
-                client.table("travel_alerts").insert({
-                    "user_id": uid, "event_id": e,
-                    "event_start": st, "leave_at": la.isoformat(),
-                }).execute()
+                lambda e=event_id: client.table("travel_alerts")
+                .update({"alerted_at": datetime.now(timezone.utc).isoformat()})
+                .eq("user_id", uid).eq("event_id", e).execute()
             )
             print(f"[travel_watch] alerted: {body}")

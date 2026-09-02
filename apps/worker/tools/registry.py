@@ -149,13 +149,18 @@ TOOLS = [
     {
         "name": "trip_plan",
         "description": (
-            "THE tool for how to get somewhere in Sydney. Plans a public transport "
-            "journey on live TfNSW data and ranks the options by arrival, then "
-            "waiting time, then changes. Use this by default for 'how do I get to X' "
-            "— only reach for travel_directions when the user specifically wants to "
-            "drive, walk or cycle. Omit `origin` to start from the user's current or "
-            "saved location; do NOT ask where they are. Give `arrive_by` when there "
-            "is something to be on time for."
+            "THE tool for how to get somewhere in Sydney. Runs SEVERAL searches "
+            "at once on live TfNSW data — the default route, a bus-only one from "
+            "nearby stops, a rail-biased one, and driving to a station and taking "
+            "transit from there — then ranks everything it finds by arrival, "
+            "waiting time, then changes, and says why each option is offered. It "
+            "already compares driving. Call it ONCE for a trip: do not break the "
+            "journey into legs, look up stops yourself, or call it again per mode. "
+            "Use it by default for 'how do I get to X' — only reach for "
+            "travel_directions when the user explicitly wants turn-by-turn driving, "
+            "walking or cycling directions. Omit `origin` to start from the user's "
+            "current or saved location; do NOT ask where they are. Give `arrive_by` "
+            "when there is something to be on time for."
         ),
         "parameters": {
             "type": "object",
