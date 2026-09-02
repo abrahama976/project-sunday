@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-09-01**
+Last updated: **2026-09-02**
 
 ---
 
@@ -13,16 +13,17 @@ Last updated: **2026-09-01**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260831000000` |
+| Supabase | Up | Migrations through `20260902120000` (`travel_alerts` applied directly) |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | **Running, old code** | Jobs firing; `agent_turns` and `brain_directives` both empty. Needs `git pull` + re-auth |
-| Google OAuth | **In production** | 7-day expiry retired. Tokens minted in Testing still need one re-auth |
+| `apps/worker` | Running | Heartbeat `online`; jobs firing. Needs a `git pull` to pick up Phase 4c |
+| Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
 | Watchdog | **Armed & proven** | Topic set; ntfy returned 200 on a live alert |
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
+| **Travel** | Built, unproven | TfNSW journeys + OpenRouteService driving. Needs an ORS key and one live Sydney trip |
 
 ---
 
@@ -58,11 +59,11 @@ Last updated: **2026-09-01**
       reply shape is the branch #24 deleted. `brain_directives` empty proves
       nothing about the code version at all — a directive has simply never been
       approved.
-- [ ] **Re-authorise Google.** Publishing does not heal tokens minted under
-      Testing — `rm token_*.json`, then `python3 auth_setup.py`. If the client
-      secret is being rotated, do that *first*: the token files embed the
-      secret they were minted with, so rotating afterwards means two rounds of
-      consent screens.
+- [x] **Re-authorise Google** — done 2026-09-02. The first attempt failed
+      with `redirect_uri_mismatch`: the OAuth client had been created as a *Web
+      application*, and `run_local_server` needs a **Desktop app** client. A new
+      Desktop client fixed it and the worker now reports all services
+      authorised.
 - [ ] Set `NTFY_TOPIC` in `apps/worker/.env`, and start Ollama
 - [ ] Watch one full scheduler cycle
 
@@ -154,6 +155,56 @@ staying, so the fix is a decision about what that retry should do.
 
 ---
 
+## Phase 4 — Travel · *built, unproven*
+
+*"Suggest better routes than Maps alone, using public transport to travel faster
+and cut waiting."* Four sub-phases; all code has landed on `main`.
+
+**4a — TfNSW.** `trip_plan` and `transit_departures` against the Transport for
+NSW Open Data trip planner. Real-time where the feed has it:
+`departureTimeEstimated` is the live figure and `departureTimePlanned` the
+timetable, and an answer says which one it used rather than presenting a
+timetable as fact.
+
+**4b — Ranking.** Journeys sort on **arrive, then wait, then changes, then
+duration**. That order is the feature: the stated goal was less time standing on
+a platform, which is not the same as the shortest total trip. An alternative is
+only mentioned when its saving covers its cost — `_ALT_MAX_LATER_MIN = 15`.
+
+**4c — Leave-by and the push.** `leave_by` plans backwards from an arrival
+time; `travel_watch` runs every 5 minutes and sends one ntfy push when it is
+time to move. `TRAVEL_BUFFER_MINUTES = 5`, the user's own figure.
+
+**Google Maps was removed, not deferred.** The Directions API returned
+`REQUEST_DENIED` on every call: it requires a billing account, which this
+project will not have. **OpenRouteService** replaced it for driving — key-only,
+no card, 2000 directions/day, and it returns 403 at the cap rather than a bill.
+This was diagnosed entirely from the Phase 2 trace view, which is the first time
+that page paid for itself.
+
+**Origin resolution.** `utils.resolve_origin` prefers a live GPS fix while it is
+fresh (`LIVE_LOCATION_FRESH_MINUTES = 15`) and otherwise falls back to the
+default saved place — a stale fix looks current and is worse than a fixed
+address. The answer carries `source` so it can say "from home" rather than
+quietly guessing. `saved_places` holds one row: home, 314 Gardeners Road,
+Rosebery. Its `lat`/`lng` are NULL, so the address is geocoded per call; filling
+them in is a one-row update once a geocoder is reachable.
+
+- [x] 4a — `trip_plan`, `transit_departures`, real-time vs timetable
+- [x] 4b — ranking, alternatives, `format_journeys`
+- [x] 4c — `leave_by`, `travel_watch`, `travel_alerts`, startup checks
+- [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs
+      `OPENROUTESERVICE_API_KEY` and a worker restart; the banner's
+      `[worker] TfNSW: ✓` line is the answer four rounds of work rest on.
+- [ ] 4d — disruption alerts, and learning regular destinations from calendar
+      history
+
+**Startup checks exist because a key being set proved nothing.** `check_tfnsw`
+and `check_openrouteservice` call the live APIs and print a ✓/✗ banner. They are
+also the only part of the travel code with no test coverage, by necessity.
+
+---
+
 ## Deferred
 
 - Streaming responses — complex to reconcile with intermediate loop steps
@@ -173,7 +224,19 @@ staying, so the fix is a decision about what that retry should do.
    migration closed the drift for anyone rebuilding from scratch. Prefer
    migrations over dashboard edits — this one cost an afternoon of uncertainty.
 3. **Global ntfy topic.** `poll_reminders` pushes to one topic for all users.
-4. **The dormancy was 60 days, not twelve weeks.** The last commit is
+4. **`travel_watch` re-plans on every tick.** `travel_alerts` is written only
+   after a push succeeds, which is right for retry — but it means every located
+   event inside the 6-hour window is planned afresh every 5 minutes until its
+   alert window arrives. An event five hours out costs ~60 TfNSW lookups before
+   it ever pushes. Correct, just wasteful; the fix is to remember a computed
+   leave time, not just a delivered alert. Left alone until the thing has run
+   against real trips and the actual request volume is visible.
+5. **Traces are still destroyable.** `agent_turns.message_id` is
+   `ON DELETE CASCADE` and `cold_storage_archive` hard-deletes, so clearing the
+   chat wipes the telemetry with it — which already happened once, taking every
+   trace from before 2026-09-02. `ON DELETE SET NULL` is a one-line migration
+   and the trace view already renders `(message deleted)` for orphans.
+6. **The dormancy was 60 days, not twelve weeks.** The last commit is
    2026-06-06 but `mac_heartbeat.last_seen` reads 2026-07-01 — the worker ran
    for three and a half weeks after the code went quiet. Worth remembering when
    reasoning about what "still worked" at the end.
