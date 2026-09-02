@@ -192,7 +192,7 @@ async def _queue_write_tier(client: Client, user_id: str, tool: str, args: dict)
         }).execute()
     )
     await push_approval(action_type=tool, summary=str(args))
-    return f"I've prepared {tool} for your approval. Check the Approvals tab."
+    return f"I've prepared {tool} for your approval — open More → Approvals to review it."
 
 
 async def handle_message(client: Client, message: dict, history: list, user_id: str) -> bool:

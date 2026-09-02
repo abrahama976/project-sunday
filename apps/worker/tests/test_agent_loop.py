@@ -108,7 +108,7 @@ class Harness:
 
     async def _on_write_tier(self, tool, args):
         self.queued.append((tool, args))
-        return f"I've prepared {tool} for your approval. Check the Approvals tab."
+        return f"I've prepared {tool} for your approval — open More → Approvals to review it."
 
     async def _insert_reply(self, text, model_used):
         self.replies.append((text, model_used))
@@ -237,7 +237,7 @@ check("returns True", h.run(), True)
 check("stops after one model call", h.calls_made, 1)
 check("the action was queued", h.queued, [("gmail_draft", {"to": "a@b.com", "subject": "Hi"})])
 check("user is told to approve", h.reply_text(),
-      "I've prepared gmail_draft for your approval. Check the Approvals tab.")
+      "I've prepared gmail_draft for your approval — open More → Approvals to review it.")
 check_true("halt is recorded",
            h.rows_of("loop_break")[0]["error"] == "write-tier-halt")
 check_true("the executor was never run inline",
