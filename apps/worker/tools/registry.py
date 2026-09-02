@@ -147,6 +147,26 @@ TOOLS = [
         }
     },
     {
+        "name": "trip_plan",
+        "description": (
+            "Plan a public transport journey in Sydney using TfNSW live data, and "
+            "compare the options. Prefer this over travel_directions for transit: it "
+            "carries real-time departures, surfaces routes Google does not, and reports "
+            "waiting time per option. Omit `origin` to start from the user's current or "
+            "saved location. Give `arrive_by` when there is something to be on time for."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "destination": {"type": "string", "description": "Where they are going — address or stop name"},
+                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."},
+                "arrive_by": {"type": "string", "description": "ISO-8601 time they must arrive by"},
+                "depart_at": {"type": "string", "description": "ISO-8601 time they want to leave"}
+            },
+            "required": ["destination"]
+        }
+    },
+    {
         "name": "transit_departures",
         "description": "Get real-time upcoming transit departures for a stop in Sydney using TfNSW API.",
         "parameters": {

@@ -95,6 +95,7 @@ TOOL_TIER_MAP = {
     # Travel
     "travel_directions":    "auto",
     "transit_departures":   "auto",
+    "trip_plan":            "auto",
     # Profile & memory
     "update_profile":       "approve",
     "brain_learn":          "approve",

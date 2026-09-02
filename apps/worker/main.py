@@ -27,7 +27,7 @@ from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
 from utils import generate_with_retry, resolve_user
 from executors.web_search_ops import web_search
-from executors.travel_ops import travel_directions, transit_departures
+from executors.travel_ops import travel_directions, transit_departures, trip_plan
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
@@ -61,6 +61,8 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "travel_directions":   lambda **kw: travel_directions(
             client=client_ref[0], user_id=user_id_ref[0], **kw),
         "transit_departures":  transit_departures,
+        "trip_plan":           lambda **kw: trip_plan(
+            client=client_ref[0], user_id=user_id_ref[0], **kw),
         "calendar_query":      calendar_query,
         "calendar_create":     calendar_create,
         "calendar_update":     calendar_update,
