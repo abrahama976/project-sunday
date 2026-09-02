@@ -169,6 +169,25 @@ TOOLS = [
         }
     },
     {
+        "name": "leave_by",
+        "description": (
+            "When to leave to arrive somewhere on time, on live TfNSW data. Use "
+            "this for 'when do I need to leave for X?' — it works back from the "
+            "arrival time through the journey and the walk, and includes a small "
+            "buffer. Omit `origin` to start from the user's current or saved "
+            "location; do NOT ask where they are."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "destination": {"type": "string", "description": "Where they are going"},
+                "arrive_by": {"type": "string", "description": "ISO-8601 time they must arrive by"},
+                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."}
+            },
+            "required": ["destination", "arrive_by"]
+        }
+    },
+    {
         "name": "transit_departures",
         "description": "Get real-time upcoming transit departures for a stop in Sydney using TfNSW API.",
         "parameters": {

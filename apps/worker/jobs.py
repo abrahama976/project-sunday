@@ -715,6 +715,30 @@ async def send_daily_brief(client: Client, user_id: str) -> None:
                 line += f" *({loc})*"
             out.append(line)
 
+            # A leave-by time is the useful half of "you have a thing at 6:30".
+            # Best-effort: the brief is worth more on time without it than late
+            # with it, so any failure here is a missing line, never a missing
+            # brief. Costs no model call — TfNSW and arithmetic only.
+            if ev.get("location") and time_str != "All day":
+                try:
+                    from executors.travel_ops import plan_journeys, leave_time_from
+                    from config import TRAVEL_BUFFER_MINUTES
+                    planned = await plan_journeys(
+                        destination=ev["location"], arrive_by=ev["start_time"],
+                        client=client, user_id=user_id,
+                    )
+                    if planned.get("ok"):
+                        depart = leave_time_from(planned["journeys"], TRAVEL_BUFFER_MINUTES)
+                        if depart:
+                            best = planned["journeys"][0]
+                            out.append(
+                                f"  ↳ leave by **{depart.astimezone(tz).strftime('%-I:%M %p')}**"
+                                f" ({best['duration_min']} min, {best['changes']} change"
+                                f"{'s' if best['changes'] != 1 else ''})"
+                            )
+                except Exception as e:
+                    print(f"[brief] leave-by unavailable for {ev.get('title')}: {e}")
+
     # Tasks
     out.append("### ✅ Tasks Due Today")
     tasks_res = await asyncio.to_thread(lambda: client.table("tasks").select("*").eq("user_id", user_id).eq("status", "open").eq("is_archived", False).lte("due_date", startOfDay.date().isoformat()).execute())
@@ -794,3 +818,110 @@ async def sync_calendar_job(client: Client, gemini_api_key: str) -> None:
     except Exception as e:
         print(f"[sync_calendar] failed: {e}")
 
+
+
+# How long before you need to walk out the door the push should land. Enough
+# to finish what you are doing; not so much that you forget it happened.
+TRAVEL_ALERT_LEAD_MINUTES = 10
+
+
+async def travel_watch(client: Client, gemini_api_key: str) -> None:
+    """Push a leave-now alert before calendar events that have a location.
+
+    Recomputes on every tick on purpose: a train running late should move the
+    alert rather than leave a stale one standing. `travel_alerts` is what stops
+    that same property pushing on every tick as well.
+
+    Makes NO model call. Everything here is a TfNSW lookup and arithmetic, so
+    it costs nothing against the 250/day budget however often it runs.
+    """
+    from executors.travel_ops import plan_journeys, leave_time_from
+    from executors.notify_ops import push
+    from config import TRAVEL_BUFFER_MINUTES
+
+    try:
+        user = await resolve_user(client)
+    except Exception as e:
+        print(f"[travel_watch] no user to watch for: {e}")
+        return
+
+    uid = user["user_id"]
+    tz_res = await asyncio.to_thread(
+        lambda: client.table("user_location").select("timezone")
+        .eq("user_id", uid).limit(1).maybe_single().execute()
+    )
+    tz = ZoneInfo(row(tz_res).get("timezone") or "Australia/Sydney")
+    now = datetime.now(tz)
+
+    events_res = await asyncio.to_thread(
+        lambda: client.table("calendar_events")
+        .select("event_id, title, start_time, location")
+        .eq("user_id", uid)
+        .gte("start_time", now.isoformat())
+        .lte("start_time", (now + timedelta(hours=6)).isoformat())
+        .order("start_time")
+        .execute()
+    )
+
+    for event in (getattr(events_res, "data", None) or []):
+        location = (event.get("location") or "").strip()
+        event_id = event.get("event_id")
+        if not location or not event_id:
+            continue
+
+        # Already told them about this one. Checked before doing any work, so
+        # the common case costs one indexed lookup and no TfNSW request.
+        seen = row(await asyncio.to_thread(
+            lambda e=event_id: client.table("travel_alerts").select("id")
+            .eq("user_id", uid).eq("event_id", e).limit(1).maybe_single().execute()
+        ))
+        if seen:
+            continue
+
+        try:
+            result = await plan_journeys(
+                destination=location, arrive_by=event["start_time"],
+                client=client, user_id=uid,
+            )
+        except Exception as e:
+            print(f"[travel_watch] planning failed for {event.get('title')}: {e}")
+            continue
+
+        if not result.get("ok"):
+            print(f"[travel_watch] {event.get('title')}: {result.get('error')}")
+            continue
+
+        best = result["journeys"][0]
+        leave_at = leave_time_from(result["journeys"], TRAVEL_BUFFER_MINUTES)
+        if leave_at is None:
+            continue
+
+        # Only inside the lead window. Earlier is noise; once it is past, the
+        # alert has missed its moment and saying so late is worse than silence.
+        minutes_until = (leave_at - now).total_seconds() / 60
+        if not (0 <= minutes_until <= TRAVEL_ALERT_LEAD_MINUTES):
+            continue
+
+        local_leave = leave_at.astimezone(tz).strftime("%-I:%M %p")
+        local_arrive = best["arrive"].astimezone(tz).strftime("%-I:%M %p")
+        body = (
+            f"Leave by {local_leave} for {event.get('title') or 'your next event'}"
+            f" — {best['duration_min']} min, {best['changes']} change"
+            f"{'s' if best['changes'] != 1 else ''}, arriving {local_arrive}."
+        )
+        if not best["realtime"]:
+            body += " (timetable only — no live data for this trip)"
+
+        sent = await push("🚆 Time to go", body, priority="high", tags=["train"])
+
+        # Recorded only after a successful push, so a failed notification is
+        # retried on the next tick rather than silently marked as delivered.
+        if sent:
+            await asyncio.to_thread(
+                lambda e=event_id, la=leave_at, st=event["start_time"]:
+                client.table("travel_alerts").insert({
+                    "user_id": uid, "event_id": e,
+                    "event_start": st, "leave_at": la.isoformat(),
+                }).execute()
+            )
+            print(f"[travel_watch] alerted: {body}")

@@ -52,6 +52,10 @@ BRAIN_MAX_CHARS = 6000
 # single chatty conversation cannot flood the approvals queue.
 BRAIN_MAX_PROPOSALS_PER_RUN = 2
 
+# Minutes of slack built into a leave-by time. Your choice; some people want
+# 15. It is the difference between a calm walk to the stop and a run.
+TRAVEL_BUFFER_MINUTES = 5
+
 HEARTBEAT_INTERVAL_SECONDS = 30
 WORKER_RECONNECT_MAX_RETRIES = 5
 WORKER_RECONNECT_BACKOFF_BASE_SECONDS = 2
@@ -100,6 +104,7 @@ TOOL_TIER_MAP = {
     "travel_directions":    "auto",
     "transit_departures":   "auto",
     "trip_plan":            "auto",
+    "leave_by":             "auto",
     # Profile & memory
     "update_profile":       "approve",
     "brain_learn":          "approve",

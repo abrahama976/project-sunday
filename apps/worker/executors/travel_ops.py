@@ -1,7 +1,7 @@
 import httpx
 import json
 import re
-from config import OPENROUTESERVICE_API_KEY, TFNSW_API_KEY
+from config import OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUTES
 from utils import resolve_origin
 
 # ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
@@ -504,39 +504,36 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3) -> str:
     return "\n".join(out)
 
 
-async def trip_plan(
+async def plan_journeys(
     destination: str,
     origin: str | None = None,
     arrive_by: str | None = None,
     depart_at: str | None = None,
     client=None,
     user_id: str | None = None,
-) -> str:
-    """Plan a public-transport journey with real-time legs, and rank the options.
+) -> dict:
+    """Ranked journeys as data: `{ok, journeys, origin_note}` or `{ok, error}`.
 
-    Uses TfNSW's trip planner rather than Google's, because the legs come back
-    with live departure estimates rather than a timetable, and because asking
-    for several journeys surfaces routes Maps does not offer.
-
-    `arrive_by` / `depart_at` are ISO-8601. Give `arrive_by` when there is a
-    meeting to be at; that is what makes a leave-by time meaningful.
+    Split out of trip_plan so that leave_by and travel_watch can do arithmetic
+    on the result. trip_plan formats this for chat; nothing else should have to
+    parse a string back into a departure time to work out when to leave.
     """
     if not TFNSW_API_KEY:
-        return "Error: TFNSW_API_KEY is not set."
+        return {"ok": False, "error": "Error: TFNSW_API_KEY is not set."}
 
     origin_note = ""
     if not origin:
         if client is None or not user_id:
-            return "Error: no origin given and no user context to look one up."
+            return {"ok": False, "error": "Error: no origin given and no user context to look one up."}
         resolved = await resolve_origin(client, user_id)
         if not resolved:
-            return ("I don't know where you're starting from — no recent location "
-                    "and no default saved place. Add one under Settings → Places.")
+            return {"ok": False, "error": (
+                "I don't know where you're starting from — no recent location "
+                "and no default saved place. Add one under Settings → Places.")}
         origin = resolved["origin"]
         origin_note = f" (from {resolved['source']})"
 
     headers = {"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"}
-
     params = {
         "outputFormat": "rapidJSON",
         "coordOutputFormat": "EPSG:4326",
@@ -562,17 +559,129 @@ async def trip_plan(
     # `http`, not `client`: `client` is the Supabase handle this function takes.
     async with httpx.AsyncClient() as http:
         try:
-            res = await http.get(TRIP_URL, headers=headers, params=params, timeout=20.0)
+            res = await http.get(TRIP_URL, headers=headers, params=params, timeout=ORS_TIMEOUT)
             res.raise_for_status()
             data = res.json()
         except Exception as e:
-            return f"Error fetching trip plan: {e}"
+            return {"ok": False, "error": f"Error fetching trip plan: {e}"}
 
     journeys = data.get("journeys") or []
     if not journeys:
-        return f"No public transport journeys found from {origin} to {destination}."
+        return {"ok": False, "error": f"No public transport journeys found from {origin} to {destination}."}
 
     ranked = rank_journeys([summarise_journey(j) for j in journeys])
     if not ranked:
-        return f"TfNSW returned journeys for {destination} but none had usable times."
-    return format_journeys(ranked, origin_note)
+        return {"ok": False, "error": f"TfNSW returned journeys for {destination} but none had usable times."}
+
+    return {"ok": True, "journeys": ranked, "origin_note": origin_note}
+
+
+async def trip_plan(
+    destination: str,
+    origin: str | None = None,
+    arrive_by: str | None = None,
+    depart_at: str | None = None,
+    client=None,
+    user_id: str | None = None,
+) -> str:
+    """Plan a public-transport journey with real-time legs, and rank the options.
+
+    Uses TfNSW's trip planner rather than Google's, because the legs come back
+    with live departure estimates rather than a timetable, and because asking
+    for several journeys surfaces routes Maps does not offer.
+
+    `arrive_by` / `depart_at` are ISO-8601. Give `arrive_by` when there is a
+    meeting to be at; that is what makes a leave-by time meaningful.
+    """
+    result = await plan_journeys(destination, origin, arrive_by, depart_at, client, user_id)
+    if not result["ok"]:
+        return result["error"]
+    return format_journeys(result["journeys"], result["origin_note"])
+
+
+def leave_time_from(journeys: list, buffer_minutes: int):
+    """When to walk out of the door for the best journey, or None.
+
+    The first leg's departure less a buffer. Pure, because this is the number
+    an alert fires on and getting it wrong by five minutes is the whole ball
+    game — it should be testable without a network.
+    """
+    if not journeys:
+        return None
+    from datetime import timedelta as _td
+    return journeys[0]["depart"] - _td(minutes=max(0, buffer_minutes))
+
+
+async def leave_by(
+    destination: str,
+    arrive_by: str,
+    origin: str | None = None,
+    client=None,
+    user_id: str | None = None,
+) -> str:
+    """When to leave to arrive somewhere on time, with the journey behind it."""
+    result = await plan_journeys(destination, arrive_by=arrive_by,
+                                 origin=origin, client=client, user_id=user_id)
+    if not result["ok"]:
+        return result["error"]
+
+    journeys = result["journeys"]
+    depart = leave_time_from(journeys, TRAVEL_BUFFER_MINUTES)
+    if depart is None:
+        return f"No journeys found to {destination}."
+
+    from zoneinfo import ZoneInfo
+    syd = ZoneInfo("Australia/Sydney")
+    best = journeys[0]
+    return (
+        f"Leave by {depart.astimezone(syd).strftime('%-I:%M %p')}"
+        f"{result['origin_note']} to arrive {best['arrive'].astimezone(syd).strftime('%-I:%M %p')}"
+        f" — {best['duration_min']} min, {best['changes']} change"
+        f"{'s' if best['changes'] != 1 else ''}, {best['walk_min']} min walking."
+        f" (Includes a {TRAVEL_BUFFER_MINUTES} min buffer.)"
+    )
+
+
+# ── Startup health checks ───────────────────────────────────────────────────
+# "The key is present" is not the same claim as "the key works", and the gap
+# between them is how trip_plan shipped three times without ever running. One
+# real call each, at startup, so the banner states a fact.
+
+async def check_tfnsw() -> tuple[bool, str]:
+    """One stop_finder call. Proves the key, the host and the response shape."""
+    if not TFNSW_API_KEY:
+        return False, "TFNSW_API_KEY unset — transit planning unavailable"
+    try:
+        async with httpx.AsyncClient() as http:
+            res = await http.get(
+                "https://api.transport.nsw.gov.au/v1/tp/stop_finder",
+                headers={"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"},
+                params={"outputFormat": "rapidJSON", "type_sf": "any",
+                        "name_sf": "Central Station", "coordOutputFormat": "EPSG:4326",
+                        "TfNSWSF": "true", "version": "10.2.1.42"},
+                timeout=10.0,
+            )
+        if res.status_code in (401, 403):
+            return False, f"TfNSW rejected the key (HTTP {res.status_code})"
+        res.raise_for_status()
+        locations = (res.json() or {}).get("locations") or []
+        if not locations:
+            return False, "TfNSW answered but found no stops — unexpected response shape"
+        return True, f"stop_finder returned {locations[0].get('name', 'a stop')}"
+    except Exception as e:
+        return False, f"not reachable: {e}"
+
+
+async def check_openrouteservice() -> tuple[bool, str]:
+    """One geocode call, out of 2000/day."""
+    if not OPENROUTESERVICE_API_KEY:
+        return False, ("OPENROUTESERVICE_API_KEY unset — driving directions "
+                       "unavailable; transit unaffected")
+    try:
+        async with httpx.AsyncClient() as http:
+            coords = await _ors_geocode(http, "Central Station, Sydney NSW")
+        if not coords:
+            return False, "ORS answered but geocoded nothing — unexpected response shape"
+        return True, f"geocoder returned {coords[1]:.3f},{coords[0]:.3f}"
+    except Exception as e:
+        return False, f"not reachable: {e}"
