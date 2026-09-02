@@ -1046,20 +1046,48 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
     async with httpx.AsyncClient() as http:
         # A coordinate is needed to search around and to measure walks from.
         origin_ll = None
-        if place.get("lat") is not None and place.get("lng") is not None:
+        already_stored = (place.get("lat") is not None and place.get("lng") is not None)
+        if already_stored:
             origin_ll = (float(place["lat"]), float(place["lng"]))
         else:
-            lonlat = _as_lonlat(place.get("address") or "")
-            if not lonlat and place.get("address"):
-                try:
-                    lonlat = await _ors_geocode(http, place["address"])
-                except Exception as e:
-                    print(f"[nearby_services] geocode failed: {e}")
+            address = place.get("address") or ""
+            lonlat = _as_lonlat(address)
             if lonlat:
                 origin_ll = (lonlat[1], lonlat[0])
+            elif address:
+                # TfNSW first, ORS second. stop_finder resolves a free-text
+                # address using the key and client this job already needs, so
+                # transit discovery does not hang on a DRIVING provider it
+                # otherwise has no use for — and keeps working if the ORS key
+                # lapses or hits its 2000/day cap.
+                origin_ll = await _tfnsw_geocode(http, headers, address)
+                if not origin_ll:
+                    try:
+                        lonlat = await _ors_geocode(http, address)
+                        if lonlat:
+                            origin_ll = (lonlat[1], lonlat[0])
+                    except Exception as e:
+                        print(f"[nearby_services] ORS geocode failed: {e}")
+
         if not origin_ll:
             print("[nearby_services] could not place the default address on the map")
             return
+
+        # Remember it, so this is geocoded once rather than every week. Only
+        # when both were empty: a coordinate someone set by hand is a decision,
+        # not a cache, and must not be silently replaced by a lookup.
+        if not already_stored:
+            try:
+                await asyncio.to_thread(
+                    lambda: client.table("saved_places")
+                    .update({"lat": origin_ll[0], "lng": origin_ll[1]})
+                    .eq("user_id", uid).eq("is_default", True)
+                    .is_("lat", "null").is_("lng", "null")
+                    .execute()
+                )
+                print(f"[nearby_services] saved home coordinates {origin_ll[0]:.5f},{origin_ll[1]:.5f}")
+            except Exception as e:
+                print(f"[nearby_services] could not save coordinates: {e}")
 
         stops = await _find_stops(http, headers, origin_ll,
                                   max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M))
@@ -1144,6 +1172,38 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
         })
     out.sort(key=lambda s: s["distance_m"])
     return out
+
+
+async def _tfnsw_geocode(http, headers, text):
+    """An address to (lat, lng) via TfNSW stop_finder, or None. Never raises.
+
+    Exists so the transit half of this project does not depend on a driving
+    directions provider. stop_finder takes free text and returns coordinates,
+    on the key and endpoint the job already uses.
+    """
+    from executors.travel_ops import STOP_FINDER_URL, _coord_pair
+
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "type_sf": "any",
+        "name_sf": text,
+        "TfNSWSF": "true",
+        "version": "10.2.1.42",
+    }
+    try:
+        res = await http.get(STOP_FINDER_URL, headers=headers, params=params, timeout=20.0)
+        res.raise_for_status()
+        locations = (res.json() or {}).get("locations") or []
+    except Exception as e:
+        print(f"[nearby_services] TfNSW geocode failed: {e}")
+        return None
+
+    for loc in locations:
+        coord = _coord_pair(loc.get("coord"))
+        if coord:
+            return coord
+    return None
 
 
 async def _walk_minutes(http, origin_ll, stop):

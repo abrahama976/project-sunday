@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 type Task = {
@@ -43,6 +43,10 @@ export default function TasksPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Read by the polling fallback below, which closes over its initial value
+  // and so cannot use state to decide whether Realtime is carrying updates.
+  const liveRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,14 +101,20 @@ export default function TasksPage() {
         .subscribe((status, err) => {
           if (cancelled) return;
           if (status === "SUBSCRIBED") {
+            liveRef.current = true;
             void loadTasks();
           } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            liveRef.current = false;
             setError(`Realtime unavailable: ${err?.message ?? status}. Refresh to see updates.`);
             void loadTasks();
           }
         });
 
+      // Only a fallback. Realtime already fires on every change to `tasks`, so
+      // polling on top of it re-read the table every five seconds forever —
+      // most of them against no tasks at all.
       pollInterval = setInterval(() => {
+        if (liveRef.current) return;
         void loadTasks();
       }, 5000) as unknown as number;
     })();

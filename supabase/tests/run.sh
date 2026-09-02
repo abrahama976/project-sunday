@@ -58,7 +58,8 @@ cp "$MIGRATIONS/20260902120000_travel_alerts.sql"          "$WORK/travel.sql"
 cp "$MIGRATIONS/20260902140000_travel_alert_planning.sql"  "$WORK/travel_planning.sql"
 cp "$MIGRATIONS/20260903150000_nearby_services.sql"        "$WORK/nearby.sql"
 cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql \
-   "$DIR"/test_travel_alerts.sql "$DIR"/test_nearby_services.sql "$WORK/"
+   "$DIR"/test_travel_alerts.sql "$DIR"/test_nearby_services.sql \
+   "$DIR"/test_function_grants.sql "$WORK/"
 chmod -R a+r "$WORK"
 
 psql_run() {
@@ -89,6 +90,10 @@ psql_run test_travel_alerts.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed '
 echo
 echo "── nearby services ───────────────────────────────────"
 psql_run test_nearby_services.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
+
+echo
+echo "── function grants ───────────────────────────────────"
+psql_run test_function_grants.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "✓ SQL suites passed"

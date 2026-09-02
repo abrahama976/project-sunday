@@ -162,6 +162,10 @@ export default function ChatPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [workerOffline, setWorkerOffline] = useState(false);
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "error">("reconnecting");
+  // The polling fallback below runs inside an interval created once, so it
+  // cannot read `connStatus` — it would close over "reconnecting" forever and
+  // poll for the life of the page. The ref is what the interval actually reads.
+  const connStatusRef = useRef<"connected" | "reconnecting" | "error">("reconnecting");
   const offlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
@@ -300,7 +304,8 @@ export default function ChatPage() {
         )
         .on('system', { event: 'disconnect' }, () => {
           if (cancelled) return;
-          setConnStatus("reconnecting");
+          connStatusRef.current = "reconnecting";
+            setConnStatus("reconnecting");
           setTimeout(() => {
             if (!cancelled) setupRealtimeChannel();
           }, 3000);
@@ -308,9 +313,11 @@ export default function ChatPage() {
         .subscribe((status, err) => {
           if (cancelled) return;
           if (status === "SUBSCRIBED") {
+            connStatusRef.current = "connected";
             setConnStatus("connected");
             void loadHistory();
           } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            connStatusRef.current = "error";
             setConnStatus("error");
             setError(`Realtime unavailable: ${err?.message ?? status}. Refresh to see new messages.`);
             void loadHistory();
@@ -320,8 +327,12 @@ export default function ChatPage() {
 
     void setupRealtimeChannel();
 
-      // Polling fallback: re-fetch every 4s in case Realtime drops assistant messages
+      // Polling FALLBACK, and now actually a fallback. This used to run
+      // unconditionally alongside a healthy Realtime channel, refetching the
+      // whole history every four seconds — roughly 900 queries an hour per open
+      // tab, and the likeliest reason the chat felt unsettled while reading it.
       pollInterval = setInterval(() => {
+        if (connStatusRef.current === "connected") return;
         void loadHistory();
       }, 4000) as unknown as number;
     // End of setupRealtimeChannel
