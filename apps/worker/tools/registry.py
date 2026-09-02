@@ -149,13 +149,13 @@ TOOLS = [
     {
         "name": "trip_plan",
         "description": (
-            "THE tool for how to get somewhere in Sydney. Runs SEVERAL searches "
-            "at once on live TfNSW data — the default route, a bus-only one from "
-            "nearby stops, a rail-biased one, and driving to a station and taking "
-            "transit from there — then ranks everything it finds by arrival, "
-            "waiting time, then changes, and says why each option is offered. It "
-            "already compares driving. Call it ONCE for a trip: do not break the "
-            "journey into legs, look up stops yourself, or call it again per mode. "
+            "THE tool for how to get somewhere in Sydney. Searches every service "
+            "the user actually has: one query per distinct route at their nearby "
+            "stops, plus the default route and driving to a station, all on live "
+            "TfNSW data. It ranks by arrival, waiting time then changes, names the "
+            "route behind each option and how often it runs, and already compares "
+            "driving. Call it ONCE for a trip: do not break the journey into legs, "
+            "look up stops yourself, or call it again per route or mode. "
             "Use it by default for 'how do I get to X' — only reach for "
             "travel_directions when the user explicitly wants turn-by-turn driving, "
             "walking or cycling directions. Omit `origin` to start from the user's "
@@ -190,6 +190,23 @@ TOOLS = [
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."}
             },
             "required": ["destination", "arrive_by"]
+        }
+    },
+    {
+        "name": "nearby_services",
+        "description": (
+            "What public transport runs near the user's home — which stops, which "
+            "routes, where each goes and how often. Use for 'what buses run near "
+            "me', 'how often is the 343', 'is there a train nearby'. This is the "
+            "learned local network, NOT a journey: for getting somewhere, use "
+            "trip_plan, which already searches all of these."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "place": {"type": "string", "description": "Saved place label. Defaults to 'home'."}
+            },
+            "required": []
         }
     },
     {

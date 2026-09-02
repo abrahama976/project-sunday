@@ -995,3 +995,222 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
                 .eq("user_id", uid).eq("event_id", e).execute()
             )
             print(f"[travel_watch] alerted: {body}")
+
+
+# ── The local network ──────────────────────────────────────────────────────
+# Discovering which services exist near home, so trip planning can consider
+# all of them rather than whichever corridor TfNSW happens to prefer.
+
+async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
+    """Rediscover the stops, routes and frequencies near the default place.
+
+    Weekly, because the transit near a fixed address changes on the scale of
+    months. Makes NO model call — stop_finder and departure_mon and arithmetic
+    — so it costs nothing against the 250/day budget.
+
+    Rows you have edited (`source = 'user'`) are never touched. The API not
+    knowing about a service you catch every day must not mean Sunday forgets it
+    again every Sunday night.
+    """
+    import httpx
+    from executors.travel_ops import (
+        STOP_FINDER_URL, _coord_pair, _parse_time, headway_from_departures,
+        haversine_m, _as_lonlat, _ors_geocode, _ors_route, _RAIL_CLASSES,
+    )
+    from config import TFNSW_API_KEY, WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M
+
+    if not TFNSW_API_KEY:
+        print("[nearby_services] TFNSW_API_KEY is not set; nothing to discover")
+        return
+
+    try:
+        user = await resolve_user(client)
+    except Exception as e:
+        print(f"[nearby_services] no user: {e}")
+        return
+    uid = user["user_id"]
+
+    place = row(await asyncio.to_thread(
+        lambda: client.table("saved_places")
+        .select("label, address, lat, lng")
+        .eq("user_id", uid).eq("is_default", True).limit(1).maybe_single().execute()
+    ))
+    if not place:
+        print("[nearby_services] no default saved place")
+        return
+    label = place.get("label") or "home"
+
+    headers = {"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"}
+    discovered = []
+
+    async with httpx.AsyncClient() as http:
+        # A coordinate is needed to search around and to measure walks from.
+        origin_ll = None
+        if place.get("lat") is not None and place.get("lng") is not None:
+            origin_ll = (float(place["lat"]), float(place["lng"]))
+        else:
+            lonlat = _as_lonlat(place.get("address") or "")
+            if not lonlat and place.get("address"):
+                try:
+                    lonlat = await _ors_geocode(http, place["address"])
+                except Exception as e:
+                    print(f"[nearby_services] geocode failed: {e}")
+            if lonlat:
+                origin_ll = (lonlat[1], lonlat[0])
+        if not origin_ll:
+            print("[nearby_services] could not place the default address on the map")
+            return
+
+        stops = await _find_stops(http, headers, origin_ll,
+                                  max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M))
+        for stop in stops:
+            # Rail is worth walking further for than a bus is.
+            limit = (WALK_RADIUS_RAIL_M if (stop["classes"] & _RAIL_CLASSES)
+                     else WALK_RADIUS_BUS_M)
+            if stop["distance_m"] > limit:
+                continue
+
+            walk_min = await _walk_minutes(http, origin_ll, stop)
+            for service in await _stop_services(http, headers, stop):
+                discovered.append({
+                    "user_id": uid, "place_label": label,
+                    "stop_id": stop["id"], "stop_name": stop["name"],
+                    "stop_lat": stop["lat"], "stop_lng": stop["lng"],
+                    "mode_class": service["mode_class"],
+                    "route": service["route"], "headsign": service["headsign"],
+                    "headway_min": service["headway_min"],
+                    "walk_min": walk_min,
+                    "source": "discovered", "is_hidden": False,
+                    "refreshed_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+    if not discovered:
+        print("[nearby_services] found nothing; leaving the existing inventory alone")
+        return
+
+    # Upserted one at a time against the unique index rather than deleted and
+    # rewritten: a wipe-then-insert would drop is_hidden on every row, so a
+    # route you retired would come back every week.
+    written = 0
+    for record in discovered:
+        try:
+            await asyncio.to_thread(
+                lambda r=record: client.table("nearby_services")
+                .upsert(r, on_conflict="user_id,place_label,stop_name,route,headsign")
+                .execute()
+            )
+            written += 1
+        except Exception as e:
+            print(f"[nearby_services] could not save {record['route']} at {record['stop_name']}: {e}")
+
+    routes = sorted({r["route"] for r in discovered})
+    print(f"[nearby_services] {written} services at {len({r['stop_name'] for r in discovered})} "
+          f"stops near {label}: {', '.join(routes[:12])}")
+
+
+async def _find_stops(http, headers, origin_ll, radius_m) -> list:
+    """Stops within `radius_m`, with their product classes and distance."""
+    from executors.travel_ops import STOP_FINDER_URL, _coord_pair, haversine_m
+
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "type_sf": "coord",
+        # EFA wants X:Y — longitude first, the opposite of everything else here.
+        "name_sf": f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326",
+        "TfNSWSF": "true",
+        "version": "10.2.1.42",
+    }
+    try:
+        res = await http.get(STOP_FINDER_URL, headers=headers, params=params, timeout=20.0)
+        res.raise_for_status()
+        locations = (res.json() or {}).get("locations") or []
+    except Exception as e:
+        print(f"[nearby_services] stop_finder failed: {e}")
+        return []
+
+    out = []
+    for loc in locations:
+        coord = _coord_pair(loc.get("coord"))
+        if not coord or not loc.get("id"):
+            continue
+        distance = haversine_m(origin_ll, coord)
+        if distance > radius_m:
+            continue
+        out.append({
+            "id": loc.get("id"), "name": loc.get("name") or "",
+            "lat": coord[0], "lng": coord[1], "distance_m": distance,
+            "classes": set(loc.get("productClasses") or []),
+        })
+    out.sort(key=lambda s: s["distance_m"])
+    return out
+
+
+async def _walk_minutes(http, origin_ll, stop):
+    """Walking minutes to a stop, or a straight-line estimate if ORS is absent.
+
+    The estimate is deliberately pessimistic — 4.5 km/h over the crow-flies
+    distance, which real streets always exceed — so a missing key degrades the
+    number rather than the answer. It is labelled nowhere as exact, and the
+    honest alternative would be to skip the stop entirely.
+    """
+    from executors.travel_ops import _ors_route
+    from config import OPENROUTESERVICE_API_KEY
+
+    if OPENROUTESERVICE_API_KEY:
+        minutes, _km = await _ors_route(
+            http, [origin_ll[1], origin_ll[0]], [stop["lng"], stop["lat"]],
+            "foot-walking")
+        if minutes is not None:
+            return minutes
+    return int(round(stop["distance_m"] / 75.0))    # 4.5 km/h in metres/min
+
+
+async def _stop_services(http, headers, stop) -> list:
+    """Which routes serve a stop, where they go, and how often."""
+    from executors.travel_ops import _parse_time, headway_from_departures
+
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "mode": "direct",
+        "type_dm": "stop",
+        "name_dm": stop["id"],
+        "departureMonitorMacro": "true",
+        "TfNSWDM": "true",
+        "version": "10.2.1.42",
+    }
+    try:
+        res = await http.get(
+            "https://api.transport.nsw.gov.au/v1/tp/departure_mon",
+            headers=headers, params=params, timeout=20.0)
+        res.raise_for_status()
+        events = (res.json() or {}).get("stopEvents") or []
+    except Exception as e:
+        print(f"[nearby_services] departures failed for {stop['name']}: {e}")
+        return []
+
+    # Grouped by (route, where it is heading): the 358 towards Mascot and the
+    # 358 back are different services to someone deciding which side of the
+    # road to stand on.
+    seen = {}
+    for event in events:
+        transport = event.get("transportation") or {}
+        route = (transport.get("disassembledName") or transport.get("number") or "").strip()
+        if not route:
+            continue
+        headsign = ((transport.get("destination") or {}).get("name") or "").strip()
+        mode_class = (transport.get("product") or {}).get("class")
+        when = _parse_time(event.get("departureTimePlanned")
+                           or event.get("departureTimeEstimated"))
+        if not when:
+            continue
+        seen.setdefault((route, headsign), {"mode_class": mode_class, "times": []})
+        seen[(route, headsign)]["times"].append(when)
+
+    return [
+        {"route": route, "headsign": headsign,
+         "mode_class": data["mode_class"],
+         "headway_min": headway_from_departures(data["times"])}
+        for (route, headsign), data in seen.items()
+    ]

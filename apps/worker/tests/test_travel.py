@@ -26,8 +26,10 @@ _WANTED = {
     "_as_lonlat", "_route_summary", "leave_time_from",
     # The search core added with the multi-strategy planner.
     "haversine_m", "station_is_toward", "add_access_leg", "dedupe_journeys",
-    "verify_journeys", "describe_strategy", "_exclude_params", "_coord_pair",
+    "verify_journeys", "describe_strategy", "_coord_pair",
     "_route_minutes_km", "_trip_params", "park_ride_depart_at",
+    "headway_from_departures", "choose_boarding_points", "service_label",
+    "describe_frequency", "format_services",
 }
 _keep = [
     n for n in _tree.body
@@ -36,7 +38,7 @@ _keep = [
         and getattr(n.targets[0], "id", "") in {"_WALK_CLASSES", "_MODE_NAMES",
                                                 "_ALT_MAX_LATER_MIN", "_COORD_PAIR",
                                                 "_ORS_PROFILES", "_RAIL_CLASSES",
-                                                "_BUS_CLASSES", "MAX_ACCESS_WALK_M",
+                                                "MAX_ACCESS_WALK_M",
                                                 "PARK_RIDE_MAX_CANDIDATES",
                                                 "PARK_RIDE_MAX_DRIVE_MIN",
                                                 "PARK_RIDE_PARKING_MIN"})
@@ -57,13 +59,16 @@ add_access_leg = _g["add_access_leg"]
 dedupe_journeys = _g["dedupe_journeys"]
 verify_journeys = _g["verify_journeys"]
 describe_strategy = _g["describe_strategy"]
-_exclude_params = _g["_exclude_params"]
 _coord_pair = _g["_coord_pair"]
 _route_minutes_km = _g["_route_minutes_km"]
 _trip_params = _g["_trip_params"]
 park_ride_depart_at = _g["park_ride_depart_at"]
+headway_from_departures = _g["headway_from_departures"]
+choose_boarding_points = _g["choose_boarding_points"]
+service_label = _g["service_label"]
+describe_frequency = _g["describe_frequency"]
+format_services = _g["format_services"]
 _RAIL_CLASSES = _g["_RAIL_CLASSES"]
-_BUS_CLASSES = _g["_BUS_CLASSES"]
 PARK_RIDE_PARKING_MIN = _g["PARK_RIDE_PARKING_MIN"]
 
 failures = []
@@ -358,23 +363,15 @@ check_true("nonsense is rejected", _coord_pair(["a", "b"]) is None)
 check_true("an out-of-range pair is rejected", _coord_pair([200.0, 300.0]) is None)
 
 
-print("\n── _exclude_params() / _trip_params() ────────────────")
-
-check("no exclusion means no exclusion keys", _exclude_params(None), {})
-check("excluding rail sets a flag per class",
-      _exclude_params({1, 2}), {"excludedMeans": "checkbox", "exclMOT_1": 1, "exclMOT_2": 1})
+print("\n── _trip_params() ────────────────────────────────────")
 
 base = _trip_params("Home", "Work")
-check("a plain search excludes nothing", "excludedMeans" in base, False)
 check("departure is the default macro", base["depArrMacro"], "dep")
+check("...and the real origin is kept", base["name_origin"], "Home")
 check("an arrival deadline flips the macro",
       _trip_params("Home", "Work", arrive_by=t(60))["depArrMacro"], "arr")
 
-biased = _trip_params("Home", "Work", exclude=_RAIL_CLASSES)
-check("the bus-biased search excludes rail", biased["exclMOT_1"], 1)
-check("...and keeps the real origin", biased["name_origin"], "Home")
-
-# Park-and-ride is the one search that starts somewhere else, and it says so.
+# A boarding-point search is the one that starts somewhere else, and says so.
 check("a stop id is declared as a stop",
       _trip_params("10101", "Work", origin_type="stop")["type_origin"], "stop")
 
@@ -490,8 +487,15 @@ check("a journey with no usable times is dropped", len(verify_journeys([None], N
 print("\n── describe_strategy() / _route_minutes_km() ─────────")
 
 check("the baseline needs no explanation", describe_strategy({"strategy": "baseline"}), "")
-check("the bus search says why", describe_strategy({"strategy": "bus"}), "bus only — no station walk")
-check("the rail search says why", describe_strategy({"strategy": "rail"}), "via a station")
+
+# A boarding-point option is named by its SERVICE. "an alternative stop" tells
+# you nothing; "343 from Gardeners Rd" is how the trip is actually thought of.
+boarding = dict(summarise_journey({"legs": [walk_leg(0, 4, to="Gardeners Rd"),
+                                            train_leg(4, 26, line="343",
+                                                      frm="Gardeners Rd")]}),
+                strategy="boarding")
+check("a boarding-point option is named by its route",
+      describe_strategy(boarding), "343 from Gardeners Rd")
 
 pr_labelled = dict(parked, strategy="park_ride")
 check("park-and-ride names the drive and the station",
@@ -569,6 +573,130 @@ check_true("the staleness boundary re-plans",
 check_true("an overdue leave time still re-plans",
            travel_replan_due(NOW2, BASE - timedelta(minutes=5), NOW2))
 
+
+print("\n── choose_boarding_points() — variety, not proximity ──")
+
+def svc(route, stop, walk, headsign="", hidden=False, headway=None, source="discovered"):
+    return {"route": route, "stop_name": stop, "walk_min": walk, "headsign": headsign,
+            "is_hidden": hidden, "headway_min": headway, "source": source}
+
+# The failure this whole mechanism exists to fix: a road served by one bus has
+# many stops on it, and taking the five NEAREST would spend five queries
+# rediscovering the journey the baseline already found.
+one_route = [svc("343", f"Gardeners Rd stop {n}", n) for n in range(1, 6)]
+picked = choose_boarding_points(one_route, 5)
+check("five stops on one route collapse to one", len(picked), 1)
+check("...and it is the nearest of them", picked[0]["stop_name"], "Gardeners Rd stop 1")
+
+# The real local network: different routes going different places.
+local = [
+    svc("343", "Gardeners Rd", 4, "Central", headway=10),
+    svc("358", "Gardeners Rd", 4, "Mascot", headway=15),
+    svc("306", "Gardeners Rd", 6, "Sans Souci"),
+    svc("M1",  "Waterloo Station", 19, "Sydenham", headway=5),
+    svc("343", "Bourke St", 9, "Central"),          # same route, further away
+]
+picked = choose_boarding_points(local, 5)
+check("one entry per distinct route", len(picked), 4)
+check("nearest first", [p["route"] for p in picked][:2], ["343", "358"])
+check("the far stop for a route already covered is dropped",
+      [p["stop_name"] for p in picked if p["route"] == "343"], ["Gardeners Rd"])
+check("the metro is included despite the longer walk",
+      any(p["route"] == "M1" for p in picked), True)
+
+check("the limit is honoured", len(choose_boarding_points(local, 2)), 2)
+check("a hidden route is not offered",
+      any(p["route"] == "306" for p in
+          choose_boarding_points([svc("306", "Gardeners Rd", 6, hidden=True)], 5)), False)
+check("a route with no walk time still counts, sorted last",
+      [p["route"] for p in choose_boarding_points(
+          [svc("999", "Far stop", None), svc("343", "Gardeners Rd", 4)], 5)],
+      ["343", "999"])
+check("nothing in, nothing out", choose_boarding_points([], 5), [])
+check("None in, nothing out", choose_boarding_points(None, 5), [])
+
+
+print("\n── headway_from_departures() ─────────────────────────")
+
+def at(*minutes):
+    return [BASE + timedelta(minutes=m) for m in minutes]
+
+check("an even ten-minute service reads as 10",
+      headway_from_departures(at(0, 10, 20, 30)), 10)
+check("departures out of order are still sorted",
+      headway_from_departures(at(20, 0, 10)), 10)
+
+# The median, not the mean: one long gap across a timetable break would drag an
+# average to a number no service actually runs at.
+check("one long gap does not distort the figure",
+      headway_from_departures(at(0, 10, 20, 90)), 10)
+
+check("a single departure gives no frequency",
+      headway_from_departures(at(5)), None)
+check("no departures give no frequency", headway_from_departures([]), None)
+check("None gives no frequency", headway_from_departures(None), None)
+check("duplicate timestamps do not read as a zero-minute service",
+      headway_from_departures(at(0, 0)), None)
+
+
+print("\n── service_label() / describe_frequency() ────────────")
+
+check("the first vehicle leg names the service",
+      service_label(summarise_journey({"legs": [walk_leg(0, 4, to="Gardeners Rd"),
+                                                train_leg(4, 26, line="343",
+                                                          frm="Gardeners Rd")]})),
+      "343 from Gardeners Rd")
+check("a drive to the station is not the service",
+      service_label(add_access_leg(
+          summarise_journey({"legs": [train_leg(30, 20, line="T8", frm="Green Square")]}),
+          15, mode="Drive")),
+      "T8 from Green Square")
+check("no vehicle leg means no service", service_label({"legs": []}), "")
+
+check("a known frequency is stated", describe_frequency({"headway_min": 10}), "every ~10 min")
+# Silent rather than guessing: a wrong headway gets read as fact and changes
+# when someone leaves the house.
+check("an unknown frequency says nothing", describe_frequency({}), "")
+check("a nonsense frequency says nothing", describe_frequency({"headway_min": 0}), "")
+
+
+print("\n── the car is for once in a while ────────────────────")
+
+NOW3 = BASE - timedelta(minutes=5)
+transit_opt = summarise_journey({"legs": [train_leg(0, 40)]})           # 40 min
+quick_pr = add_access_leg(summarise_journey({"legs": [train_leg(10, 10)]}), 5, mode="Drive")
+slow_pr = add_access_leg(summarise_journey({"legs": [train_leg(10, 30)]}), 5, mode="Drive")
+exact_pr = add_access_leg(summarise_journey({"legs": [train_leg(10, 25)]}), 5, mode="Drive")
+
+# 35 min against a 40 min transit option: a five-minute saving does not justify
+# getting the car out when the bar is ten.
+check("park-and-ride that barely wins is not worth the car",
+      len(verify_journeys([transit_opt, slow_pr], NOW3, None, None, 10)), 1)
+# Exactly the margin clears it — the bar is "at least this much", not "more".
+check("a saving of exactly the margin does clear the bar",
+      len(verify_journeys([transit_opt, exact_pr], NOW3, None, None, 10)), 2)
+check("park-and-ride that clearly wins is kept",
+      len(verify_journeys([transit_opt, quick_pr], NOW3, None, None, 10)), 2)
+check("with no margin set it is left alone",
+      len(verify_journeys([transit_opt, slow_pr], NOW3, None, None, 0)), 2)
+# With nothing car-free to compare against, it is the only option there is.
+check("park-and-ride alone still stands",
+      len(verify_journeys([slow_pr], NOW3, None, None, 10)), 1)
+
+
+print("\n── format_services() ─────────────────────────────────")
+
+listing = format_services(local, "home")
+check_true("stops are named", "Gardeners Rd (4 min walk)" in listing, listing)
+check_true("routes carry their destination", "343 to Central" in listing, listing)
+check_true("...and their frequency", "every ~10 min" in listing, listing)
+check_true("a route without a frequency simply omits it",
+           "306 to Sans Souci" in listing and "306 to Sans Souci ·" not in listing, listing)
+check_true("your own corrections are marked",
+           "yours" in format_services([svc("X99", "My stop", 3, "Somewhere",
+                                           source="user")], "home"))
+check_true("an empty inventory says so rather than implying nothing runs",
+           "don't know what runs near" in format_services([], "home"))
 print()
 if failures:
     print(f"✗ {len(failures)} failure(s):\n")

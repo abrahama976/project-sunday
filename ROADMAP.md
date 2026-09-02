@@ -23,7 +23,7 @@ Last updated: **2026-09-02**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | Built, unproven | TfNSW journeys + OpenRouteService driving. Needs an ORS key and one live Sydney trip |
+| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. Needs an ORS key and one live Sydney trip |
 
 ---
 
@@ -194,10 +194,11 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4b — ranking, alternatives, `format_journeys`
 - [x] 4c — `leave_by`, `travel_watch`, `travel_alerts`, startup checks
 - [x] 4d — **the search** (below)
+- [x] 4e — **the local network** (below)
 - [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs
       `OPENROUTESERVICE_API_KEY` and a worker restart; the banner's
       `[worker] TfNSW: ✓` line is the answer four rounds of work rest on.
-- [ ] 4e — disruption alerts, and learning regular destinations from calendar
+- [ ] 4f — disruption alerts, and learning regular destinations from calendar
       history
 
 **4d — it searches now, rather than asking once.** One query returns five
@@ -227,6 +228,32 @@ unchecked, because no feed covers it.
 an event five hours out is planned once and revisited as it nears. `alerted_at`
 is still written only after a successful push, so a failed notification still
 retries. The job runs the cheap baseline and escalates only when it looks poor.
+
+**4e — planning from the services that actually exist.** 4d searched by
+*excluding modes*, which was the wrong axis twice over. One query still returns
+one corridor, so a place served by four routes was offered one of them — the 343
+would surface and the 358, the 306 and the metro never entered the pool. And
+excluding buses to "force rail" also removed the feeder bus, so *343 to Waterloo,
+then the metro* was a journey that search could not return by construction.
+
+So the boarding points are enumerated instead. `nearby_services` holds the
+learned local network — stop, route, headsign, frequency, walk time — refreshed
+weekly by `refresh_nearby_services` and **correctable**: a row you edit is marked
+`source='user'` and discovery never overwrites it, because the API not knowing
+about a service you catch daily should not mean Sunday forgets it every week.
+
+`choose_boarding_points` takes **one stop per distinct route**, not the nearest
+N. That distinction is the feature: five nearest stops on one road are five
+stops on the same bus, and five queries would rediscover what the baseline
+already found. Each option is then named by its service ("343 from Gardeners
+Rd") and its measured frequency, which is the figure that says what a wait
+means — eleven minutes on a ten-minute service is a near miss, on a half-hourly
+one it is the morning.
+
+Frequency is the **median** gap between departures, and `None` rather than a
+guess when only one departure is visible. Driving stays occasional: park-and-ride
+is dropped unless it beats the best car-free option by ten minutes, and the drive
+radius is 5 km.
 
 **Startup checks exist because a key being set proved nothing.** `check_tfnsw`
 and `check_openrouteservice` call the live APIs and print a ✓/✗ banner. They are
