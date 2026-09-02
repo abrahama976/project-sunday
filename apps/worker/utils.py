@@ -143,14 +143,28 @@ async def resolve_origin(client, user_id: str) -> dict | None:
     return {"origin": origin, "source": place.get("label") or "your saved place"}
 
 
+def as_datetime(value):
+    """A Postgres timestamptz as an aware datetime, or None. Never raises.
+
+    Supabase hands timestamps back as strings, and naive ones compare
+    unpredictably against aware ones — a comparison that raises in some
+    orderings and silently misjudges in others. Assumed UTC when no offset is
+    given, which is what Postgres stored.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _is_fresh(timestamp: str, minutes: int) -> bool:
     """True if an ISO timestamp is within `minutes` of now. Never raises."""
-    try:
-        when = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+    when = as_datetime(timestamp)
+    if when is None:
         return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - when) <= timedelta(minutes=minutes)
 
 

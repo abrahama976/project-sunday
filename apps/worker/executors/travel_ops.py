@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import json
 import re
@@ -271,7 +272,29 @@ async def transit_departures(stop_keyword: str) -> str:
 _WALK_CLASSES = {99, 100}
 _MODE_NAMES = {1: "Train", 2: "Metro", 4: "Light Rail", 5: "Bus", 7: "Coach", 9: "Ferry", 11: "School bus"}
 
+# Mode families for the biased searches. One query excluding rail forces
+# options that board at a nearby bus stand; one excluding bus forces the walk
+# or feeder ride to a station. Both keep the REAL origin, so TfNSW still costs
+# the access walk itself and the results stay directly comparable.
+_RAIL_CLASSES = {1, 2}
+_BUS_CLASSES = {5, 7, 11}
+
+# How far to suggest walking to reach a better option. A tolerance, not a
+# technical limit — 800 m is about ten minutes.
+MAX_ACCESS_WALK_M = 800
+
+# Park-and-ride is the expensive strategy: a stop lookup, a drive lookup and a
+# trip query per candidate. Bounded hard, and pruned before any of that spends
+# a request.
+PARK_RIDE_MAX_CANDIDATES = 2
+PARK_RIDE_MAX_DRIVE_MIN = 20
+# Parking is not instant and TfNSW knows nothing about it. Charged explicitly
+# at the call site so the arithmetic in add_access_leg stays honest rather than
+# carrying a hidden allowance.
+PARK_RIDE_PARKING_MIN = 5
+
 TRIP_URL = "https://api.transport.nsw.gov.au/v1/tp/trip"
+STOP_FINDER_URL = "https://api.transport.nsw.gov.au/v1/tp/stop_finder"
 
 
 def _parse_time(value):
@@ -393,6 +416,176 @@ def _journey_fare(journey: dict):
     return min(prices) if prices else None
 
 
+def _dt_now_utc():
+    """Now, as an aware UTC datetime. One place, so tests can reason about it."""
+    from datetime import datetime as _dt, timezone as _tz
+    return _dt.now(_tz.utc)
+
+
+def haversine_m(a, b) -> float:
+    """Metres between two (lat, lng) pairs. Straight line, not a route.
+
+    Only ever used to decide whether a candidate is worth spending a request
+    on, so a great-circle figure is precise enough — and free, which a routing
+    call is not.
+    """
+    import math
+
+    p1, p2 = math.radians(float(a[0])), math.radians(float(b[0]))
+    dphi = math.radians(float(b[0]) - float(a[0]))
+    dlam = math.radians(float(b[1]) - float(a[1]))
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlam / 2) ** 2
+    return 2 * 6371000.0 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def station_is_toward(origin, station, destination, slack_m: float = 0.0) -> bool:
+    """True if going to `station` first gets you closer to where you are going.
+
+    Driving away from your destination to catch a train is occasionally right
+    and usually wrong, and every candidate costs a drive lookup plus a trip
+    query. This prunes the obviously-wrong ones for nothing, before any request
+    is spent on them.
+    """
+    if not origin or not station or not destination:
+        return False
+    return haversine_m(station, destination) + slack_m < haversine_m(origin, destination)
+
+
+def add_access_leg(summary: dict, access_min: int, mode: str = "Walk",
+                   label: str = "your location") -> dict:
+    """A copy of `summary` with the leg that gets you to its first stop added.
+
+    This is the function that keeps a fanned-out search honest, and the reason
+    the search is built the way it is. Ask TfNSW for a trip "from Green Square
+    Station" and it answers with a journey that begins on the platform — the
+    fourteen minutes it takes to reach that platform are simply absent from the
+    response. Ranked against a baseline whose access walk IS counted, such an
+    option wins on false pretences and sends you after a train you cannot
+    physically reach.
+
+    So the access leg goes back in explicitly: departure moves EARLIER, the
+    duration grows by the same amount, and the leg is prepended so the answer
+    can show it. `wait_min` is deliberately untouched — access is moving time,
+    and it raises duration and moving time equally, which is exactly the case
+    summarise_journey's subtraction already handles.
+
+    Never mutates its input; callers still want the original to compare against.
+    """
+    from datetime import timedelta
+
+    if not summary or not access_min or access_min <= 0:
+        return summary
+
+    depart = summary["depart"] - timedelta(minutes=access_min)
+    legs = list(summary.get("legs") or [])
+    access = {
+        "mode": mode,
+        "line": "",
+        "from": label,
+        "to": (legs[0].get("from") if legs else "") or "",
+        "depart": depart,
+        "arrive": summary["depart"],
+        "minutes": access_min,
+        "realtime": False,
+    }
+
+    out = dict(summary)
+    out["depart"] = depart
+    out["duration_min"] = summary["duration_min"] + access_min
+    out["legs"] = [access] + legs
+    if mode == "Walk":
+        out["walk_min"] = summary.get("walk_min", 0) + access_min
+    else:
+        out["drive_min"] = summary.get("drive_min", 0) + access_min
+    return out
+
+
+def park_ride_depart_at(depart_at, access_min, now):
+    """When to ask TfNSW to depart FROM the station, when planning forwards.
+
+    The station query knows nothing about the drive to reach the station. Ask
+    it for "leaving now" and it answers with a train that goes before you could
+    possibly get there — which verify_journeys then correctly throws away, so
+    park-and-ride would quietly never appear on an immediate query at all.
+    Shifting the requested departure by the drive is what makes the option real
+    rather than merely rejected.
+
+    Only needed for forward planning. Given an arrival deadline TfNSW works
+    backwards from it, and the drive is applied to the result by
+    `add_access_leg` instead.
+    """
+    from datetime import timedelta as _td
+    base = _parse_time(depart_at) or now
+    return (base + _td(minutes=max(0, access_min or 0))).isoformat()
+
+
+def dedupe_journeys(summaries: list) -> list:
+    """One entry per actual service. The strategies overlap, and should.
+
+    The bus-biased and rail-biased searches routinely rediscover the option the
+    baseline already found. Identity is the first vehicle leg — which service,
+    leaving when — because that is the thing you physically catch. The first
+    copy survives, which is the one from the earlier strategy in the list.
+    """
+    seen = set()
+    out = []
+    for s in summaries:
+        if not s:
+            continue
+        vehicle = next((l for l in (s.get("legs") or []) if l.get("mode") != "Walk"), None)
+        if vehicle and vehicle.get("depart"):
+            key = (vehicle.get("line") or "", vehicle.get("from") or "",
+                   vehicle["depart"].isoformat())
+        else:
+            key = ("walk", s["depart"].isoformat(), s["arrive"].isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def verify_journeys(summaries: list, now, arrive_by=None, drive_only_min=None) -> list:
+    """The "calculate and verify" step — drop what cannot actually be taken.
+
+    Nothing checked this before. Offering a journey that has already left is
+    worse than offering none, because it looks like an answer. Four rules:
+
+    - A departure in the past is gone, however good it looked.
+    - An arrival after `arrive_by` fails the one requirement that mattered.
+    - Park-and-ride that loses to simply driving the whole way is not a plan.
+    - A journey without usable times cannot be reasoned about at all.
+    """
+    out = []
+    for s in summaries:
+        if not s or not s.get("depart") or not s.get("arrive"):
+            continue
+        if s["depart"] < now:
+            continue
+        if arrive_by is not None and s["arrive"] > arrive_by:
+            continue
+        if (s.get("drive_min") and drive_only_min is not None
+                and s["duration_min"] >= drive_only_min):
+            continue
+        out.append(s)
+    return out
+
+
+def describe_strategy(summary: dict) -> str:
+    """The short "why is this one here" label shown against an option."""
+    strategy = (summary or {}).get("strategy") or ""
+    if strategy == "bus":
+        return "bus only — no station walk"
+    if strategy == "rail":
+        return "via a station"
+    if strategy == "park_ride":
+        station = next((l.get("from") for l in (summary.get("legs") or [])
+                        if l.get("mode") not in ("Walk", "Drive") and l.get("from")), "")
+        where = f" to {station}" if station else ""
+        return f"drive {summary.get('drive_min') or 0} min{where}, then transit"
+    return ""
+
+
 def rank_journeys(summaries: list) -> list:
     """Best first: earliest arrival, then least waiting, then fewest changes.
 
@@ -454,7 +647,7 @@ def describe_alternative(best: dict, other: dict) -> str:
     return f"{', '.join(reasons)} — {cost}"
 
 
-def format_journeys(ranked: list, origin_note: str = "", limit: int = 3) -> str:
+def format_journeys(ranked: list, origin_note: str = "", limit: int = 3, drive=None) -> str:
     """The answer a person reads. Best option in full, alternatives by contrast."""
     if not ranked:
         return "No journeys found for that trip."
@@ -466,13 +659,14 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3) -> str:
         return dt.astimezone(syd).strftime("%-I:%M %p")
 
     best = ranked[0]
+    why = describe_strategy(best)
     out = [f"Best option{origin_note}: leave {clock(best['depart'])}, arrive {clock(best['arrive'])} "
-           f"({best['duration_min']} min)"]
+           f"({best['duration_min']} min)" + (f" — {why}" if why else "")]
 
     detail = [f"{best['changes']} change{'s' if best['changes'] != 1 else ''}",
               f"{best['walk_min']} min walking",
               f"{best['wait_min']} min waiting"]
-    if best["fare"] is not None:
+    if best.get("fare") is not None:
         detail.append(f"${best['fare']:.2f} Opal")
     detail.append("live times" if best["realtime"] else "timetable only")
     out.append("  " + " · ".join(detail))
@@ -480,19 +674,29 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3) -> str:
     for leg in best["legs"]:
         if leg["mode"] == "Walk":
             out.append(f"  · Walk {leg['minutes']} min to {leg['to']}")
+        elif leg["mode"] == "Drive":
+            out.append(f"  · Drive {leg['minutes']} min to {leg['to']} (parking included)")
         else:
             line = f" {leg['line']}" if leg["line"] else ""
             when = f" at {clock(leg['depart'])}" if leg["depart"] else ""
             live = "" if leg["realtime"] else " (scheduled)"
             out.append(f"  · {leg['mode']}{line} from {leg['from']}{when} → {leg['to']}{live}")
 
+    # Said plainly rather than buried: TfNSW publishes no parking occupancy for
+    # most car parks, so a park-and-ride that is best on paper can still fail
+    # on arrival. Better to name the gap than to imply it was checked.
+    if best.get("strategy") == "park_ride":
+        out.append("  Parking availability is not checked — no feed covers it.")
+
     alternatives = []
     for other in ranked[1:]:
-        why = describe_alternative(best, other)
-        if why:
+        reason = describe_alternative(best, other)
+        if reason:
+            label = describe_strategy(other)
             alternatives.append(
                 f"  · leave {clock(other['depart'])}, arrive {clock(other['arrive'])} "
-                f"({other['duration_min']} min) — {why}"
+                f"({other['duration_min']} min) — {reason}"
+                + (f" [{label}]" if label else "")
             )
         if len(alternatives) >= limit - 1:
             break
@@ -501,7 +705,226 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3) -> str:
         out.append("Alternatives:")
         out.extend(alternatives)
 
+    # Always shown, even when transit wins comfortably: "would driving be
+    # quicker?" is the question the answer is implicitly making a claim about,
+    # and leaving it unstated makes the claim unverifiable.
+    if drive and drive.get("minutes") is not None:
+        delta = drive["minutes"] - best["duration_min"]
+        if delta < 0:
+            verdict = f"{abs(delta)} min faster than transit"
+        elif delta > 0:
+            verdict = f"{delta} min slower than transit"
+        else:
+            verdict = "about the same as transit"
+        km = f", {drive['km']:.1f} km" if drive.get("km") is not None else ""
+        out.append(f"Driving: {drive['minutes']} min{km} — {verdict}")
+
     return "\n".join(out)
+
+
+def _exclude_params(classes) -> dict:
+    """EFA's exclusion form: a checkbox flag plus one key per excluded class.
+
+    This is what biases a search WITHOUT moving the origin, and keeping the
+    real starting address on every query is the whole trick — TfNSW costs the
+    access walk itself, so no leg has to be added back by hand and the results
+    from different searches stay directly comparable.
+    """
+    if not classes:
+        return {}
+    params = {"excludedMeans": "checkbox"}
+    for cls in sorted(classes):
+        params[f"exclMOT_{cls}"] = 1
+    return params
+
+
+def _coord_pair(raw):
+    """TfNSW's [lat, lng], tolerant of the pair arriving the other way round.
+
+    Sydney sits near (-33.9, 151.2), so a first element beyond ±90 can only be
+    a longitude. The check costs nothing and removes a whole class of silently
+    plausible wrong answers: a swapped pair does not raise, it just puts the
+    station in the Indian Ocean, where every candidate quietly fails the
+    "is it toward the destination" test and park-and-ride returns nothing at
+    all — with no error to explain why.
+    """
+    if not raw or len(raw) < 2:
+        return None
+    try:
+        a, b = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    if abs(a) > 90 >= abs(b):
+        a, b = b, a
+    if not (-90 <= a <= 90 and -180 <= b <= 180):
+        return None
+    return (a, b)
+
+
+def _route_minutes_km(data: dict):
+    """(minutes, km) from an ORS GeoJSON response, or (None, None)."""
+    features = (data or {}).get("features") or []
+    if not features:
+        return (None, None)
+    summary = ((features[0].get("properties") or {}).get("summary")) or {}
+    seconds, metres = summary.get("duration"), summary.get("distance")
+    if seconds is None or metres is None:
+        return (None, None)
+    return (int(round(seconds / 60)), metres / 1000)
+
+
+def _trip_params(origin, destination, arrive_by=None, depart_at=None,
+                 exclude=None, origin_type="any") -> dict:
+    """Query parameters for one TfNSW trip search."""
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "depArrMacro": "arr" if arrive_by else "dep",
+        "type_origin": origin_type,
+        "name_origin": origin,
+        "type_destination": "any",
+        "name_destination": destination,
+        "calcNumberOfTrips": 5,     # several, so there is something to rank
+        "TfNSWTR": "true",          # real-time where it exists
+        "version": "10.2.1.42",
+        "itOptionsActive": 1,
+        "computeMonomodalTripBicycle": "false",
+    }
+    when = _parse_time(arrive_by or depart_at)
+    if when:
+        from zoneinfo import ZoneInfo
+        local = when.astimezone(ZoneInfo("Australia/Sydney"))
+        params["itdDate"] = local.strftime("%Y%m%d")
+        params["itdTime"] = local.strftime("%H%M")
+    params.update(_exclude_params(exclude))
+    return params
+
+
+async def _fetch_journeys(http, headers, params) -> list:
+    """Raw journeys for one strategy. Returns [] rather than raising.
+
+    One strategy failing must not take the search down with it — that is the
+    difference between a narrower answer and no answer. It also means that if
+    TfNSW ignores or rejects the exclusion form, the biased searches simply
+    contribute nothing and the baseline result stands, which is exactly
+    today's behaviour rather than a regression.
+    """
+    try:
+        res = await http.get(TRIP_URL, headers=headers, params=params, timeout=ORS_TIMEOUT)
+        res.raise_for_status()
+        return (res.json() or {}).get("journeys") or []
+    except Exception as e:
+        print(f"[trip] a search failed, continuing without it: {e}", flush=True)
+        return []
+
+
+async def _ors_route(http, start, end, profile="driving-car"):
+    """(minutes, km) for one ORS route, or (None, None). Never raises."""
+    try:
+        res = await http.post(
+            f"{ORS_BASE}/v2/directions/{profile}/geojson",
+            headers={"Authorization": OPENROUTESERVICE_API_KEY,
+                     "Content-Type": "application/json"},
+            json={"coordinates": [start, end]},
+            timeout=ORS_TIMEOUT,
+        )
+        res.raise_for_status()
+        return _route_minutes_km(res.json())
+    except Exception as e:
+        print(f"[trip] ORS route failed: {e}", flush=True)
+        return (None, None)
+
+
+async def _nearby_stations(http, headers, origin_ll, limit: int = 8) -> list:
+    """Rail stations near a coordinate, nearest first. [] rather than raising."""
+    params = {
+        "outputFormat": "rapidJSON",
+        "coordOutputFormat": "EPSG:4326",
+        "type_sf": "coord",
+        # EFA wants X:Y, which is lon:lat — the opposite of everything else here.
+        "name_sf": f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326",
+        "TfNSWSF": "true",
+        "version": "10.2.1.42",
+    }
+    try:
+        res = await http.get(STOP_FINDER_URL, headers=headers, params=params,
+                             timeout=ORS_TIMEOUT)
+        res.raise_for_status()
+        locations = (res.json() or {}).get("locations") or []
+    except Exception as e:
+        print(f"[trip] stop_finder failed: {e}", flush=True)
+        return []
+
+    out = []
+    for loc in locations:
+        classes = set(loc.get("productClasses") or [])
+        # No productClasses at all is kept: absent data is not evidence against.
+        if classes and not (classes & _RAIL_CLASSES):
+            continue
+        coord = _coord_pair(loc.get("coord"))
+        if not coord:
+            continue
+        out.append({"id": loc.get("id"), "name": loc.get("name") or "",
+                    "lat": coord[0], "lng": coord[1]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _drive_and_park_ride(http, headers, origin, destination,
+                               arrive_by=None, depart_at=None):
+    """The driving comparison, and any park-and-ride worth considering.
+
+    Both need the same two geocodes, so they share them. Returns
+    `({minutes, km} | None, [summaries])` and never raises: losing the driving
+    line must not lose the transit answer.
+
+    Park-and-ride is the one strategy that cannot keep the real origin — the
+    transit query has to start at the station — so its drive leg is added back
+    explicitly by `add_access_leg`, plus a parking allowance. Without that the
+    option would be ranked as though you teleported to the car park.
+    """
+    try:
+        start = _as_lonlat(origin) or await _ors_geocode(http, origin)
+        end = _as_lonlat(destination) or await _ors_geocode(http, destination)
+    except Exception as e:
+        print(f"[trip] geocode failed: {e}", flush=True)
+        return (None, [])
+    if not start or not end:
+        return (None, [])
+
+    minutes, km = await _ors_route(http, start, end, "driving-car")
+    drive = {"minutes": minutes, "km": km} if minutes is not None else None
+
+    origin_ll = (start[1], start[0])     # ORS speaks [lon, lat]; compare in (lat, lng)
+    dest_ll = (end[1], end[0])
+
+    stations = await _nearby_stations(http, headers, origin_ll)
+    candidates = [st for st in stations
+                  if station_is_toward(origin_ll, (st["lat"], st["lng"]), dest_ll)]
+
+    summaries = []
+    for station in candidates[:PARK_RIDE_MAX_CANDIDATES]:
+        drive_min, _km = await _ors_route(
+            http, start, [station["lng"], station["lat"]], "driving-car")
+        if drive_min is None or drive_min > PARK_RIDE_MAX_DRIVE_MIN:
+            continue
+        access_min = drive_min + PARK_RIDE_PARKING_MIN
+        # With a deadline TfNSW plans backwards and needs no shift; without one
+        # it must be told you cannot board until you have driven there.
+        station_depart = depart_at if arrive_by else park_ride_depart_at(
+            depart_at, access_min, _dt_now_utc())
+        raw = await _fetch_journeys(http, headers, _trip_params(
+            station.get("id") or station["name"], destination,
+            arrive_by, station_depart,
+            origin_type="stop" if station.get("id") else "any"))
+        for journey in raw:
+            summary = summarise_journey(journey)
+            if not summary:
+                continue
+            summary["strategy"] = "park_ride"
+            summaries.append(add_access_leg(summary, access_min, mode="Drive"))
+    return (drive, summaries)
 
 
 async def plan_journeys(
@@ -511,12 +934,30 @@ async def plan_journeys(
     depart_at: str | None = None,
     client=None,
     user_id: str | None = None,
+    depth: str = "full",
 ) -> dict:
-    """Ranked journeys as data: `{ok, journeys, origin_note}` or `{ok, error}`.
+    """Ranked journeys as data: `{ok, journeys, origin_note, drive}` or `{ok, error}`.
 
-    Split out of trip_plan so that leave_by and travel_watch can do arithmetic
-    on the result. trip_plan formats this for chat; nothing else should have to
-    parse a string back into a departure time to work out when to leave.
+    Runs a search rather than a query. Asked once, TfNSW answers with five
+    departures along the single corridor it picked — which is why one query can
+    never beat Maps: it never considers a second route. So several searches run
+    concurrently from the SAME origin, biased by mode, plus park-and-ride when
+    that is plausible:
+
+        baseline    whatever TfNSW thinks best
+        bus         rail excluded, forcing nearby bus stands
+        rail        bus excluded, forcing the walk or feeder ride to a station
+        park+ride   drive to a station that is toward the destination, then transit
+
+    Everything except park-and-ride keeps the real origin, so TfNSW costs each
+    access walk itself and the pool is directly comparable. Park-and-ride pays
+    for its own drive leg through `add_access_leg`.
+
+    `depth="baseline"` runs only the first search. travel_watch uses it so a
+    job ticking every five minutes does not spend four searches per event.
+
+    Split out of trip_plan so leave_by and travel_watch can do arithmetic on
+    the result rather than parsing a formatted string back into times.
     """
     if not TFNSW_API_KEY:
         return {"ok": False, "error": "Error: TFNSW_API_KEY is not set."}
@@ -534,46 +975,52 @@ async def plan_journeys(
         origin_note = f" (from {resolved['source']})"
 
     headers = {"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"}
-    params = {
-        "outputFormat": "rapidJSON",
-        "coordOutputFormat": "EPSG:4326",
-        "depArrMacro": "arr" if arrive_by else "dep",
-        "type_origin": "any",
-        "name_origin": origin,
-        "type_destination": "any",
-        "name_destination": destination,
-        "calcNumberOfTrips": 5,     # several, so there is something to rank
-        "TfNSWTR": "true",          # real-time where it exists
-        "version": "10.2.1.42",
-        "itOptionsActive": 1,
-        "computeMonomodalTripBicycle": "false",
-    }
+    full = depth != "baseline"
 
-    when = _parse_time(arrive_by or depart_at)
-    if when:
-        from zoneinfo import ZoneInfo
-        local = when.astimezone(ZoneInfo("Australia/Sydney"))
-        params["itdDate"] = local.strftime("%Y%m%d")
-        params["itdTime"] = local.strftime("%H%M")
+    searches = [("baseline", None)]
+    if full:
+        searches += [("bus", _RAIL_CLASSES), ("rail", _BUS_CLASSES)]
 
     # `http`, not `client`: `client` is the Supabase handle this function takes.
     async with httpx.AsyncClient() as http:
-        try:
-            res = await http.get(TRIP_URL, headers=headers, params=params, timeout=ORS_TIMEOUT)
-            res.raise_for_status()
-            data = res.json()
-        except Exception as e:
-            return {"ok": False, "error": f"Error fetching trip plan: {e}"}
+        results = await asyncio.gather(*[
+            _fetch_journeys(http, headers,
+                            _trip_params(origin, destination, arrive_by, depart_at, exclude))
+            for _label, exclude in searches
+        ])
 
-    journeys = data.get("journeys") or []
-    if not journeys:
-        return {"ok": False, "error": f"No public transport journeys found from {origin} to {destination}."}
+        summaries = []
+        for (label, _exclude), raw in zip(searches, results):
+            for journey in raw:
+                summary = summarise_journey(journey)
+                if summary:
+                    summary["strategy"] = label
+                    summaries.append(summary)
 
-    ranked = rank_journeys([summarise_journey(j) for j in journeys])
+        drive = None
+        if full and OPENROUTESERVICE_API_KEY:
+            drive, park_ride = await _drive_and_park_ride(
+                http, headers, origin, destination, arrive_by, depart_at)
+            summaries.extend(park_ride)
+
+    if not summaries:
+        return {"ok": False,
+                "error": f"No public transport journeys found from {origin} to {destination}."}
+
+    deduped = dedupe_journeys(summaries)
+    checked = verify_journeys(deduped, _dt_now_utc(), _parse_time(arrive_by),
+                              (drive or {}).get("minutes"))
+    if not checked:
+        return {"ok": False, "error": (
+            f"I found journeys to {destination}, but none of them work: they have "
+            "either already departed or arrive too late.")}
+
+    ranked = rank_journeys(checked)
     if not ranked:
-        return {"ok": False, "error": f"TfNSW returned journeys for {destination} but none had usable times."}
+        return {"ok": False,
+                "error": f"TfNSW returned journeys for {destination} but none had usable times."}
 
-    return {"ok": True, "journeys": ranked, "origin_note": origin_note}
+    return {"ok": True, "journeys": ranked, "origin_note": origin_note, "drive": drive}
 
 
 async def trip_plan(
@@ -584,11 +1031,13 @@ async def trip_plan(
     client=None,
     user_id: str | None = None,
 ) -> str:
-    """Plan a public-transport journey with real-time legs, and rank the options.
+    """Search for a way there, rank the options, and say why each is offered.
 
-    Uses TfNSW's trip planner rather than Google's, because the legs come back
-    with live departure estimates rather than a timetable, and because asking
-    for several journeys surfaces routes Maps does not offer.
+    Uses TfNSW rather than Google because the legs carry live departure
+    estimates rather than a timetable — and, more to the point, because this
+    runs several biased searches at once (see plan_journeys) instead of taking
+    the first corridor a planner suggests. That is what surfaces the bus from
+    the next street, or the station worth driving to.
 
     `arrive_by` / `depart_at` are ISO-8601. Give `arrive_by` when there is a
     meeting to be at; that is what makes a leave-by time meaningful.
@@ -596,7 +1045,8 @@ async def trip_plan(
     result = await plan_journeys(destination, origin, arrive_by, depart_at, client, user_id)
     if not result["ok"]:
         return result["error"]
-    return format_journeys(result["journeys"], result["origin_note"])
+    return format_journeys(result["journeys"], result["origin_note"],
+                           drive=result.get("drive"))
 
 
 def leave_time_from(journeys: list, buffer_minutes: int):
@@ -633,12 +1083,17 @@ async def leave_by(
     from zoneinfo import ZoneInfo
     syd = ZoneInfo("Australia/Sydney")
     best = journeys[0]
+    # Naming the strategy matters most here: when the best option is
+    # park-and-ride, the leave time already has the drive and parking in it,
+    # and a bare clock time would look inexplicably early.
+    label = describe_strategy(best)
     return (
         f"Leave by {depart.astimezone(syd).strftime('%-I:%M %p')}"
         f"{result['origin_note']} to arrive {best['arrive'].astimezone(syd).strftime('%-I:%M %p')}"
         f" — {best['duration_min']} min, {best['changes']} change"
         f"{'s' if best['changes'] != 1 else ''}, {best['walk_min']} min walking."
-        f" (Includes a {TRAVEL_BUFFER_MINUTES} min buffer.)"
+        + (f" Via {label}." if label else "")
+        + f" (Includes a {TRAVEL_BUFFER_MINUTES} min buffer.)"
     )
 
 

@@ -2,6 +2,18 @@
 -- the Supabase-managed pieces (auth schema, pg_cron, pg_net) plus the two
 -- tables the new migrations touch.
 
+-- Supabase ships these roles; a bare postgres does not. RLS policies written
+-- `TO authenticated` fail to create without it, which is a migration that
+-- would deploy fine and only break here.
+DO $stub$ BEGIN
+    CREATE ROLE authenticated;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $stub$;
+DO $stub$ BEGIN
+    CREATE ROLE anon;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $stub$;
+
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS net;
 CREATE SCHEMA IF NOT EXISTS cron;
@@ -67,7 +79,11 @@ CREATE TABLE IF NOT EXISTS public.scheduled_jobs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     job_name  text UNIQUE NOT NULL,
     cron_expr text NOT NULL,
-    timezone  text DEFAULT 'UTC'
+    timezone  text DEFAULT 'UTC',
+    -- Present in the real table, and migrations that register a job write to
+    -- both. Without them the travel migrations fail here and nowhere else.
+    enabled   boolean NOT NULL DEFAULT true,
+    config    jsonb
 );
 INSERT INTO public.scheduled_jobs (job_name, cron_expr, timezone) VALUES
     ('meal_checkin',         '0 13,19 * * *', 'UTC'),

@@ -52,7 +52,12 @@ grep -v '^CREATE EXTENSION' "$MIGRATIONS/20260828140000_heartbeat_watchdog.sql" 
 # The duration fix replaces check_worker_heartbeat and adds format_outage.
 cp "$MIGRATIONS/20260831000000_fix_watchdog_duration.sql" "$WORK/watchdog_fix.sql"
 cp "$MIGRATIONS/20260828150000_create_brain_directives.sql" "$WORK/brain.sql"
-cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql "$WORK/"
+# travel_alerts and the migration that splits planning from delivery. Applied
+# in order, so the ALTER is exercised against the shape it will actually meet.
+cp "$MIGRATIONS/20260902120000_travel_alerts.sql"          "$WORK/travel.sql"
+cp "$MIGRATIONS/20260902140000_travel_alert_planning.sql"  "$WORK/travel_planning.sql"
+cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql \
+   "$DIR"/test_travel_alerts.sql "$WORK/"
 chmod -R a+r "$WORK"
 
 psql_run() {
@@ -64,14 +69,20 @@ psql_run _stubs.sql  >/dev/null
 psql_run watchdog.sql     >/dev/null
 psql_run watchdog_fix.sql >/dev/null
 psql_run brain.sql        >/dev/null
+psql_run travel.sql          >/dev/null
+psql_run travel_planning.sql >/dev/null
 
 echo
 echo "── watchdog ──────────────────────────────────────────"
-psql_run test_watchdog.sql 2>&1 | grep -E "  ok |FAIL|passed" | sed 's/^.*NOTICE: //'
+psql_run test_watchdog.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "── brain schema ──────────────────────────────────────"
-psql_run test_brain_schema.sql 2>&1 | grep -E "  ok |FAIL|passed" | sed 's/^.*NOTICE: //'
+psql_run test_brain_schema.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
+
+echo
+echo "── travel alerts ─────────────────────────────────────"
+psql_run test_travel_alerts.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "✓ SQL suites passed"
