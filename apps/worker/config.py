@@ -56,6 +56,27 @@ BRAIN_MAX_PROPOSALS_PER_RUN = 2
 # 15. It is the difference between a calm walk to the stop and a run.
 TRAVEL_BUFFER_MINUTES = 5
 
+# ── The local network ──────────────────────────────────────────────────────
+# How far to walk to reach a boarding point, by what you would be boarding.
+# Different numbers because people behave differently: a 20-minute walk to a
+# metro is normal and a 20-minute walk to a bus stop is not, when a closer stop
+# runs the same service.
+WALK_RADIUS_BUS_M = 800
+WALK_RADIUS_RAIL_M = 2000
+
+# Boarding points evaluated per trip, chosen for VARIETY rather than proximity
+# — one stop per distinct route. Five nearest stops would otherwise be five
+# stops on the same road served by the same bus, which is the failure this
+# whole mechanism exists to fix. Each is one concurrent TfNSW query.
+BOARDING_POINT_LIMIT = 5
+
+# The car is for once in a while, so park-and-ride has to clear a bar rather
+# than appear routinely: it must beat the best transit option by this much
+# before it is worth mentioning at all.
+PARK_RIDE_MIN_SAVING_MIN = 10
+# How far it is worth driving to reach a station.
+PARK_RIDE_RADIUS_M = 5000
+
 HEARTBEAT_INTERVAL_SECONDS = 30
 WORKER_RECONNECT_MAX_RETRIES = 5
 WORKER_RECONNECT_BACKOFF_BASE_SECONDS = 2
@@ -105,6 +126,7 @@ TOOL_TIER_MAP = {
     "transit_departures":   "auto",
     "trip_plan":            "auto",
     "leave_by":             "auto",
+    "nearby_services":      "auto",
     # Profile & memory
     "update_profile":       "approve",
     "brain_learn":          "approve",

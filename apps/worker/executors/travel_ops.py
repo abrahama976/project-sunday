@@ -2,7 +2,8 @@ import asyncio
 import httpx
 import json
 import re
-from config import OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUTES
+from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUTES,
+                    BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M)
 from utils import resolve_origin
 
 # ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
@@ -272,12 +273,12 @@ async def transit_departures(stop_keyword: str) -> str:
 _WALK_CLASSES = {99, 100}
 _MODE_NAMES = {1: "Train", 2: "Metro", 4: "Light Rail", 5: "Bus", 7: "Coach", 9: "Ferry", 11: "School bus"}
 
-# Mode families for the biased searches. One query excluding rail forces
-# options that board at a nearby bus stand; one excluding bus forces the walk
-# or feeder ride to a station. Both keep the REAL origin, so TfNSW still costs
-# the access walk itself and the results stay directly comparable.
+# Rail and metro. Used to pick which nearby stops are worth DRIVING to; the
+# mode-biased searches that once used a bus counterpart are gone. Excluding a
+# mode was the wrong axis: excluding buses to "force rail" also removed the
+# feeder bus that makes a metro station reachable, so "343 to Waterloo, then
+# the metro" was a journey that search could not return by construction.
 _RAIL_CLASSES = {1, 2}
-_BUS_CLASSES = {5, 7, 11}
 
 # How far to suggest walking to reach a better option. A tolerance, not a
 # technical limit — 800 m is about ten minutes.
@@ -519,6 +520,81 @@ def park_ride_depart_at(depart_at, access_min, now):
     return (base + _td(minutes=max(0, access_min or 0))).isoformat()
 
 
+def headway_from_departures(times) -> int | None:
+    """Typical minutes between consecutive departures, or None.
+
+    "Every 10 minutes" is the figure that decides what a wait means. Eleven
+    minutes on a ten-minute service says you have just missed one and another
+    is coming; the same eleven minutes on a half-hourly service says catch this
+    or lose the morning. Nothing in the journey data carries it, so it is
+    measured here from the departure board.
+
+    The MEDIAN gap rather than the mean: one long gap across a timetable break
+    drags an average to a number that matches no service actually running.
+    Fewer than two departures returns None rather than a guess — an absent
+    frequency is honest, a fabricated one looks like knowledge.
+    """
+    stamps = sorted(t for t in (times or []) if t)
+    if len(stamps) < 2:
+        return None
+    gaps = [int(round((b - a).total_seconds() / 60)) for a, b in zip(stamps, stamps[1:])]
+    gaps = sorted(g for g in gaps if g > 0)
+    if not gaps:
+        return None
+    mid = len(gaps) // 2
+    return gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) // 2
+
+
+def choose_boarding_points(services, limit: int = 5) -> list:
+    """One stop per distinct route, nearest first, capped at `limit`.
+
+    Taking the nearest N stops is the obvious move and the wrong one. On a road
+    served by a single bus, the five nearest stops are five stops on that bus,
+    and five queries return the journey the baseline already found. Grouping by
+    ROUTE first is what turns them into five genuinely different journeys — the
+    343, the 358, the 306, the metro.
+
+    Hidden rows are dropped. Where one route is reachable at several stops, the
+    shortest walk wins. A row with no walk time sorts last rather than being
+    discarded: not knowing how far it is, is not a reason to pretend it is not
+    there.
+    """
+    best = {}
+    for service in services or []:
+        if not service or service.get("is_hidden"):
+            continue
+        route = (service.get("route") or "").strip()
+        if not route:
+            continue
+        walk = service.get("walk_min")
+        walk = 10 ** 6 if walk is None else walk
+        current = best.get(route)
+        if current is None or walk < current[0]:
+            best[route] = (walk, service)
+
+    ordered = sorted(best.values(),
+                     key=lambda pair: (pair[0], pair[1].get("stop_name") or ""))
+    return [service for _walk, service in ordered[:limit]]
+
+
+def service_label(summary: dict) -> str:
+    """"343 from Gardeners Rd" — the first thing you actually board.
+
+    Walking and driving legs are skipped: they are how you reach the service,
+    not the service. This is what lets an answer name the route rather than
+    describing an anonymous journey.
+    """
+    for leg in (summary or {}).get("legs") or []:
+        if leg.get("mode") in ("Walk", "Drive"):
+            continue
+        line = (leg.get("line") or "").strip()
+        origin = (leg.get("from") or "").strip()
+        if line and origin:
+            return f"{line} from {origin}"
+        return line or origin or ""
+    return ""
+
+
 def dedupe_journeys(summaries: list) -> list:
     """One entry per actual service. The strategies overlap, and should.
 
@@ -545,18 +621,23 @@ def dedupe_journeys(summaries: list) -> list:
     return out
 
 
-def verify_journeys(summaries: list, now, arrive_by=None, drive_only_min=None) -> list:
-    """The "calculate and verify" step — drop what cannot actually be taken.
+def verify_journeys(summaries: list, now, arrive_by=None, drive_only_min=None,
+                    park_ride_min_saving: int = 0) -> list:
+    """The "calculate and verify" step — drop what cannot or should not be taken.
 
     Nothing checked this before. Offering a journey that has already left is
-    worse than offering none, because it looks like an answer. Four rules:
+    worse than offering none, because it looks like an answer.
 
     - A departure in the past is gone, however good it looked.
     - An arrival after `arrive_by` fails the one requirement that mattered.
-    - Park-and-ride that loses to simply driving the whole way is not a plan.
     - A journey without usable times cannot be reasoned about at all.
+    - Park-and-ride that loses to simply driving the whole way is not a plan.
+    - Park-and-ride that barely beats the best transit is not worth the car.
+      Driving is an occasional thing, so it has to clear a bar rather than
+      appear whenever it is a minute quicker; `park_ride_min_saving` is that
+      bar, measured against the best option that needs no car.
     """
-    out = []
+    kept = []
     for s in summaries:
         if not s or not s.get("depart") or not s.get("arrive"):
             continue
@@ -567,23 +648,49 @@ def verify_journeys(summaries: list, now, arrive_by=None, drive_only_min=None) -
         if (s.get("drive_min") and drive_only_min is not None
                 and s["duration_min"] >= drive_only_min):
             continue
-        out.append(s)
-    return out
+        kept.append(s)
+
+    if not park_ride_min_saving:
+        return kept
+
+    # The bar is the best journey that asks nothing of the car. With none to
+    # compare against, park-and-ride is the only option there is and stands.
+    transit = [s["duration_min"] for s in kept if not s.get("drive_min")]
+    if not transit:
+        return kept
+    bar = min(transit) - park_ride_min_saving
+    return [s for s in kept
+            if not s.get("drive_min") or s["duration_min"] <= bar]
 
 
 def describe_strategy(summary: dict) -> str:
-    """The short "why is this one here" label shown against an option."""
+    """The short "why is this one here" label shown against an option.
+
+    For a boarding-point option that is the service itself — naming the 343 is
+    more use than saying "an alternative stop", because the route is how you
+    think about it.
+    """
     strategy = (summary or {}).get("strategy") or ""
-    if strategy == "bus":
-        return "bus only — no station walk"
-    if strategy == "rail":
-        return "via a station"
+    if strategy == "boarding":
+        return service_label(summary)
     if strategy == "park_ride":
         station = next((l.get("from") for l in (summary.get("legs") or [])
                         if l.get("mode") not in ("Walk", "Drive") and l.get("from")), "")
         where = f" to {station}" if station else ""
         return f"drive {summary.get('drive_min') or 0} min{where}, then transit"
     return ""
+
+
+def describe_frequency(summary: dict) -> str:
+    """"every ~10 min", or "" when the frequency is not known.
+
+    Deliberately silent rather than guessing. A wrong headway would be read as
+    fact and change when someone leaves the house.
+    """
+    headway = (summary or {}).get("headway_min")
+    if not headway or headway <= 0:
+        return ""
+    return f"every ~{headway} min"
 
 
 def rank_journeys(summaries: list) -> list:
@@ -666,6 +773,9 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3, drive=N
     detail = [f"{best['changes']} change{'s' if best['changes'] != 1 else ''}",
               f"{best['walk_min']} min walking",
               f"{best['wait_min']} min waiting"]
+    frequency = describe_frequency(best)
+    if frequency:
+        detail.append(frequency)
     if best.get("fare") is not None:
         detail.append(f"${best['fare']:.2f} Opal")
     detail.append("live times" if best["realtime"] else "timetable only")
@@ -693,10 +803,12 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3, drive=N
         reason = describe_alternative(best, other)
         if reason:
             label = describe_strategy(other)
+            frequency = describe_frequency(other)
+            note = " · ".join(x for x in (label, frequency) if x)
             alternatives.append(
                 f"  · leave {clock(other['depart'])}, arrive {clock(other['arrive'])} "
                 f"({other['duration_min']} min) — {reason}"
-                + (f" [{label}]" if label else "")
+                + (f" [{note}]" if note else "")
             )
         if len(alternatives) >= limit - 1:
             break
@@ -720,22 +832,6 @@ def format_journeys(ranked: list, origin_note: str = "", limit: int = 3, drive=N
         out.append(f"Driving: {drive['minutes']} min{km} — {verdict}")
 
     return "\n".join(out)
-
-
-def _exclude_params(classes) -> dict:
-    """EFA's exclusion form: a checkbox flag plus one key per excluded class.
-
-    This is what biases a search WITHOUT moving the origin, and keeping the
-    real starting address on every query is the whole trick — TfNSW costs the
-    access walk itself, so no leg has to be added back by hand and the results
-    from different searches stay directly comparable.
-    """
-    if not classes:
-        return {}
-    params = {"excludedMeans": "checkbox"}
-    for cls in sorted(classes):
-        params[f"exclMOT_{cls}"] = 1
-    return params
 
 
 def _coord_pair(raw):
@@ -774,7 +870,7 @@ def _route_minutes_km(data: dict):
 
 
 def _trip_params(origin, destination, arrive_by=None, depart_at=None,
-                 exclude=None, origin_type="any") -> dict:
+                 origin_type="any") -> dict:
     """Query parameters for one TfNSW trip search."""
     params = {
         "outputFormat": "rapidJSON",
@@ -796,7 +892,6 @@ def _trip_params(origin, destination, arrive_by=None, depart_at=None,
         local = when.astimezone(ZoneInfo("Australia/Sydney"))
         params["itdDate"] = local.strftime("%Y%m%d")
         params["itdTime"] = local.strftime("%H%M")
-    params.update(_exclude_params(exclude))
     return params
 
 
@@ -835,8 +930,14 @@ async def _ors_route(http, start, end, profile="driving-car"):
         return (None, None)
 
 
-async def _nearby_stations(http, headers, origin_ll, limit: int = 8) -> list:
-    """Rail stations near a coordinate, nearest first. [] rather than raising."""
+async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
+                           radius_m: float = PARK_RIDE_RADIUS_M) -> list:
+    """Rail stations within `radius_m` of a coordinate. [] rather than raising.
+
+    stop_finder returns what is nearest without a distance bound of its own, so
+    the radius is applied here. 5 km by default — far enough to reach a station
+    worth driving to, close enough that the drive stays "once in a while".
+    """
     params = {
         "outputFormat": "rapidJSON",
         "coordOutputFormat": "EPSG:4326",
@@ -863,6 +964,8 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8) -> list:
             continue
         coord = _coord_pair(loc.get("coord"))
         if not coord:
+            continue
+        if haversine_m(origin_ll, coord) > radius_m:
             continue
         out.append({"id": loc.get("id"), "name": loc.get("name") or "",
                     "lat": coord[0], "lng": coord[1]})
@@ -927,6 +1030,33 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     return (drive, summaries)
 
 
+async def load_nearby_services(client, user_id: str, place_label: str = "home") -> list:
+    """The learned local network for a place: usable services, nearest first.
+
+    Read-only and forgiving — a missing table or an empty inventory means the
+    search falls back to the baseline alone, which is what shipped before this
+    existed. Travel should degrade, not fail, when the weekly refresh has not
+    run yet.
+    """
+    if client is None or not user_id:
+        return []
+    try:
+        res = await asyncio.to_thread(
+            lambda: client.table("nearby_services")
+            .select("stop_id, stop_name, route, headsign, mode_class, headway_min, walk_min, is_hidden")
+            .eq("user_id", user_id)
+            .eq("place_label", place_label)
+            .eq("is_hidden", False)
+            .order("walk_min")
+            .limit(100)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[trip] could not read nearby_services: {e}", flush=True)
+        return []
+    return getattr(res, "data", None) or []
+
+
 async def plan_journeys(
     destination: str,
     origin: str | None = None,
@@ -939,25 +1069,27 @@ async def plan_journeys(
     """Ranked journeys as data: `{ok, journeys, origin_note, drive}` or `{ok, error}`.
 
     Runs a search rather than a query. Asked once, TfNSW answers with five
-    departures along the single corridor it picked — which is why one query can
-    never beat Maps: it never considers a second route. So several searches run
-    concurrently from the SAME origin, biased by mode, plus park-and-ride when
-    that is plausible:
+    departures along the single corridor it picked — so a place served by four
+    routes is only ever offered one of them, and ranking cannot recover the
+    three it never saw.
 
-        baseline    whatever TfNSW thinks best
-        bus         rail excluded, forcing nearby bus stands
-        rail        bus excluded, forcing the walk or feeder ride to a station
-        park+ride   drive to a station that is toward the destination, then transit
+    So the boarding points are enumerated instead, from the learned local
+    network (`nearby_services`):
 
-    Everything except park-and-ride keeps the real origin, so TfNSW costs each
-    access walk itself and the pool is directly comparable. Park-and-ride pays
-    for its own drive leg through `add_access_leg`.
+        baseline    from the real origin, whatever TfNSW thinks best
+        boarding    one query per distinct nearby ROUTE, walk charged back
+        park+ride   drive to a station toward the destination, then transit
+
+    Grouping by route rather than by proximity is the point: five nearest stops
+    on one road are five stops on the same bus. `choose_boarding_points` picks
+    the 343, the 358, the 306 and the metro instead.
+
+    Everything that does not start at the real origin pays for its access leg
+    through `add_access_leg`, so a journey that begins on a platform cannot win
+    by hiding the walk that gets you there.
 
     `depth="baseline"` runs only the first search. travel_watch uses it so a
-    job ticking every five minutes does not spend four searches per event.
-
-    Split out of trip_plan so leave_by and travel_watch can do arithmetic on
-    the result rather than parsing a formatted string back into times.
+    job ticking every five minutes does not spend a fan-out per event.
     """
     if not TFNSW_API_KEY:
         return {"ok": False, "error": "Error: TFNSW_API_KEY is not set."}
@@ -977,25 +1109,46 @@ async def plan_journeys(
     headers = {"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"}
     full = depth != "baseline"
 
-    searches = [("baseline", None)]
+    boarding = []
     if full:
-        searches += [("bus", _RAIL_CLASSES), ("rail", _BUS_CLASSES)]
+        boarding = choose_boarding_points(
+            await load_nearby_services(client, user_id), BOARDING_POINT_LIMIT)
 
     # `http`, not `client`: `client` is the Supabase handle this function takes.
     async with httpx.AsyncClient() as http:
-        results = await asyncio.gather(*[
-            _fetch_journeys(http, headers,
-                            _trip_params(origin, destination, arrive_by, depart_at, exclude))
-            for _label, exclude in searches
-        ])
+        baseline_params = _trip_params(origin, destination, arrive_by, depart_at)
+        boarding_params = [
+            _trip_params(service.get("stop_id") or service.get("stop_name"),
+                         destination, arrive_by, depart_at,
+                         origin_type="stop" if service.get("stop_id") else "any")
+            for service in boarding
+        ]
+
+        results = await asyncio.gather(
+            *[_fetch_journeys(http, headers, p)
+              for p in [baseline_params] + boarding_params]
+        )
 
         summaries = []
-        for (label, _exclude), raw in zip(searches, results):
+        for journey in results[0]:
+            summary = summarise_journey(journey)
+            if summary:
+                summary["strategy"] = "baseline"
+                summaries.append(summary)
+
+        for service, raw in zip(boarding, results[1:]):
+            walk_min = service.get("walk_min") or 0
             for journey in raw:
                 summary = summarise_journey(journey)
-                if summary:
-                    summary["strategy"] = label
-                    summaries.append(summary)
+                if not summary:
+                    continue
+                summary["strategy"] = "boarding"
+                # Frequency rides along from the weekly refresh: no extra
+                # request, and it is the figure that says what a wait means.
+                summary["headway_min"] = service.get("headway_min")
+                summaries.append(add_access_leg(
+                    summary, walk_min, mode="Walk",
+                    label="your location") if walk_min else summary)
 
         drive = None
         if full and OPENROUTESERVICE_API_KEY:
@@ -1009,7 +1162,8 @@ async def plan_journeys(
 
     deduped = dedupe_journeys(summaries)
     checked = verify_journeys(deduped, _dt_now_utc(), _parse_time(arrive_by),
-                              (drive or {}).get("minutes"))
+                              (drive or {}).get("minutes"),
+                              PARK_RIDE_MIN_SAVING_MIN)
     if not checked:
         return {"ok": False, "error": (
             f"I found journeys to {destination}, but none of them work: they have "
@@ -1047,6 +1201,48 @@ async def trip_plan(
         return result["error"]
     return format_journeys(result["journeys"], result["origin_note"],
                            drive=result.get("drive"))
+
+
+def format_services(services: list, place: str = "home") -> str:
+    """The local network as a person reads it, grouped by stop.
+
+    Answers "what runs near me" without planning anything — the question you
+    ask when deciding whether Sunday actually knows your area, and the place a
+    wrong or missing route becomes visible.
+    """
+    usable = [s for s in (services or []) if s and not s.get("is_hidden")]
+    if not usable:
+        return (f"I don't know what runs near {place} yet. The weekly "
+                "refresh_nearby_services job discovers it; it may not have run.")
+
+    by_stop = {}
+    for service in sorted(usable, key=lambda s: (s.get("walk_min") is None,
+                                                 s.get("walk_min") or 0,
+                                                 s.get("stop_name") or "")):
+        by_stop.setdefault(service.get("stop_name") or "Unknown stop", []).append(service)
+
+    out = [f"Services near {place}:"]
+    for stop_name, at_stop in by_stop.items():
+        walk = at_stop[0].get("walk_min")
+        walk_note = f" ({walk} min walk)" if walk is not None else ""
+        out.append(f"{stop_name}{walk_note}")
+        for service in at_stop:
+            headsign = service.get("headsign")
+            where = f" to {headsign}" if headsign else ""
+            frequency = describe_frequency(service)
+            how_often = f" · {frequency}" if frequency else ""
+            edited = " · yours" if service.get("source") == "user" else ""
+            out.append(f"  · {service.get('route') or '?'}{where}{how_often}{edited}")
+    return "\n".join(out)
+
+
+async def nearby_services(client=None, user_id: str | None = None,
+                          place: str = "home") -> str:
+    """What public transport runs near a saved place, and how often."""
+    if client is None or not user_id:
+        return "Error: no user context to look up saved places for."
+    services = await load_nearby_services(client, user_id, place)
+    return format_services(services, place)
 
 
 def leave_time_from(journeys: list, buffer_minutes: int):

@@ -136,6 +136,17 @@ function DaySelector({ selected, onChange, weekCounts }: {
 }
 
 /* ── Main Page ─────────────────────────────────────────────── */
+type NearbyService = {
+  id: string;
+  stop_name: string;
+  route: string;
+  headsign: string | null;
+  headway_min: number | null;
+  walk_min: number | null;
+  source: string;
+  is_hidden: boolean;
+};
+
 export default function SchedulePage() {
   const supabase = useMemo(() => createClient(), []);
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -148,6 +159,35 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(true);
   const [weekCounts, setWeekCounts] = useState<Record<string, number>>({});
   const [newTaskTitle, setNewTaskTitle] = useState("");
+  // What Sunday believes runs near home. Shown so a wrong or missing route is
+  // visible rather than only surfacing as a bad trip suggestion.
+  const [services, setServices] = useState<NearbyService[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Defined inside the effect: react-hooks/set-state-in-effect flags a
+    // setState-containing function declared outside one, even an async one.
+    async function loadServices() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+      const { data, error } = await supabase
+        .from("nearby_services")
+        .select("id, stop_name, route, headsign, headway_min, walk_min, source, is_hidden")
+        .eq("user_id", user.id)
+        .eq("is_hidden", false)
+        .order("walk_min", { ascending: true, nullsFirst: false })
+        .limit(60);
+      if (cancelled || error || !data) return;
+      setServices(data as NearbyService[]);
+    }
+
+    void loadServices().catch(() => {
+      /* The day view does not depend on this; leave the section empty. */
+    });
+
+    return () => { cancelled = true; };
+  }, [supabase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -473,6 +513,74 @@ export default function SchedulePage() {
                 )}
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {services.length > 0 && (
+        <div style={{ marginTop: "var(--space-8)" }}>
+          <h2 style={{ fontSize: "0.9375rem", fontWeight: 600, marginBottom: "var(--space-2)" }}>
+            Services near home
+          </h2>
+          <p style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", marginBottom: "var(--space-4)" }}>
+            What Sunday searches when planning a trip. Refreshed weekly.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {Object.entries(
+              services.reduce<Record<string, NearbyService[]>>((acc, service) => {
+                (acc[service.stop_name] ||= []).push(service);
+                return acc;
+              }, {})
+            ).map(([stopName, atStop]) => (
+              <div
+                key={stopName}
+                style={{
+                  background: "var(--color-surface)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: "var(--radius-lg)",
+                  padding: "var(--space-4) var(--space-5)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--space-3)" }}>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{stopName}</span>
+                  {atStop[0].walk_min !== null && (
+                    <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", flexShrink: 0 }}>
+                      {atStop[0].walk_min} min walk
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)", marginTop: "var(--space-3)" }}>
+                  {atStop.map((service) => (
+                    <span
+                      key={service.id}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "baseline",
+                        gap: "6px",
+                        padding: "3px var(--space-3)",
+                        borderRadius: "var(--radius-lg)",
+                        background: "var(--color-surface-2)",
+                        border: service.source === "user"
+                          ? "1px solid var(--color-primary)"
+                          : "1px solid var(--color-border)",
+                        fontSize: "0.75rem",
+                      }}
+                      title={service.source === "user" ? "Added by you" : "Found by Sunday"}
+                    >
+                      <strong style={{ fontWeight: 600 }}>{service.route}</strong>
+                      {service.headsign && (
+                        <span style={{ color: "var(--color-text-muted)" }}>to {service.headsign}</span>
+                      )}
+                      {/* Silent when unknown: a made-up frequency would be read
+                          as fact and change when someone leaves the house. */}
+                      {service.headway_min ? (
+                        <span style={{ color: "var(--color-text-faint)" }}>~{service.headway_min}m</span>
+                      ) : null}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

@@ -56,8 +56,9 @@ cp "$MIGRATIONS/20260828150000_create_brain_directives.sql" "$WORK/brain.sql"
 # in order, so the ALTER is exercised against the shape it will actually meet.
 cp "$MIGRATIONS/20260902120000_travel_alerts.sql"          "$WORK/travel.sql"
 cp "$MIGRATIONS/20260902140000_travel_alert_planning.sql"  "$WORK/travel_planning.sql"
+cp "$MIGRATIONS/20260903150000_nearby_services.sql"        "$WORK/nearby.sql"
 cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql \
-   "$DIR"/test_travel_alerts.sql "$WORK/"
+   "$DIR"/test_travel_alerts.sql "$DIR"/test_nearby_services.sql "$WORK/"
 chmod -R a+r "$WORK"
 
 psql_run() {
@@ -71,6 +72,7 @@ psql_run watchdog_fix.sql >/dev/null
 psql_run brain.sql        >/dev/null
 psql_run travel.sql          >/dev/null
 psql_run travel_planning.sql >/dev/null
+psql_run nearby.sql          >/dev/null
 
 echo
 echo "── watchdog ──────────────────────────────────────────"
@@ -83,6 +85,10 @@ psql_run test_brain_schema.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's
 echo
 echo "── travel alerts ─────────────────────────────────────"
 psql_run test_travel_alerts.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
+
+echo
+echo "── nearby services ───────────────────────────────────"
+psql_run test_nearby_services.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "✓ SQL suites passed"

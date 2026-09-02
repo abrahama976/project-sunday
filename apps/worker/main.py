@@ -18,7 +18,7 @@ from summariser import maybe_summarise
 from context.loader import fetch_and_cache_profile, fetch_and_cache_directives
 from google_auth import verify_all_tokens
 from scheduler import Scheduler
-from jobs import morning_briefing, email_scan, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_job, send_daily_brief, sync_calendar_job, travel_watch
+from jobs import morning_briefing, email_scan, meal_checkin, nightly_maintenance, calendar_prep, task_tracker, cold_storage_archive, send_daily_brief_job, send_daily_brief, sync_calendar_job, travel_watch, refresh_nearby_services
 from executors.base import set_status
 from executors.notify_ops import push_approval, push
 from executors.file_ops import file_read, file_list, file_write
@@ -27,7 +27,7 @@ from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
 from utils import generate_with_retry, resolve_user
 from executors.web_search_ops import web_search
-from executors.travel_ops import travel_directions, transit_departures, trip_plan, leave_by
+from executors.travel_ops import travel_directions, transit_departures, trip_plan, leave_by, nearby_services
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
@@ -64,6 +64,8 @@ def _make_registry(client_ref: list, user_id_ref: list) -> dict:
         "trip_plan":           lambda **kw: trip_plan(
             client=client_ref[0], user_id=user_id_ref[0], **kw),
         "leave_by":            lambda **kw: leave_by(
+            client=client_ref[0], user_id=user_id_ref[0], **kw),
+        "nearby_services":     lambda **kw: nearby_services(
             client=client_ref[0], user_id=user_id_ref[0], **kw),
         "calendar_query":      calendar_query,
         "calendar_create":     calendar_create,
@@ -548,6 +550,7 @@ async def main():
     sched.register_handler("daily_brief", send_daily_brief_job)
     sched.register_handler("sync_calendar", sync_calendar_job)
     sched.register_handler("travel_watch", travel_watch)
+    sched.register_handler("refresh_nearby_services", refresh_nearby_services)
     scheduler_task = asyncio.create_task(sched.run())
 
     def _on_scheduler_done(task):
