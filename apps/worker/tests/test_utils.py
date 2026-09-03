@@ -1,51 +1,26 @@
 """Tests for utils.row, display_name, resolve_user and resolve_origin.
 
 Each exists because of a live bug or a live assumption, so each is worth
-pinning. Dependency-free: the functions are lifted straight out of the source,
-since importing utils drags in google.api_core for helpers that do not need it.
-`asyncio` is stubbed to a to_thread that just calls its argument — resolve_user
-makes exactly one outside call and that is it.
+pinning. Ordinary imports via `_harness.setup()`, which stubs the uninstalled
+packages that utils drags in for helpers these tests do not touch.
+
+The real `asyncio.to_thread` is used rather than a stand-in: the fake clients
+below are synchronous, and to_thread runs them faithfully in a worker thread.
 
     python3 tests/test_utils.py
 """
-import ast
 import asyncio
-from datetime import datetime, timedelta, timezone
 import os
-import re
 import sys
+from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _harness import setup  # noqa: E402
+setup()
 
-_SRC = open(os.path.join(os.path.dirname(__file__), "..", "utils.py")).read()
-_tree = ast.parse(_SRC)
-_keep = [
-    n for n in _tree.body
-    if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name in {"row", "display_name", "resolve_user", "resolve_origin",
-                       "_is_fresh", "as_datetime"})
-    or (isinstance(n, ast.ClassDef) and n.name == "MultipleUsers")
-    or (isinstance(n, ast.Assign)
-        and getattr(n.targets[0], "id", "") in {"_NAME_LINE", "LIVE_LOCATION_FRESH_MINUTES"})
-]
-
-
-class _Thread:
-    """Stands in for asyncio.to_thread — resolve_user's only outside call."""
-    @staticmethod
-    async def to_thread(fn):
-        return fn()
-
-
-_g = {"re": re, "asyncio": _Thread, "datetime": datetime, "timedelta": timedelta,
-      "timezone": timezone, "__name__": "pure"}
-exec(compile(ast.Module(body=_keep, type_ignores=[]), "utils.py", "exec"), _g)
-row = _g["row"]
-display_name = _g["display_name"]
-resolve_user = _g["resolve_user"]
-resolve_origin = _g["resolve_origin"]
-MultipleUsers = _g["MultipleUsers"]
-as_datetime = _g["as_datetime"]
+from utils import (                                   # noqa: E402
+    row, display_name, resolve_user, resolve_origin, as_datetime, MultipleUsers,
+)
 
 failures = []
 

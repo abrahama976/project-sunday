@@ -1,32 +1,23 @@
 """Tests for the scheduler's in-flight guard and cron matching.
 
-Dependency-free: the pure cron helpers are loaded straight from source, and the
-in-flight behaviour is exercised against a hand-rolled stand-in that mirrors
-Scheduler's tick/run structure. Importing the real Scheduler would drag in
-supabase, which these do not need.
+The cron helpers are imported directly; the in-flight behaviour is exercised
+against a hand-rolled stand-in that mirrors Scheduler's tick/run structure,
+because that is about the shape of the guard rather than the real class.
+
+`_harness.setup()` makes the import work without supabase installed.
 
     python3 tests/test_scheduler.py
 """
-import ast
 import asyncio
 import os
-import re
 import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from datetime import datetime, timedelta
 
-_SRC = open(os.path.join(os.path.dirname(__file__), "..", "scheduler.py")).read()
-# datetime is in scope because the extracted functions carry type annotations
-# that are evaluated at definition time.
-_g = {"re": re, "datetime": datetime, "timedelta": timedelta, "__name__": "pure"}
-_tree = ast.parse(_SRC)
-_keep = [n for n in _tree.body
-         if isinstance(n, ast.FunctionDef)
-         and n.name in {"_cron_matches", "_field_matches"}]
-exec(compile(ast.Module(body=_keep, type_ignores=[]), "scheduler.py", "exec"), _g)
-_cron_matches = _g["_cron_matches"]
+sys.path.insert(0, os.path.dirname(__file__))
+from _harness import setup  # noqa: E402
+setup()
+
+from scheduler import _cron_matches  # noqa: E402
 
 failures = []
 
