@@ -3,74 +3,35 @@
 The ranking is the part that decides which route you are told to take, so it is
 the part worth pinning. Everything under test here is pure — it takes an
 already-decoded TfNSW response and returns numbers — so none of this needs a
-network, an API key, or the worker's dependencies.
+network or an API key.
 
-Extracted from source the way test_scheduler.py does, because importing
-travel_ops pulls in httpx and config.
+`_harness.setup()` supplies placeholder env values and stub modules for the
+uninstalled third-party packages, so these are ordinary imports rather than
+functions cut out of the source with `ast`. The stubs raise if a test ever
+calls them, so nothing here can pass against a fake.
 
     python3 tests/test_travel.py
 """
-import ast
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _harness import setup  # noqa: E402
+setup()
 
-_SRC = open(os.path.join(os.path.dirname(__file__), "..", "executors", "travel_ops.py")).read()
-_tree = ast.parse(_SRC)
-_WANTED = {
-    "_parse_time", "summarise_journey", "_journey_fare",
-    "rank_journeys", "describe_alternative", "format_journeys",
-    "_as_lonlat", "_route_summary", "leave_time_from",
-    # The search core added with the multi-strategy planner.
-    "haversine_m", "station_is_toward", "add_access_leg", "dedupe_journeys",
-    "verify_journeys", "describe_strategy", "_coord_pair",
-    "_route_minutes_km", "_trip_params", "park_ride_depart_at",
-    "headway_from_departures", "choose_boarding_points", "service_label",
-    "describe_frequency", "format_services", "as_efa_coord",
-}
-_keep = [
-    n for n in _tree.body
-    if (isinstance(n, ast.FunctionDef) and n.name in _WANTED)
-    or (isinstance(n, ast.Assign)
-        and getattr(n.targets[0], "id", "") in {"_WALK_CLASSES", "_MODE_NAMES",
-                                                "_ALT_MAX_LATER_MIN", "_COORD_PAIR",
-                                                "_ORS_PROFILES", "_RAIL_CLASSES",
-                                                "MAX_ACCESS_WALK_M",
-                                                "PARK_RIDE_MAX_CANDIDATES",
-                                                "PARK_RIDE_MAX_DRIVE_MIN",
-                                                "PARK_RIDE_PARKING_MIN"})
-]
-_g = {"re": __import__("re"), "__name__": "pure"}
-exec(compile(ast.Module(body=_keep, type_ignores=[]), "travel_ops.py", "exec"), _g)
-_parse_time = _g["_parse_time"]
-summarise_journey = _g["summarise_journey"]
-rank_journeys = _g["rank_journeys"]
-describe_alternative = _g["describe_alternative"]
-format_journeys = _g["format_journeys"]
-_as_lonlat = _g["_as_lonlat"]
-_route_summary = _g["_route_summary"]
-leave_time_from = _g["leave_time_from"]
-haversine_m = _g["haversine_m"]
-station_is_toward = _g["station_is_toward"]
-add_access_leg = _g["add_access_leg"]
-dedupe_journeys = _g["dedupe_journeys"]
-verify_journeys = _g["verify_journeys"]
-describe_strategy = _g["describe_strategy"]
-_coord_pair = _g["_coord_pair"]
-_route_minutes_km = _g["_route_minutes_km"]
-_trip_params = _g["_trip_params"]
-park_ride_depart_at = _g["park_ride_depart_at"]
-headway_from_departures = _g["headway_from_departures"]
-choose_boarding_points = _g["choose_boarding_points"]
-service_label = _g["service_label"]
-describe_frequency = _g["describe_frequency"]
-format_services = _g["format_services"]
-as_efa_coord = _g["as_efa_coord"]
-_RAIL_CLASSES = _g["_RAIL_CLASSES"]
-PARK_RIDE_PARKING_MIN = _g["PARK_RIDE_PARKING_MIN"]
+from executors.travel_ops import (          # noqa: E402
+    _parse_time, summarise_journey, rank_journeys, describe_alternative,
+    format_journeys, _as_lonlat, _route_summary, leave_time_from,
+    haversine_m, station_is_toward, add_access_leg, dedupe_journeys,
+    verify_journeys, describe_strategy, _coord_pair, _route_minutes_km,
+    _trip_params, park_ride_depart_at, headway_from_departures,
+    choose_boarding_points, service_label, describe_frequency,
+    format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
+)
+from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
+from jobs import travel_replan_due                            # noqa: E402
 
 failures = []
 
@@ -533,19 +494,6 @@ print("\n── travel_replan_due() (jobs.py) ───────────�
 # Lives in jobs.py but is travel arithmetic, and it decides how much of the
 # day's TfNSW traffic exists — so it is pinned here with the rest of the
 # planning logic rather than left untested for being in the wrong file.
-_JOBS = open(os.path.join(os.path.dirname(__file__), "..", "jobs.py")).read()
-_jt = ast.parse(_JOBS)
-_jkeep = [
-    n for n in _jt.body
-    if (isinstance(n, ast.FunctionDef) and n.name == "travel_replan_due")
-    or (isinstance(n, ast.Assign)
-        and getattr(n.targets[0], "id", "") in {"TRAVEL_REPLAN_LEAD_MINUTES",
-                                                "TRAVEL_REPLAN_MIN_INTERVAL_MINUTES"})
-]
-_jg = {"timedelta": timedelta, "__name__": "pure"}
-exec(compile(ast.Module(body=_jkeep, type_ignores=[]), "jobs.py", "exec"), _jg)
-travel_replan_due = _jg["travel_replan_due"]
-
 NOW2 = BASE                                      # 08:00
 soon = BASE + timedelta(minutes=15)              # inside the 20-min lead window
 far = BASE + timedelta(hours=4)                  # a long way off
@@ -731,19 +679,6 @@ print("\n── is_placeholder_event_id() (calendar_ops) ───────�
 
 # Lives in calendar_ops but is pure and guards the approval queue, so it is
 # pinned here rather than left untested for being in another file.
-_CAL = open(os.path.join(os.path.dirname(__file__), "..", "executors", "calendar_ops.py")).read()
-_ct = ast.parse(_CAL)
-_ckeep = [
-    n for n in _ct.body
-    if (isinstance(n, ast.FunctionDef) and n.name == "is_placeholder_event_id")
-    or (isinstance(n, ast.Assign)
-        and getattr(n.targets[0], "id", "") in {"_PLACEHOLDER_ID_MARKERS",
-                                                "_PLACEHOLDER_ID_EXACT"})
-]
-_cg = {"__name__": "pure"}
-exec(compile(ast.Module(body=_ckeep, type_ignores=[]), "calendar_ops.py", "exec"), _cg)
-is_placeholder_event_id = _cg["is_placeholder_event_id"]
-
 # The one that actually reached the approval queue and 404'd after approval.
 check_true("the id that failed in production is caught",
            is_placeholder_event_id("Primary_xxxxxxxxxxxxxxxxxx"))
@@ -762,6 +697,28 @@ for real in ("4f8s0nk3q1p2r5t7v9x0y2z4a6",
              "abc123XYZ"):
     check_true(f"a real id is accepted: {real[:18]}…",
                not is_placeholder_event_id(real))
+
+print("\n── the harness itself ────────────────────────────────")
+
+# The stubs exist to satisfy imports, never to answer questions. A stub that
+# quietly returned something plausible would be worse than having no tests: it
+# would look like coverage while testing a fake. So prove they refuse.
+import httpx                                    # noqa: E402
+import supabase                                 # noqa: E402
+from _harness import TestReachedRealIO          # noqa: E402
+
+for label, call in (
+    ("httpx.AsyncClient", lambda: httpx.AsyncClient()),
+    ("supabase.create_client", lambda: supabase.create_client("u", "k")),
+):
+    try:
+        call()
+    except TestReachedRealIO:
+        print(f"  ok  {label} refuses to run in a test")
+    except Exception as exc:                    # noqa: BLE001
+        failures.append(f"{label} raised {type(exc).__name__}, not TestReachedRealIO")
+    else:
+        failures.append(f"{label} SILENTLY SUCCEEDED — a test could pass against a fake")
 print()
 if failures:
     print(f"✗ {len(failures)} failure(s):\n")

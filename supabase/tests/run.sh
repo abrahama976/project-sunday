@@ -57,9 +57,11 @@ cp "$MIGRATIONS/20260828150000_create_brain_directives.sql" "$WORK/brain.sql"
 cp "$MIGRATIONS/20260902120000_travel_alerts.sql"          "$WORK/travel.sql"
 cp "$MIGRATIONS/20260902140000_travel_alert_planning.sql"  "$WORK/travel_planning.sql"
 cp "$MIGRATIONS/20260903150000_nearby_services.sql"        "$WORK/nearby.sql"
+cp "$MIGRATIONS/20260606200000_create_agent_turns.sql"     "$WORK/agent_turns.sql"
+cp "$MIGRATIONS/20260903180000_agent_turns_keep_traces.sql" "$WORK/agent_turns_retention.sql"
 cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql \
    "$DIR"/test_travel_alerts.sql "$DIR"/test_nearby_services.sql \
-   "$DIR"/test_function_grants.sql "$WORK/"
+   "$DIR"/test_function_grants.sql "$DIR"/test_agent_turns_retention.sql "$WORK/"
 chmod -R a+r "$WORK"
 
 psql_run() {
@@ -74,6 +76,8 @@ psql_run brain.sql        >/dev/null
 psql_run travel.sql          >/dev/null
 psql_run travel_planning.sql >/dev/null
 psql_run nearby.sql          >/dev/null
+psql_run agent_turns.sql            >/dev/null
+psql_run agent_turns_retention.sql  >/dev/null
 
 echo
 echo "── watchdog ──────────────────────────────────────────"
@@ -94,6 +98,10 @@ psql_run test_nearby_services.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed
 echo
 echo "── function grants ───────────────────────────────────"
 psql_run test_function_grants.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
+
+echo
+echo "── trace retention ───────────────────────────────────"
+psql_run test_agent_turns_retention.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "✓ SQL suites passed"

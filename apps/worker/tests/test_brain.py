@@ -1,55 +1,24 @@
 """Unit tests for the pure logic in the learning brain.
 
-Deliberately dependency-free: these import the parsing/similarity helpers
-without pulling in supabase or the google SDK, so they run anywhere.
+Ordinary imports: `_harness.setup()` supplies placeholder env values and stubs
+for the uninstalled packages, so brain_ops and summariser load without supabase
+or the google SDK being present. The stubs raise if called, so nothing here can
+pass against a fake.
 
     python3 tests/test_brain.py
 """
 import os
-import re
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _harness import setup  # noqa: E402
+setup()
 
-# ── Load the helpers without importing the modules' heavy dependencies ──────
-# brain_ops imports supabase; summariser imports google.genai. We only want the
-# pure functions, so pull them out of the source directly.
-
-
-def _load_pure(path: str, names: list[str], extra_globals: dict | None = None):
-    src = open(os.path.join(os.path.dirname(__file__), "..", path)).read()
-    tree_globals = {"re": re, "__name__": "pure"}
-    tree_globals.update(extra_globals or {})
-    import ast
-    tree = ast.parse(src)
-    keep = [
-        n for n in tree.body
-        if isinstance(n, (ast.FunctionDef, ast.Assign))
-        and (getattr(n, "name", None) in names
-             or (isinstance(n, ast.Assign)
-                 and any(getattr(t, "id", None) in names for t in n.targets)))
-    ]
-    exec(compile(ast.Module(body=keep, type_ignores=[]), path, "exec"), tree_globals)
-    return tree_globals
-
-
-brain = _load_pure(
-    "executors/brain_ops.py",
-    ["_tokens", "_stem", "_similarity", "_STOPWORDS", "_SUPERSEDE_THRESHOLD", "render_directives", "VALID_SCOPES"],
-    {"BRAIN_MAX_CHARS": 6000},
+from executors.brain_ops import (                    # noqa: E402
+    _similarity, render_directives as _render, _SUPERSEDE_THRESHOLD as THRESHOLD,
 )
-summ = _load_pure(
-    "summariser.py",
-    ["_split_sections", "_parse_rules"],
-    {"BRAIN_MAX_PROPOSALS_PER_RUN": 2, "VALID_SCOPES": {
-        "general", "code", "calendar", "email", "tasks", "news", "health", "travel"}},
-)
-
-_similarity = brain["_similarity"]
-_render = brain["render_directives"]
-_split = summ["_split_sections"]
-_parse = summ["_parse_rules"]
-THRESHOLD = brain["_SUPERSEDE_THRESHOLD"]
+from summariser import _split_sections as _split, _parse_rules as _parse  # noqa: E402
+import executors.brain_ops as brain_ops                                    # noqa: E402
 
 failures = []
 
@@ -119,13 +88,21 @@ check_true("has closing delimiter", rendered.strip().endswith("--- END DIRECTIVE
 
 # The char cap is a last line of defence for rows written outside the executor
 # (a manual dashboard edit). Verify it actually truncates.
-brain["BRAIN_MAX_CHARS"] = 50
-capped = _render([
-    {"directive": "A" * 40, "scope": "general", "weight": 5},
-    {"directive": "B" * 40, "scope": "general", "weight": 4},
-])
-check_true("char cap truncates the set", "B" * 40 not in capped)
-brain["BRAIN_MAX_CHARS"] = 6000
+# Patched on the real module: brain_ops does `from config import
+# BRAIN_MAX_CHARS`, so the name lives in its namespace and render_directives
+# reads it at call time. Restored in a finally, so a failure here cannot leave
+# a 50-character budget behind for every later assertion.
+_real_cap = brain_ops.BRAIN_MAX_CHARS
+try:
+    brain_ops.BRAIN_MAX_CHARS = 50
+    capped = _render([
+        {"directive": "A" * 40, "scope": "general", "weight": 5},
+        {"directive": "B" * 40, "scope": "general", "weight": 4},
+    ])
+    check_true("char cap truncates the set", "B" * 40 not in capped)
+finally:
+    brain_ops.BRAIN_MAX_CHARS = _real_cap
+check("...and the real cap is restored", brain_ops.BRAIN_MAX_CHARS, 6000)
 
 print("\n── summariser section splitting ───────────────────────")
 
