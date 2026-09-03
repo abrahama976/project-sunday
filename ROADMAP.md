@@ -13,7 +13,7 @@ Last updated: **2026-09-02**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260902120000` (`travel_alerts` applied directly) |
+| Supabase | Up | Migrations through `20260903200000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
 | `apps/worker` | Running | Heartbeat `online`; jobs firing. Needs a `git pull` to pick up Phase 4c |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
@@ -23,7 +23,7 @@ Last updated: **2026-09-02**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. Needs an ORS key and one live Sydney trip |
+| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. The network can now actually be *saved* (4f); it fills on the next worker restart. Still owes one live Sydney trip |
 
 ---
 
@@ -195,10 +195,10 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4c — `leave_by`, `travel_watch`, `travel_alerts`, startup checks
 - [x] 4d — **the search** (below)
 - [x] 4e — **the local network** (below)
-- [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs
-      `OPENROUTESERVICE_API_KEY` and a worker restart; the banner's
-      `[worker] TfNSW: ✓` line is the answer four rounds of work rest on.
-- [ ] 4f — disruption alerts, and learning regular destinations from calendar
+- [x] 4f — **saving it** (below). Discovery worked; persistence never did
+- [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs a
+      worker restart, which also fills `nearby_services` for the first time.
+- [ ] 4g — disruption alerts, and learning regular destinations from calendar
       history
 
 **4d — it searches now, rather than asking once.** One query returns five
@@ -258,6 +258,32 @@ radius is 5 km.
 **Startup checks exist because a key being set proved nothing.** `check_tfnsw`
 and `check_openrouteservice` call the live APIs and print a ✓/✗ banner. They are
 also the only part of the travel code with no test coverage, by necessity.
+
+**4f — the local network is saved, not just found.** 4e shipped with a key
+PostgREST cannot target. `nearby_services_unique_idx` was an *expression* index
+on `COALESCE(headsign, '')`; supabase-py's
+`on_conflict="user_id,place_label,stop_name,route,headsign"` reaches Postgres as
+a plain column list, and Postgres will not match a plain list to an indexed
+expression. Every write failed `42P10`. Discovery found **306, 309, 343, 358,
+N20** near Gardeners Rd and stored **zero rows**, so every trip fell straight
+back to the single baseline query 4e existed to replace.
+
+The COALESCE was there to make `NULL` and `''` collide, since two NULLs do not
+conflict under a plain unique index and each weekly run would duplicate every
+unlabelled service. Removing the NULL is the better answer: discovery already
+writes `''` for "no destination shown", so `headsign` is now `NOT NULL DEFAULT
+''` under a plain unique **constraint**.
+
+The SQL test that should have caught this wrote `ON CONFLICT (…, COALESCE(
+headsign, ''))` — matching the index rather than the caller. Legal from psql,
+and not a statement the client is capable of sending, so it passed against a
+schema on which every real write failed. Its replacement issues the upsert in
+the client's shape, and asserts a `pg_constraint` row rather than merely an
+index, because only the plain-column form appears there.
+
+The job also lied on the way out: it printed the routes it had found and a count
+of zero saved, in the same cheerful line. It now says outright that it saved
+none of them, and what that costs.
 
 ---
 
