@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-09-02**
+Last updated: **2026-09-04**
 
 ---
 
@@ -15,7 +15,7 @@ Last updated: **2026-09-02**
 |---|---|---|
 | Supabase | Up | Migrations through `20260903200000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running | Heartbeat `online`; jobs firing. Needs a `git pull` to pick up Phase 4c |
+| `apps/worker` | Running | Heartbeat `online`; jobs firing. Pulled 2026-09-04 through 4f — discovery ran and wrote for the first time. Needs another pull for 4g/4h |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -23,7 +23,7 @@ Last updated: **2026-09-02**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. The network can now actually be *saved* (4f); it fills on the next worker restart. Still owes one live Sydney trip |
+| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. 4f made it savable and it saved — ten routes, all hanging off the user's *address* rather than a stop (4h). Those ten are retired; discovery re-runs on the next restart. Still owes one live Sydney trip |
 
 ---
 
@@ -197,9 +197,10 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4e — **the local network** (below)
 - [x] 4f — **saving it** (below). Discovery worked; persistence never did
 - [x] 4g — **what day it is** (below). Two separate ways the time was wrong
+- [x] 4h — **a stop, not an address** (below). Discovery saved a fake stop
 - [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs a
       worker restart, which also fills `nearby_services` for the first time.
-- [ ] 4h — disruption alerts, and learning regular destinations from calendar
+- [ ] 4i — disruption alerts, and learning regular destinations from calendar
       history
 
 **4d — it searches now, rather than asking once.** One query returns five
@@ -313,6 +314,41 @@ unreadable one rather than dropping it silently: a dropped `arrive_by` turns
 "get me there by 9" into "leave now", which looks like an answer and is not the
 one that was asked for. Pure, so both sides of the boundary are pinned in tests
 without a network.
+
+**4h — a stop, not an address.** 4f made discovery able to save. What it saved
+was one fake stop.
+
+`_find_stops` asked `stop_finder` with `type_sf=coord`. That call reverse-
+geocodes: it handed back the address itself as a single pseudo-location,
+
+    coord:4888949:3761579:GDAV:314 Gardeners Rd, Rosebery:0
+
+at the user's own front door. So the radius filter had nothing to filter, and
+all ten discovered services were attributed to that one id — every `walk_min`
+0, every mode a bus, Green Square (1.3 km, inside the 2 km rail radius) and the
+metro never considered, because no real stop was ever in the list. The
+boarding-point fan-out then fired five near-identical queries from one point,
+which is precisely the single-corridor behaviour 4e existed to replace.
+
+It hid because `departure_mon` accepts a `coord:` id and answers with a
+proximity scan, so the routes that came back were real: 301, 303, 306, 309,
+343, 358 all genuinely run past that address. And the startup banner said
+`TfNSW: ✓` throughout, because `check_tfnsw` searches by *name*, which works.
+A passing check that proves a different thing — the same shape as the SQL test
+in 4f.
+
+Discovery now asks `/v1/tp/coord`, the endpoint whose question is "what is near
+this point", and falls back to `stop_finder`. Both paths run through
+`_stops_from_locations`, which drops pseudo-ids, so the fallback cannot
+reintroduce the bug and a wrong guess at the coord parameters degrades to
+"found nothing" — non-destructive, since the job leaves the inventory alone
+when it finds nothing.
+
+Two loose ends closed with it. `load_nearby_services` drops pseudo-id rows on
+read, so a fixed discovery cannot lose to the data the broken one left behind;
+and the startup bootstrap counts rows keyed to a *real* stop, so ten retired
+fake ones no longer look like a local network and suppress the run that
+replaces them.
 
 ---
 

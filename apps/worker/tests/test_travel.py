@@ -29,8 +29,9 @@ from executors.travel_ops import (          # noqa: E402
     _trip_params, park_ride_depart_at, headway_from_departures,
     choose_boarding_points, service_label, describe_frequency,
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
-    parse_user_time, check_requested_time,
+    parse_user_time, check_requested_time, is_real_stop_id,
 )
+from jobs import _stops_from_locations                        # noqa: E402
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
 from jobs import travel_replan_due                            # noqa: E402
 
@@ -337,6 +338,66 @@ check("an arrival deadline flips the macro",
 # A boarding-point search is the one that starts somewhere else, and says so.
 check("a stop id is declared as a stop",
       _trip_params("10101", "Work", origin_type="stop")["type_origin"], "stop")
+
+
+print("\n── a stop, or an address wearing a stop's clothes ────")
+
+# The exact id production saved, ten times over, one per route.
+REAL_COORD_PSEUDO_ID = "coord:4888949:3761579:GDAV:314 Gardeners Rd, Rosebery:0"
+
+check("the id discovery actually saved is not a stop",
+      is_real_stop_id(REAL_COORD_PSEUDO_ID), False)
+check("a numeric global stop id is", is_real_stop_id("200060"), True)
+check("...and one with a platform suffix is", is_real_stop_id("2000441:2"), True)
+
+for pseudo in ("poiID:12:34", "streetID:99", "loc:abc", "address:1 Foo St"):
+    check(f"{pseudo.split(':')[0]} is not a stop", is_real_stop_id(pseudo), False)
+
+check("case does not rescue it", is_real_stop_id("COORD:1:2"), False)
+check("nor does leading whitespace", is_real_stop_id("  coord:1:2"), False)
+check("an empty id is not a stop", is_real_stop_id(""), False)
+check("None is not a stop", is_real_stop_id(None), False)
+
+
+print("\n── _stops_from_locations() ───────────────────────────")
+
+HOME = (-33.922863, 151.206547)          # 314 Gardeners Rd, as saved
+
+# What stop_finder actually returned: the address, echoed back, and nothing
+# else. Everything downstream was correct about a place you cannot board at.
+address_only = [{
+    "id": REAL_COORD_PSEUDO_ID,
+    "name": "314 Gardeners Rd, Rosebery",
+    "coord": [-33.922854, 151.206547],
+    "productClasses": [5],
+}]
+check("the address-only response yields no stops",
+      _stops_from_locations(address_only, HOME, 2000), [])
+
+# A real one, mixed with the pseudo-location EFA likes to include.
+mixed = [
+    {"id": REAL_COORD_PSEUDO_ID, "name": "314 Gardeners Rd",
+     "coord": [-33.922854, 151.206547], "productClasses": [5]},
+    {"id": "2018130", "name": "Gardeners Rd at Rosebery",
+     "coord": [-33.9235, 151.2050], "productClasses": [5]},
+    {"id": "200070", "name": "Green Square Station",
+     "coord": [-33.9070, 151.2010], "productClasses": [1]},
+]
+got = _stops_from_locations(mixed, HOME, 2000)
+check("the pseudo-location is dropped and the real stops kept",
+      [s["id"] for s in got], ["2018130", "200070"])
+check("...nearest first",
+      [s["name"] for s in got], ["Gardeners Rd at Rosebery", "Green Square Station"])
+check_true("...with a real walking distance, not zero",
+           got[0]["distance_m"] > 50)
+check("...and product classes preserved, so rail is distinguishable",
+      got[1]["classes"], {1})
+
+# The radius still applies, and now it has something to apply to.
+check("a stop beyond the radius is excluded",
+      [s["id"] for s in _stops_from_locations(mixed, HOME, 300)], ["2018130"])
+check("a location with no coordinate is skipped",
+      _stops_from_locations([{"id": "200070", "name": "X"}], HOME, 2000), [])
 
 
 print("\n── the time the user asked for ───────────────────────")

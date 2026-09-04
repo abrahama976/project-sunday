@@ -27,7 +27,7 @@ from executors.brain_ops import brain_learn
 from executors.web_fetch import web_fetch
 from utils import generate_with_retry, resolve_user
 from executors.web_search_ops import web_search
-from executors.travel_ops import travel_directions, transit_departures, trip_plan, leave_by, nearby_services
+from executors.travel_ops import travel_directions, transit_departures, trip_plan, leave_by, nearby_services, is_real_stop_id
 from executors.calendar_ops import calendar_query, calendar_create, calendar_update
 from executors.gmail_ops import gmail_search, gmail_draft, gmail_read_body, gmail_priority_scan
 from executors.task_ops import task_create, task_update, task_list
@@ -563,11 +563,18 @@ async def main():
     # and cannot double-fire against the scheduler.
     async def _bootstrap_nearby_services():
         try:
+            # Counts rows keyed to a REAL stop, not merely any row. The first
+            # discovery saved ten services hanging off a `coord:` pseudo-id —
+            # the user's address echoed back by stop_finder — which are now
+            # retired but still present. Counting those would report a local
+            # network that exists and cannot be used, and the bootstrap would
+            # skip the run that replaces them.
             existing = await asyncio.to_thread(
                 lambda: client.table("nearby_services")
-                .select("id", count="exact", head=True).limit(1).execute()
+                .select("stop_id").limit(200).execute()
             )
-            if (getattr(existing, "count", None) or 0) > 0:
+            rows = getattr(existing, "data", None) or []
+            if any(is_real_stop_id(r.get("stop_id")) for r in rows):
                 return
             print("[worker] no local transit network yet — discovering it now", flush=True)
             await sched.run_now("refresh_nearby_services")
