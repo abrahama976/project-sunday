@@ -6,6 +6,9 @@ from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUT
                     BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M,
                     USER_TIMEZONE)
 from utils import resolve_origin
+from travel.contracts import ResolvedPlace, NOT_FOUND
+from travel.resolve import candidate_from_location, choose_place, saved_place_match
+from travel.gate import gate_journeys, rejection_summary
 
 # ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
 # Was Google Maps. The Directions API returns REQUEST_DENIED without a billing
@@ -1062,12 +1065,47 @@ async def _ors_route(http, start, end, profile="driving-car"):
         return (None, None)
 
 
-async def _tfnsw_geocode(http, headers, text):
-    """An address to (lat, lng) via TfNSW stop_finder, or None. Never raises.
+async def resolve_saved_label(client, user_id, text) -> dict | None:
+    """`{origin, label}` when `text` names one of the user's saved places.
 
-    Exists so the transit half of this project does not depend on a driving
-    directions provider. stop_finder takes free text and returns coordinates,
-    on the key and endpoint the job already uses.
+    Coordinates rather than the address string, for the same reason
+    resolve_origin prefers them: they cannot be mis-geocoded on the way back
+    out. Returns None for anything that is not a saved label, so a real place
+    name falls through to the provider untouched.
+    """
+    if client is None or not user_id or not text:
+        return None
+    try:
+        res = await asyncio.to_thread(
+            lambda: client.table("saved_places")
+            .select("label, address, lat, lng")
+            .eq("user_id", user_id)
+            .limit(20)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[trip] could not read saved_places: {e}", flush=True)
+        return None
+
+    place = saved_place_match(text, getattr(res, "data", None) or [])
+    if not place:
+        return None
+    if place.get("lat") is not None and place.get("lng") is not None:
+        return {"origin": f"{place['lat']},{place['lng']}", "label": place["label"]}
+    if place.get("address"):
+        return {"origin": place["address"], "label": place["label"]}
+    return None
+
+
+async def resolve_place(http, headers, text, origin_ll=None,
+                        allow_long_distance=False):
+    """What `text` means, as a ResolvedPlace. Never raises.
+
+    Replaces a geocoder that took the first candidate carrying a parseable
+    coordinate, whatever it was — which is how "Sans Souci" became Narrabri and
+    "Newtown" became the wrong Newtown. EFA returns isBest, matchQuality, type
+    and a coordinate; all four are now used, and the choosing is done by
+    `choose_place`, which is pure and tested.
     """
     params = {
         "outputFormat": "rapidJSON",
@@ -1083,13 +1121,29 @@ async def _tfnsw_geocode(http, headers, text):
         locations = (res.json() or {}).get("locations") or []
     except Exception as e:
         print(f"[trip] TfNSW geocode failed: {e}")
-        return None
+        return ResolvedPlace(
+            requested=text, state=NOT_FOUND, source="provider",
+            reason=("I couldn't reach the transit map just now, so I can't "
+                    f"place '{text}'. Worth trying again in a moment."))
 
-    for loc in locations:
-        coord = _coord_pair(loc.get("coord"))
-        if coord:
-            return coord
-    return None
+    candidates = [
+        candidate_from_location(loc, _coord_pair, origin_ll, haversine_m)
+        for loc in locations
+    ]
+    return choose_place(text, candidates,
+                        allow_long_distance=allow_long_distance)
+
+
+async def _tfnsw_geocode(http, headers, text):
+    """An address to (lat, lng) via TfNSW stop_finder, or None. Never raises.
+
+    The coordinates-only path, kept for callers that have no origin to measure
+    against and no user to ask — park-and-ride station lookups and the driving
+    comparison. Anything user-facing should go through `resolve_place`, which
+    can say *why* it failed.
+    """
+    resolved = await resolve_place(http, headers, text)
+    return resolved.coords()
 
 
 async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
@@ -1100,26 +1154,40 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
     the radius is applied here. 5 km by default — far enough to reach a station
     worth driving to, close enough that the drive stays "once in a while".
     """
-    params = {
-        "outputFormat": "rapidJSON",
-        "coordOutputFormat": "EPSG:4326",
-        "type_sf": "coord",
-        # EFA wants X:Y, which is lon:lat — the opposite of everything else here.
-        "name_sf": f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326",
-        "TfNSWSF": "true",
-        "version": "10.2.1.42",
-    }
-    try:
-        res = await http.get(STOP_FINDER_URL, headers=headers, params=params,
-                             timeout=ORS_TIMEOUT)
-        res.raise_for_status()
-        locations = (res.json() or {}).get("locations") or []
-    except Exception as e:
-        print(f"[trip] stop_finder failed: {e}", flush=True)
+    # /v1/tp/coord, for the same reason discovery moved to it: stop_finder with
+    # type_sf=coord reverse-geocodes and returns the ADDRESS as a single
+    # `coord:` pseudo-location. Its productClasses said "bus", the rail filter
+    # below then rejected it, and park-and-ride has therefore never produced a
+    # single candidate — silently, because an empty list is also what "no
+    # station nearby" looks like.
+    efa_coord = f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326"
+    locations = []
+    for type_1 in ("STOP", "GIS_POINT"):
+        try:
+            res = await http.get(
+                COORD_URL, headers=headers, timeout=ORS_TIMEOUT,
+                params={"outputFormat": "rapidJSON",
+                        "coordOutputFormat": "EPSG:4326",
+                        "coord": efa_coord, "inclFilter": 1, "type_1": type_1,
+                        "radius_1": int(radius_m), "version": "10.2.1.42"})
+            res.raise_for_status()
+            found = (res.json() or {}).get("locations") or []
+        except Exception as e:
+            print(f"[trip] coord({type_1}) failed: {e}", flush=True)
+            continue
+        if any(is_real_stop_id(loc.get("id")) for loc in found):
+            locations = found
+            break
+
+    if not locations:
+        print("[trip] no stations found near the origin — park-and-ride "
+              "has nothing to offer for this trip", flush=True)
         return []
 
     out = []
     for loc in locations:
+        if not is_real_stop_id(loc.get("id")):
+            continue
         classes = set(loc.get("productClasses") or [])
         # No productClasses at all is kept: absent data is not evidence against.
         if classes and not (classes & _RAIL_CLASSES):
@@ -1296,6 +1364,18 @@ async def plan_journeys(
                 "and no default saved place. Add one under Settings → Places.")}
         origin = resolved["origin"]
         origin_note = f" (from {resolved['source']})"
+    else:
+        # `origin="home"` is the model naming a saved place rather than omitting
+        # the argument, and it used to be sent to EFA as free text. It matched
+        # some other Home in NSW and produced a journey leaving at 6:20 PM to
+        # arrive at 3:07 PM — 1248 minutes, 783 of them waiting — which was then
+        # offered as the best option. Omitting the origin had always worked
+        # because that path reads saved_places; naming it did not, because this
+        # one did not. Same lookup, both ways in.
+        saved = await resolve_saved_label(client, user_id, origin)
+        if saved:
+            origin = saved["origin"]
+            origin_note = f" (from {saved['label']})"
 
     headers = {"Authorization": f"apikey {TFNSW_API_KEY}", "Accept": "application/json"}
     full = depth != "baseline"
@@ -1314,20 +1394,31 @@ async def plan_journeys(
         # project has ever planned came back empty. stop_finder resolves the
         # same text happily, so it goes through there first.
         origin_ll = _as_lonlat(origin)
-        origin_ll = (origin_ll[1], origin_ll[0]) if origin_ll else \
-            await _tfnsw_geocode(http, headers, origin)
-        dest_ll = _as_lonlat(destination)
-        dest_ll = (dest_ll[1], dest_ll[0]) if dest_ll else \
-            await _tfnsw_geocode(http, headers, destination)
+        if origin_ll:
+            origin_ll = (origin_ll[1], origin_ll[0])
+        else:
+            resolved_origin = await resolve_place(http, headers, origin)
+            if not resolved_origin.ok:
+                return {"ok": False, "error": resolved_origin.reason}
+            origin_ll = resolved_origin.coords()
 
-        if not dest_ll:
-            return {"ok": False, "error": (
-                f"I couldn't find '{destination}' on the transit map. Try a stop "
-                "name, a suburb, or a more specific address.")}
-        if not origin_ll:
-            return {"ok": False, "error": (
-                f"I couldn't find '{origin}' on the transit map, so I don't know "
-                "where to start from.")}
+        # The destination is measured against the origin, which is what turns
+        # "Sans Souci" resolving to Narrabri from an answer into a rejection.
+        # Distance is only meaningful once the start is known, so this runs
+        # second rather than alongside.
+        dest_ll = _as_lonlat(destination)
+        if dest_ll:
+            dest_ll = (dest_ll[1], dest_ll[0])
+        else:
+            resolved_dest = await resolve_place(http, headers, destination,
+                                                origin_ll=origin_ll)
+            if not resolved_dest.ok:
+                # Ambiguous, implausible and not-found each keep their own
+                # wording. Collapsing them is what produced "there's a
+                # limitation with the public transport data" when the truth was
+                # "I looked up the wrong Newtown".
+                return {"ok": False, "error": resolved_dest.reason}
+            dest_ll = resolved_dest.coords()
 
         # Coordinates from here on: unambiguous, and they cannot be
         # re-interpreted differently by each query in the fan-out.
@@ -1392,8 +1483,24 @@ async def plan_journeys(
     checked = verify_journeys(deduped, _dt_now_utc(), arrive_dt,
                               (drive or {}).get("minutes"),
                               PARK_RIDE_MIN_SAVING_MIN)
+
+    # The plausibility gate, after the existing checks and before ranking.
+    # verify_journeys asks whether an option is worse than another option;
+    # this asks whether it is an option at all. Both of the itineraries that
+    # reached chat as "Best option" — 1248 minutes arriving before it departed,
+    # and 1953 minutes via Werris Creek — passed everything that existed and
+    # fail several rules here independently.
+    checked, rejected = gate_journeys(
+        checked, _dt_now_utc(), arrive_dt, (drive or {}).get("minutes"))
+
     if not checked:
+        # Say what was wrong with what was found. "None of them work" invites a
+        # retry of the same question; naming the fault is what lets the user —
+        # or the model — change something that matters.
+        detail = rejection_summary(rejected)
         return {"ok": False, "error": (
+            f"I found {len(rejected)} journey(s) to {destination} and none of "
+            f"them are usable: {detail}." if detail else
             f"I found journeys to {destination}, but none of them work: they have "
             "either already departed or arrive too late.")}
 

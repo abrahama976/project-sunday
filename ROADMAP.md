@@ -15,7 +15,7 @@ Last updated: **2026-09-04**
 |---|---|---|
 | Supabase | Up | Migrations through `20260903200000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running | Heartbeat `online`; jobs firing. Pulled 2026-09-04 through 4f — discovery ran and wrote for the first time. Needs another pull for 4g/4h |
+| `apps/worker` | Running | Heartbeat `online`; jobs firing. Pulled 2026-09-04 through 4f — discovery ran and wrote for the first time. Needs another pull for 4g–4i |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -23,7 +23,7 @@ Last updated: **2026-09-04**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | Built, unproven | Searches the real local network (`nearby_services`) + driving. 4f made it savable and it saved — ten routes, all hanging off the user's *address* rather than a stop (4h). Those ten are retired; discovery re-runs on the next restart. Still owes one live Sydney trip |
+| **Travel** | **Proven, partly** | 2026-09-04: Rosebery → Newtown, leave 7:23 PM arrive 7:58 PM on the 358, with a driving comparison. That came from the **baseline query alone** — `nearby_services` held only the retired fake rows (4h), so the boarding-point fan-out has still never run. Park-and-ride never has either (4i) |
 
 ---
 
@@ -198,9 +198,15 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4f — **saving it** (below). Discovery worked; persistence never did
 - [x] 4g — **what day it is** (below). Two separate ways the time was wrong
 - [x] 4h — **a stop, not an address** (below). Discovery saved a fake stop
-- [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs a
-      worker restart, which also fills `nearby_services` for the first time.
-- [ ] 4i — disruption alerts, and learning regular destinations from calendar
+- [x] 4i — **which place, and is this journey real** (below). `resolve_place`
+      and the plausibility gate
+- [x] **Proved it.** 2026-09-04, Rosebery → Newtown: leave 7:23 PM, arrive
+      7:58 PM, 358 from Lakes Hotel, with the driving comparison. Four attempts,
+      each defeated by a different bug — all four are fixed in 4i.
+- [ ] **Prove the fan-out.** The trip above came from the *baseline* query
+      alone — `nearby_services` still held only the retired fake rows, so no
+      boarding-point search ran. Needs a restart carrying 4h.
+- [ ] 4j — disruption alerts, and learning regular destinations from calendar
       history
 
 **4d — it searches now, rather than asking once.** One query returns five
@@ -349,6 +355,45 @@ read, so a fixed discovery cannot lose to the data the broken one left behind;
 and the startup bootstrap counts rows keyed to a *real* stop, so ten retired
 fake ones no longer look like a local network and suppress the run that
 replaces them.
+
+**4i — which place, and is this journey real.** One question, "how do I get to
+Newtown", took four attempts on 2026-09-04. Each was defeated by a different
+thing, and the trace has all four.
+
+*"Newtown" resolved to the wrong Newtown.* `_tfnsw_geocode` took the **first**
+candidate carrying a parseable coordinate, whatever it was — the same bug that
+made "Sans Souci" resolve near Narrabri. EFA returns `isBest`, `matchQuality`,
+`type` and a coordinate, and all four were being discarded. `travel/resolve.py`
+now uses them: the provider's own best answer first, then its match score, then
+kind, then proximity to the origin — which is what turns a 500 km candidate
+from an answer into a rejection. Ambiguity is only raised when survivors
+genuinely tie *and* sit far enough apart to be different places, because a
+question the user has to answer is a worse outcome than a right answer. Two
+entrances to one station do not count.
+
+*`origin: "home"` was sent to TfNSW as free text.* Omitting the origin had
+always worked — that path reads `saved_places`. Naming it did not, because this
+path did not, so the literal string matched some other Home in NSW and produced
+a journey **leaving at 6:20 PM to arrive at 3:07 PM**: 1248 minutes, 783 of them
+waiting. `resolve_saved_label` closes the gap; both ways in now reach the same
+lookup.
+
+*And it was offered as the best option.* Nothing between the provider and the
+answer had an opinion about whether a journey was survivable. `travel/gate.py`
+is that opinion — pure arithmetic on numbers `summarise_journey` already
+produces, so it costs no request and stays explainable. Arrival before
+departure, a single wait over 90 minutes, waiting more than half the trip, more
+than four times the driving estimate, arriving on a day nobody asked about, a
+departure already past, arrival after the deadline. The rules overlap
+deliberately: the Werris Creek itinerary fails four of them independently, and
+the gate should not depend on knowing which upstream bug produced its input.
+Rejections carry their reason, so the failure message says *what was wrong*
+rather than "none of them work", which only invites the same question again.
+
+Also fixed alongside: `_nearby_stations` had the same `type_sf=coord` bug as
+discovery, returning the address, whose product class is bus — so the rail
+filter rejected it and **park-and-ride has never produced a single candidate**,
+silently, because an empty list also looks like "no station nearby".
 
 ---
 
