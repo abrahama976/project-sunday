@@ -6,6 +6,13 @@ Acceptance criteria:
 (c) Concurrent increments don't double-count (atomic test)
 
 Note: Uses a real user_id from user_profile to satisfy FK constraints.
+
+NOT a pure test, and deliberately not on the `_harness` stubs: it writes real
+rows to `usage_counters` to prove the increment is atomic, which is the one
+thing a fake cannot demonstrate. It needs the dependencies installed and a live
+SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY, so it does not run in a bare
+checkout. Run it on the Mac, against the real project, when budget_gate
+changes.
 """
 import asyncio
 import sys

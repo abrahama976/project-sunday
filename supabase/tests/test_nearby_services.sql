@@ -48,15 +48,34 @@ SELECT assert_rejects(
 
 -- The refresh job upserts on this key; without it every weekly run would
 -- duplicate the whole inventory.
-SELECT assert('the upsert key exists',
-    EXISTS (SELECT 1 FROM pg_indexes
-             WHERE schemaname = 'public' AND tablename = 'nearby_services'
-               AND indexname = 'nearby_services_unique_idx'));
+--
+-- Asserted as a *constraint*, not merely an index. An expression index is a
+-- perfectly good unique key from psql and is unreachable from PostgREST, which
+-- is the difference that kept this table empty for a week. pg_constraint only
+-- lists the plain-column form, so this assertion cannot pass on the shape the
+-- client cannot use.
+SELECT assert('the upsert key is a plain-column unique constraint',
+    EXISTS (SELECT 1 FROM pg_constraint
+             WHERE conrelid = 'public.nearby_services'::regclass
+               AND conname  = 'nearby_services_unique'
+               AND contype  = 'u'));
 
+SELECT assert('the old expression index is gone',
+    NOT EXISTS (SELECT 1 FROM pg_indexes
+                 WHERE schemaname = 'public' AND tablename = 'nearby_services'
+                   AND indexname = 'nearby_services_unique_idx'));
+
+-- THE TEST THAT WAS MISSING.
+--
+-- supabase-py's `.upsert(row, on_conflict="user_id,place_label,stop_name,
+-- route,headsign")` reaches Postgres as exactly this: a plain column list. The
+-- previous version of this test wrote `COALESCE(headsign, '')` here, matching
+-- the index rather than the caller, so it passed against a schema on which
+-- every real write failed with 42P10. Write it the way the client writes it.
 INSERT INTO public.nearby_services
     (user_id, stop_name, route, headsign, mode_class, headway_min, walk_min)
 VALUES ('11111111-1111-1111-1111-111111111111', 'Gardeners Rd', '343', 'Central', 5, 12, 4)
-ON CONFLICT (user_id, place_label, stop_name, route, COALESCE(headsign, ''))
+ON CONFLICT (user_id, place_label, stop_name, route, headsign)
 DO UPDATE SET headway_min = EXCLUDED.headway_min;
 
 SELECT assert('re-running discovery updates in place rather than duplicating',
@@ -70,6 +89,30 @@ INSERT INTO public.nearby_services (user_id, stop_name, route, headsign, walk_mi
 VALUES ('11111111-1111-1111-1111-111111111111', 'Gardeners Rd', '343', 'Kingsford', 4);
 SELECT assert('the same route in the other direction is its own row',
     (SELECT count(*) = 2 FROM public.nearby_services WHERE route = '343'));
+
+-- '' is what "no destination shown" means, and it has to be a real value: two
+-- NULLs do not conflict with each other, so a nullable headsign under a plain
+-- unique key would let the weekly run duplicate every unlabelled service.
+SELECT assert_rejects(
+    'a NULL headsign is rejected',
+    $q$INSERT INTO public.nearby_services (user_id, stop_name, route, headsign)
+       VALUES ('11111111-1111-1111-1111-111111111111', 'Gardeners Rd', '999', NULL)$q$
+);
+
+INSERT INTO public.nearby_services (user_id, stop_name, route, walk_min)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Gardeners Rd', '999', 7);
+SELECT assert('an omitted headsign becomes the empty string, not NULL',
+    (SELECT headsign = '' FROM public.nearby_services WHERE route = '999'));
+
+-- And re-discovering that same unlabelled service updates it rather than
+-- adding a second copy — the case the COALESCE was there to cover.
+INSERT INTO public.nearby_services (user_id, stop_name, route, walk_min)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Gardeners Rd', '999', 9)
+ON CONFLICT (user_id, place_label, stop_name, route, headsign)
+DO UPDATE SET walk_min = EXCLUDED.walk_min;
+SELECT assert('an unlabelled service still upserts in place',
+    (SELECT count(*) = 1 AND max(walk_min) = 9
+       FROM public.nearby_services WHERE route = '999'));
 
 -- A route you added yourself, that the API does not report.
 INSERT INTO public.nearby_services (user_id, stop_name, route, headsign, walk_min, source)

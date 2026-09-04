@@ -1121,6 +1121,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
     # rewritten: a wipe-then-insert would drop is_hidden on every row, so a
     # route you retired would come back every week.
     written = 0
+    first_error = None
     for record in discovered:
         try:
             await asyncio.to_thread(
@@ -1130,10 +1131,30 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
             )
             written += 1
         except Exception as e:
+            first_error = first_error or e
             print(f"[nearby_services] could not save {record['route']} at {record['stop_name']}: {e}")
 
     routes = sorted({r["route"] for r in discovered})
-    print(f"[nearby_services] {written} services at {len({r['stop_name'] for r in discovered})} "
+    stops = len({r["stop_name"] for r in discovered})
+
+    # Discovery succeeding and persistence failing on every single row is the
+    # failure this job actually had, for a week: the upsert key was an
+    # expression index that PostgREST cannot target, so all of these lost to
+    # 42P10 while the summary line still cheerfully listed the routes it had
+    # found. A per-row warning in a log nobody reads was not enough. Say
+    # plainly that nothing was saved, and what it costs.
+    if not written:
+        print(f"[nearby_services] FOUND {len(discovered)} services at {stops} stops "
+              f"({', '.join(routes[:12])}) AND SAVED NONE OF THEM. Trip planning "
+              f"falls back to a single corridor until this is fixed. "
+              f"First error: {first_error}")
+        return
+
+    if written < len(discovered):
+        print(f"[nearby_services] {len(discovered) - written} of {len(discovered)} "
+              f"services could not be saved; first error: {first_error}")
+
+    print(f"[nearby_services] {written} services at {stops} "
           f"stops near {label}: {', '.join(routes[:12])}")
 
 
