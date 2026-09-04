@@ -165,8 +165,8 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "destination": {"type": "string", "description": "Where they are going — address or stop name"},
-                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."},
+                "destination": {"type": "string", "description": "Where they are going — a stop name, address or suburb. Include the city or suburb when a name could exist twice ('Newtown, Sydney'), otherwise you may be asked which one you meant."},
+                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location — that is the normal case. A saved place label ('home', 'work') is also understood."},
                 "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T07:00. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
                 "depart_at": {"type": "string", "description": "ISO-8601 LOCAL time they want to leave, e.g. 2026-09-05T07:00. Same rules as arrive_by: resolve against NOW, today or later."}
             },
