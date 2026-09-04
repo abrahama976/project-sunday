@@ -239,6 +239,57 @@ check_true("an empty string is not a time", as_datetime("") is None)
 check_true("nonsense is not a time, and does not raise",
            as_datetime("not a timestamp") is None)
 
+print("\n── the version the worker reports ────────────────────")
+
+# Added after an hour spent asking whether four merged fixes were wrong. They
+# were not running: the worker was on an older commit and nothing said so, so
+# it had to be inferred from model behaviour. The value of this string is that
+# it makes "is it deployed" a lookup rather than a deduction — which only holds
+# if it degrades honestly when git cannot answer.
+import version as _version                                     # noqa: E402
+
+
+def _with_git(fake):
+    """Run _read_version with a stubbed _git, restoring it afterwards."""
+    real = _version._git
+    _version._git = fake
+    try:
+        return _version._read_version()
+    finally:
+        _version._git = real
+
+
+def _fake_git(sha="", porcelain="", branch=""):
+    def run(*args):
+        if args[:2] == ("rev-parse", "--short"):
+            return sha
+        if args[0] == "status":
+            return porcelain
+        if args[:2] == ("rev-parse", "--abbrev-ref"):
+            return branch
+        return ""
+    return run
+
+
+check("a clean checkout reports just the sha",
+      _with_git(_fake_git(sha="82c3324", branch="main")), "82c3324 (main)")
+check("a dirty tree says so, because it matches no commit",
+      _with_git(_fake_git(sha="82c3324", porcelain=" M a.py", branch="main")),
+      "82c3324+dirty (main)")
+check("a branch that is not main is named",
+      _with_git(_fake_git(sha="abc1234", branch="claude/fix")),
+      "abc1234 (claude/fix)")
+check("a detached HEAD reports the sha alone",
+      _with_git(_fake_git(sha="abc1234", branch="HEAD")), "abc1234")
+
+# No git, or not a repository. The worker must still start — reporting
+# "unknown" is the honest answer, and silently reporting nothing would put us
+# straight back to guessing.
+check("no git at all degrades to unknown", _with_git(_fake_git()), "unknown")
+
+check_true("and the real VERSION is a non-empty string",
+           isinstance(_version.VERSION, str) and _version.VERSION != "")
+
 print()
 if failures:
     print(f"✗ {len(failures)} failure(s):\n")

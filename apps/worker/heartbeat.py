@@ -1,12 +1,18 @@
 import asyncio
 from supabase import Client
+from version import VERSION
 
 async def run_heartbeat(client: Client, interval: int = 60):
+    # `version` rides along with the liveness signal rather than being written
+    # once at startup: a heartbeat that says "online" without saying what is
+    # online answers half the question, and the half it omits cost an hour of
+    # debugging fixes that were merged and not running.
     while True:
         try:
             await asyncio.to_thread(
                 lambda: client.table("mac_heartbeat").upsert(
-                    {"id": 1, "last_seen": "now()", "status": "online"}
+                    {"id": 1, "last_seen": "now()", "status": "online",
+                     "version": VERSION}
                 ).execute()
             )
         except Exception as e:

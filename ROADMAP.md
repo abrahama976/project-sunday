@@ -13,9 +13,9 @@ Last updated: **2026-09-04**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260903200000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
+| Supabase | Up | Migrations through `20260904100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running | Heartbeat `online`; jobs firing. Pulled 2026-09-04 through 4f — discovery ran and wrote for the first time. Needs another pull for 4g–4i |
+| `apps/worker` | Running, **stale** | Heartbeat `online`, but the running process predates #40 — proven from behaviour, since it accepted a 2024 `depart_at` that `check_requested_time` refuses and planned a 500 km destination the gate rejects. 4g–4i are merged and **not running**. `mac_heartbeat.version` now answers this directly |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -66,6 +66,13 @@ Last updated: **2026-09-04**
       authorised.
 - [ ] Set `NTFY_TOPIC` in `apps/worker/.env`, and start Ollama
 - [ ] Watch one full scheduler cycle
+- [x] **The worker reports its commit.** Four fixes were merged, the answers in
+      chat did not change, and the obvious reading — that the fixes were wrong —
+      was wrong: the worker was running older code and nothing could say so. It
+      had to be inferred backwards from model behaviour. `mac_heartbeat.version`
+      and the startup banner now carry the git sha, so "is it deployed" is a
+      lookup. `+dirty` is included because a modified tree matches no commit,
+      and comparing its sha against a merged PR would prove nothing.
 
 ## Phase 1 — The agentic loop (Sprint 3.T1) · *done*
 

@@ -12,6 +12,7 @@ from config import (
     TOOL_TIER_MAP,
 )
 from heartbeat import run_heartbeat
+from version import VERSION
 from router import route_special, degraded_chat
 from agent_loop import run_agent_loop
 from summariser import maybe_summarise
@@ -444,7 +445,11 @@ async def _load_brain(client: Client) -> None:
 
 
 async def main():
-    print("[worker] Project Sunday worker starting...")
+    # The commit, first line, before anything else can fail. "Is the fix
+    # deployed?" was answered for an hour by inference from model behaviour —
+    # a 2024 date, a past time accepted, a 500 km destination planned — because
+    # nothing in the log or the database said which code was running.
+    print(f"[worker] Project Sunday worker starting... version {VERSION}")
     client = get_client()
     await asyncio.to_thread(lambda: fetch_and_cache_profile(client))
     await _load_brain(client)
