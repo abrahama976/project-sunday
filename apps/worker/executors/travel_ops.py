@@ -297,6 +297,39 @@ PARK_RIDE_PARKING_MIN = 5
 
 TRIP_URL = "https://api.transport.nsw.gov.au/v1/tp/trip"
 STOP_FINDER_URL = "https://api.transport.nsw.gov.au/v1/tp/stop_finder"
+# The endpoint that answers "what is NEAR this point". stop_finder answers a
+# different question — see is_real_stop_id.
+COORD_URL = "https://api.transport.nsw.gov.au/v1/tp/coord"
+
+# EFA location ids that are not stops. `coord:` is a reverse-geocoded ADDRESS
+# echoed back at you, and it is the one that cost a week of wrong answers:
+#
+#   coord:4888949:3761579:GDAV:314 Gardeners Rd, Rosebery:0
+#
+# stop_finder with type_sf=coord returned exactly that and nothing else, so
+# discovery saved ten routes hanging off a single fake stop at the user's own
+# front door — every walk_min 0, every mode a bus, Green Square and the metro
+# never considered because no real stop was ever in the list to filter.
+#
+# departure_mon accepts a coord: id and answers with a proximity scan, which is
+# why the routes looked right and hid the problem. A real TfNSW stop id is a
+# numeric global id; every pseudo-location carries a lowercase word prefix.
+_PSEUDO_ID_PREFIXES = ("coord:", "poiid:", "streetid:", "loc:", "address:")
+
+
+def is_real_stop_id(stop_id) -> bool:
+    """True for a TfNSW stop id, False for an EFA pseudo-location.
+
+    Deliberately a prefix denylist rather than "must be numeric": a future stop
+    id with a letter in it should not be silently discarded, whereas every
+    pseudo-location EFA emits is prefixed with what it is.
+    """
+    if not stop_id:
+        return False
+    text = str(stop_id).strip().lower()
+    if not text:
+        return False
+    return not text.startswith(_PSEUDO_ID_PREFIXES)
 
 
 def _parse_time(value):
@@ -1190,7 +1223,20 @@ async def load_nearby_services(client, user_id: str, place_label: str = "home") 
     except Exception as e:
         print(f"[trip] could not read nearby_services: {e}", flush=True)
         return []
-    return getattr(res, "data", None) or []
+
+    rows = getattr(res, "data", None) or []
+
+    # Rows saved before discovery learned the difference between a stop and an
+    # address. They carry a `coord:` pseudo-id at the user's own front door, so
+    # every one reports walk_min 0 and sorts above every real stop — which
+    # would let a fixed discovery still lose to the data the broken one left
+    # behind. Dropped on read rather than deleted: a read filter cannot destroy
+    # a row the user corrected by hand, and it keeps working if any survive.
+    usable = [r for r in rows if is_real_stop_id(r.get("stop_id"))]
+    if len(usable) != len(rows):
+        print(f"[trip] ignoring {len(rows) - len(usable)} nearby_services row(s) "
+              "attached to an address rather than a stop", flush=True)
+    return usable
 
 
 async def plan_journeys(

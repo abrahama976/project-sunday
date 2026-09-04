@@ -1158,16 +1158,92 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
           f"stops near {label}: {', '.join(routes[:12])}")
 
 
+def _stops_from_locations(locations, origin_ll, radius_m) -> list:
+    """EFA locations to stop records, pseudo-locations dropped. Pure.
+
+    Distance is computed here with haversine rather than read from EFA's own
+    `properties.distance`: the coordinate is already needed, the arithmetic is
+    free, and it is one less field whose meaning has to be taken on trust.
+    """
+    from executors.travel_ops import _coord_pair, haversine_m, is_real_stop_id
+
+    out = []
+    for loc in locations or []:
+        stop_id = loc.get("id")
+        # The whole point. An address echoed back is not somewhere you can
+        # catch a bus from, however willingly departure_mon answers for it.
+        if not is_real_stop_id(stop_id):
+            continue
+        coord = _coord_pair(loc.get("coord"))
+        if not coord:
+            continue
+        distance = haversine_m(origin_ll, coord)
+        if distance > radius_m:
+            continue
+        out.append({
+            "id": stop_id, "name": loc.get("name") or "",
+            "lat": coord[0], "lng": coord[1], "distance_m": distance,
+            "classes": set(loc.get("productClasses") or []),
+        })
+    out.sort(key=lambda s: s["distance_m"])
+    return out
+
+
 async def _find_stops(http, headers, origin_ll, radius_m) -> list:
-    """Stops within `radius_m`, with their product classes and distance."""
-    from executors.travel_ops import STOP_FINDER_URL, _coord_pair, haversine_m
+    """Stops within `radius_m`, with their product classes and distance.
+
+    Asks /v1/tp/coord — the endpoint whose question is "what is near this
+    point" — and falls back to stop_finder.
+
+    stop_finder was the original call, and it answers a different question.
+    Given type_sf=coord it reverse-geocodes and hands back the ADDRESS as a
+    single `coord:` pseudo-location, so the radius filter had nothing to filter
+    and discovery attributed every route to one fake stop at the front door.
+    Ten bus routes, every walk_min 0, no rail or metro ever considered. It went
+    unnoticed because departure_mon answers for a coord: id with a proximity
+    scan, so the routes that came back were real.
+
+    Both paths now run through _stops_from_locations, which drops pseudo-ids —
+    so the fallback cannot quietly reintroduce the bug, and a wrong guess at
+    the coord parameters degrades to "found nothing" rather than to something
+    plausible and wrong. refresh_nearby_services leaves the existing inventory
+    alone when nothing is found, so that failure is non-destructive.
+    """
+    from executors.travel_ops import COORD_URL, STOP_FINDER_URL
+
+    # EFA wants X:Y — longitude first, the opposite of everything else here.
+    efa_coord = f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326"
+
+    # type_1 selects what kind of thing to return, and the two spellings below
+    # are both current in EFA deployments. Trying the second only when the
+    # first yields nothing costs one extra request a week.
+    for type_1 in ("STOP", "GIS_POINT"):
+        params = {
+            "outputFormat": "rapidJSON",
+            "coordOutputFormat": "EPSG:4326",
+            "coord": efa_coord,
+            "inclFilter": 1,
+            "type_1": type_1,
+            "radius_1": int(radius_m),
+            "version": "10.2.1.42",
+        }
+        try:
+            res = await http.get(COORD_URL, headers=headers, params=params, timeout=20.0)
+            res.raise_for_status()
+            locations = (res.json() or {}).get("locations") or []
+        except Exception as e:
+            print(f"[nearby_services] coord({type_1}) failed: {e}")
+            continue
+        stops = _stops_from_locations(locations, origin_ll, radius_m)
+        if stops:
+            print(f"[nearby_services] coord({type_1}) found {len(stops)} stops")
+            return stops
 
     params = {
         "outputFormat": "rapidJSON",
         "coordOutputFormat": "EPSG:4326",
         "type_sf": "coord",
-        # EFA wants X:Y — longitude first, the opposite of everything else here.
-        "name_sf": f"{origin_ll[1]}:{origin_ll[0]}:EPSG:4326",
+        "name_sf": efa_coord,
         "TfNSWSF": "true",
         "version": "10.2.1.42",
     }
@@ -1179,21 +1255,12 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
         print(f"[nearby_services] stop_finder failed: {e}")
         return []
 
-    out = []
-    for loc in locations:
-        coord = _coord_pair(loc.get("coord"))
-        if not coord or not loc.get("id"):
-            continue
-        distance = haversine_m(origin_ll, coord)
-        if distance > radius_m:
-            continue
-        out.append({
-            "id": loc.get("id"), "name": loc.get("name") or "",
-            "lat": coord[0], "lng": coord[1], "distance_m": distance,
-            "classes": set(loc.get("productClasses") or []),
-        })
-    out.sort(key=lambda s: s["distance_m"])
-    return out
+    stops = _stops_from_locations(locations, origin_ll, radius_m)
+    if not stops and locations:
+        print(f"[nearby_services] stop_finder returned {len(locations)} location(s), "
+              "none of them a real stop — the coord endpoint is the one that "
+              "answers this question, and it returned nothing either.")
+    return stops
 
 
 async def _walk_minutes(http, origin_ll, stop):
