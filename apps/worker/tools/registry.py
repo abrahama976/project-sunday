@@ -167,8 +167,8 @@ TOOLS = [
             "properties": {
                 "destination": {"type": "string", "description": "Where they are going — address or stop name"},
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."},
-                "arrive_by": {"type": "string", "description": "ISO-8601 time they must arrive by"},
-                "depart_at": {"type": "string", "description": "ISO-8601 time they want to leave"}
+                "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T07:00. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
+                "depart_at": {"type": "string", "description": "ISO-8601 LOCAL time they want to leave, e.g. 2026-09-05T07:00. Same rules as arrive_by: resolve against NOW, today or later."}
             },
             "required": ["destination"]
         }
@@ -186,7 +186,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "destination": {"type": "string", "description": "Where they are going"},
-                "arrive_by": {"type": "string", "description": "ISO-8601 time they must arrive by"},
+                "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T09:30. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."}
             },
             "required": ["destination", "arrive_by"]

@@ -29,6 +29,7 @@ from executors.travel_ops import (          # noqa: E402
     _trip_params, park_ride_depart_at, headway_from_departures,
     choose_boarding_points, service_label, describe_frequency,
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
+    parse_user_time, check_requested_time,
 )
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
 from jobs import travel_replan_due                            # noqa: E402
@@ -336,6 +337,81 @@ check("an arrival deadline flips the macro",
 # A boarding-point search is the one that starts somewhere else, and says so.
 check("a stop id is declared as a stop",
       _trip_params("10101", "Work", origin_type="stop")["type_origin"], "stop")
+
+
+print("\n── the time the user asked for ───────────────────────")
+
+SYD = ZoneInfo("Australia/Sydney")
+
+# The bug this exists for. A model asked for "tomorrow at 7am" writes
+# 2026-09-05T07:00 with no offset. _parse_time calls that 07:00 UTC, which
+# _trip_params then renders as 17:00 in Sydney — a trip planned, correctly and
+# uselessly, for five in the afternoon.
+naive = parse_user_time("2026-09-05T07:00")
+check("a naive time is the user's wall clock, not UTC",
+      naive.astimezone(SYD).strftime("%H:%M"), "07:00")
+check("...and it reaches TfNSW as the hour that was asked for",
+      _trip_params("Home", "Work", depart_at="2026-09-05T07:00")["itdTime"], "0700")
+check("...on the right date",
+      _trip_params("Home", "Work", depart_at="2026-09-05T07:00")["itdDate"], "20260905")
+
+# An explicit offset is obeyed rather than overridden — the caller said what
+# they meant, so the local-time default does not apply.
+check("an explicit offset is left alone",
+      parse_user_time("2026-09-05T07:00+00:00").astimezone(SYD).strftime("%H:%M"),
+      "17:00")
+check("a Z suffix is still UTC",
+      parse_user_time("2026-09-05T07:00Z").astimezone(SYD).strftime("%H:%M"), "17:00")
+check_true("nonsense parses to None", parse_user_time("next tuesday-ish") is None)
+check_true("empty parses to None", parse_user_time("") is None)
+
+# check_requested_time: pure, both boundaries pinned.
+NOW = datetime(2026, 9, 4, 12, 0, tzinfo=SYD)
+
+
+def refusal(arrive_by=None, depart_at=None, now=NOW):
+    return check_requested_time(arrive_by, depart_at, now)[1]
+
+
+check_true("a future arrival is accepted",
+           refusal(arrive_by="2026-09-05T07:00") is None)
+check_true("a future departure is accepted",
+           refusal(depart_at="2026-09-04T18:00") is None)
+check_true("no time at all is accepted",
+           refusal() is None)
+
+# The year the model invented before the prompt carried a date.
+stale = refusal(arrive_by="2024-05-15T09:00")
+check_true("a 2024 arrival is refused", stale is not None)
+check_true("...and the refusal names the date it read, so the mistake is visible",
+           "2024" in (stale or "") and "May" in (stale or ""))
+check_true("...and says it is in the past", "already passed" in (stale or ""))
+
+check_true("a departure earlier today is refused",
+           refusal(depart_at="2026-09-04T08:00") is not None)
+
+# Both sides of the boundary. "Already past" must mean strictly before now:
+# a request for this exact minute is a request for now, not for the past.
+check_true("exactly now is not past", refusal(depart_at=NOW.isoformat()) is None)
+check_true("one minute ago is past",
+           refusal(depart_at=(NOW - timedelta(minutes=1)).isoformat()) is not None)
+check_true("one minute ahead is fine",
+           refusal(depart_at=(NOW + timedelta(minutes=1)).isoformat()) is None)
+
+# An unreadable time is refused, not silently dropped. Dropping arrive_by turns
+# "get me there by 9" into "leave now" — which looks like an answer, and is not
+# the one that was asked for.
+bad = refusal(arrive_by="quarter past nine")
+check_true("an unreadable time is refused", bad is not None)
+check_true("...and is not reported as being in the past",
+           "already passed" not in (bad or ""))
+check_true("...and quotes what it could not read", "quarter past nine" in (bad or ""))
+
+# The accepted case hands back parsed times, so callers need not re-parse.
+times, err = check_requested_time("2026-09-05T07:00", None, NOW)
+check_true("an accepted request returns its parsed times", err is None and times[0] is not None)
+check("...as the local hour asked for",
+      times[0].astimezone(SYD).strftime("%H:%M"), "07:00")
 
 
 print("\n── add_access_leg() — the arithmetic that keeps it honest ──")

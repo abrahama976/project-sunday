@@ -196,9 +196,10 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4d — **the search** (below)
 - [x] 4e — **the local network** (below)
 - [x] 4f — **saving it** (below). Discovery worked; persistence never did
+- [x] 4g — **what day it is** (below). Two separate ways the time was wrong
 - [ ] **Prove it.** Nothing here has planned a real Sydney trip yet. Needs a
       worker restart, which also fills `nearby_services` for the first time.
-- [ ] 4g — disruption alerts, and learning regular destinations from calendar
+- [ ] 4h — disruption alerts, and learning regular destinations from calendar
       history
 
 **4d — it searches now, rather than asking once.** One query returns five
@@ -284,6 +285,34 @@ index, because only the plain-column form appears there.
 The job also lied on the way out: it printed the routes it had found and a count
 of zero saved, in the same cheerful line. It now says outright that it saved
 none of them, and what that costs.
+
+**4g — what day it is.** Two independent time bugs, either of which is enough to
+answer the wrong question convincingly.
+
+*The prompt had no date.* `build_system_prompt()` stated none, so the model
+dated from its training data: "Blacktown tomorrow 7am" became `2024-05-15`, and
+TfNSW answered a question about May 2024 without complaint. Every briefing
+prompt in `jobs.py` already carried a date; the chat path — the only one that
+takes relative dates from a human — was the one without. It now opens with a
+`NOW:` line, rebuilt per call (`context/loader.py` caches the database reads,
+not the prompt string, so there is no stale copy to invalidate at midnight).
+
+*A naive time was read as UTC.* The subtler one, and it survived the first fix.
+Asked for 7am, a model writes `2026-09-05T07:00` with no offset. `_parse_time`
+is right to call that UTC — every TfNSW timestamp carries a zone — and wrong
+for anything a model writes: `_trip_params` converted it to **17:00** in Sydney
+and planned the trip, correctly and uselessly, for five in the afternoon. So
+user-supplied times go through `parse_user_time`, where a bare wall-clock time
+means the wall clock the user is looking at. An explicit offset is still obeyed.
+
+A prompt is a request, not a guarantee, so `check_requested_time` runs in
+`plan_journeys` — the one chokepoint both `trip_plan` and `leave_by` pass
+through — before anything is looked up or fetched. It refuses a time already
+past, naming the date it read so the mistake is visible, and refuses an
+unreadable one rather than dropping it silently: a dropped `arrive_by` turns
+"get me there by 9" into "leave now", which looks like an answer and is not the
+one that was asked for. Pure, so both sides of the boundary are pinned in tests
+without a network.
 
 ---
 

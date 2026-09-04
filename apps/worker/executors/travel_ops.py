@@ -3,7 +3,8 @@ import httpx
 import json
 import re
 from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUTES,
-                    BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M)
+                    BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M,
+                    USER_TIMEZONE)
 from utils import resolve_origin
 
 # ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
@@ -313,6 +314,76 @@ def _parse_time(value):
     return parsed
 
 
+def parse_user_time(value):
+    """A time the *user* asked for, to an aware datetime, or None. Never raises.
+
+    Deliberately not `_parse_time`, which reads a naive timestamp as UTC. That
+    is right for TfNSW, whose times always carry a zone, and wrong for anything
+    a model writes: asked for "tomorrow at 7am" it emits `2026-09-05T07:00`
+    with no offset, `_parse_time` calls that 07:00 UTC, and `_trip_params`
+    converts it to 17:00 in Sydney. The trip is then planned, correctly and
+    uselessly, for five in the afternoon.
+
+    A bare wall-clock time means the wall clock the user is looking at.
+    """
+    parsed = _parse_time_naive_ok(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        from zoneinfo import ZoneInfo
+        return parsed.replace(tzinfo=ZoneInfo(USER_TIMEZONE))
+    return parsed
+
+
+def _parse_time_naive_ok(value):
+    """ISO-8601 to a datetime, zone preserved as written. None if unparseable."""
+    if not value:
+        return None
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def check_requested_time(arrive_by, depart_at, now):
+    """The requested time as (arrive_dt, depart_dt), or a reason to refuse.
+
+    Returns `(times, None)` when the request is usable and `(None, message)`
+    when it is not. Pure, so the boundaries are testable without a network.
+
+    Two ways a request is unusable, and they need different answers:
+
+    - **Unparseable.** Say so rather than silently dropping it — a dropped
+      `arrive_by` turns "get me there by 9" into "leave now", which looks like
+      an answer and is not the one that was asked for.
+    - **Already past.** Before the date landed in the system prompt the model
+      dated from training and asked for 2024, and TfNSW answered a question
+      about 2024 without complaint. Planning a journey into the past is never
+      what was meant, so it is refused with the date it read, which is the
+      detail that makes the mistake obvious.
+    """
+    for label, raw in (("arrive_by", arrive_by), ("depart_at", depart_at)):
+        if raw and _parse_time_naive_ok(raw) is None:
+            return None, (
+                f"I couldn't read the time given for {label} ({raw!r}). "
+                "Give it as ISO-8601, like 2026-09-05T07:00.")
+
+    arrive = parse_user_time(arrive_by)
+    depart = parse_user_time(depart_at)
+
+    for label, when in (("arrive by", arrive), ("depart at", depart)):
+        if when is not None and when < now:
+            from zoneinfo import ZoneInfo
+            local = when.astimezone(ZoneInfo(USER_TIMEZONE))
+            return None, (
+                f"That time has already passed — you asked to {label} "
+                f"{local.strftime('%-I:%M %p on %A, %d %B %Y')}, which is in "
+                "the past. Tell me the day and time you actually mean.")
+
+    return (arrive, depart), None
+
+
 def summarise_journey(journey: dict) -> dict | None:
     """Reduce one TfNSW journey to the numbers worth comparing.
 
@@ -516,7 +587,7 @@ def park_ride_depart_at(depart_at, access_min, now):
     `add_access_leg` instead.
     """
     from datetime import timedelta as _td
-    base = _parse_time(depart_at) or now
+    base = parse_user_time(depart_at) or now
     return (base + _td(minutes=max(0, access_min or 0))).isoformat()
 
 
@@ -898,10 +969,12 @@ def _trip_params(origin, destination, arrive_by=None, depart_at=None,
         "itOptionsActive": 1,
         "computeMonomodalTripBicycle": "false",
     }
-    when = _parse_time(arrive_by or depart_at)
+    # parse_user_time, not _parse_time: these two come from the model, and a
+    # naive time it writes means the user's wall clock, not UTC.
+    when = parse_user_time(arrive_by or depart_at)
     if when:
         from zoneinfo import ZoneInfo
-        local = when.astimezone(ZoneInfo("Australia/Sydney"))
+        local = when.astimezone(ZoneInfo(USER_TIMEZONE))
         params["itdDate"] = local.strftime("%Y%m%d")
         params["itdTime"] = local.strftime("%H%M")
     return params
@@ -1157,6 +1230,15 @@ async def plan_journeys(
     if not TFNSW_API_KEY:
         return {"ok": False, "error": "Error: TFNSW_API_KEY is not set."}
 
+    # Before anything is looked up or fetched. The system prompt now states the
+    # date, which stops the model dating from training — but a prompt is a
+    # request, not a guarantee, and this is the one check that does not depend
+    # on the model having read it.
+    times, time_error = check_requested_time(arrive_by, depart_at, _dt_now_utc())
+    if time_error:
+        return {"ok": False, "error": time_error}
+    arrive_dt, _ = times
+
     origin_note = ""
     if not origin:
         if client is None or not user_id:
@@ -1261,7 +1343,7 @@ async def plan_journeys(
             f"from there to {destination} {when}. Worth trying a different time.")}
 
     deduped = dedupe_journeys(summaries)
-    checked = verify_journeys(deduped, _dt_now_utc(), _parse_time(arrive_by),
+    checked = verify_journeys(deduped, _dt_now_utc(), arrive_dt,
                               (drive or {}).get("minutes"),
                               PARK_RIDE_MIN_SAVING_MIN)
     if not checked:

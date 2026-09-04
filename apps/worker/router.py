@@ -1,10 +1,11 @@
 import asyncio
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
-from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL
+from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL, USER_TIMEZONE
 from utils import generate_with_retry
 from context.loader import get_profile, get_directives
 from executors.brain_ops import render_directives
@@ -14,7 +15,25 @@ from budget_gate import pick_model, check_and_increment, _groq_available
 
 def build_system_prompt() -> str:
     profile = get_profile()
+
+    # Stated first, because without it the model dates from its training data.
+    # "Blacktown tomorrow 7am" was resolved to 2024-05-15 and handed to
+    # trip_plan, which duly planned a journey eighteen months in the past. Every
+    # briefing prompt in jobs.py already carried a date; the chat path, which is
+    # the one that takes relative dates from a human, was the only one without.
+    #
+    # Rebuilt on every call. context/loader.py caches the profile and the
+    # directives — the DB reads — not this string, so there is no stale copy to
+    # invalidate and nothing to refresh on a date rollover.
+    now = datetime.now(ZoneInfo(USER_TIMEZONE))
     base = (
+        f"NOW: {now.strftime('%A, %d %B %Y, %-I:%M %p')} ({USER_TIMEZONE}).\n"
+        "Resolve every relative date and time against that, and never against\n"
+        "anything you remember. 'today', 'tomorrow', 'tonight', 'next Tuesday'\n"
+        "and 'in an hour' all mean relative to NOW. When a tool takes an\n"
+        f"ISO-8601 time, write it in local time for {USER_TIMEZONE} and make sure\n"
+        "the year and date match NOW.\n"
+        "\n"
         "You are Project Sunday, a personal AI assistant running on Alstone's Mac.\n"
         "You help with tasks by calling tools. Always use the minimum necessary tool.\n"
         "For each tool call, the tier is enforced by the worker — you cannot change it.\n"
@@ -30,7 +49,7 @@ def build_system_prompt() -> str:
         "CALENDAR:\n"
         "You can query, create, and update Google Calendar events.\n"
         "When creating events, always confirm the time with the user first.\n"
-        "Use Australia/Sydney timezone for all events.\n"
+        f"Use the {USER_TIMEZONE} timezone for all events.\n"
         "\n"
         "EMAILS:\n"
         "You can search Gmail, read individual email bodies, and scan for priority emails.\n"
