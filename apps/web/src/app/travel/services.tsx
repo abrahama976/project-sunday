@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { NearbyService, MODE_NAMES } from "./types";
+import { NearbyService, MODE_NAMES, mapLink } from "./types";
 
 /**
  * The local network, and the ability to correct it.
@@ -116,7 +116,7 @@ export default function Services({ userId }: { userId: string | null }) {
       const supabase = createClient();
       const { data, error: err } = await supabase
         .from("nearby_services")
-        .select("id, stop_name, route, headsign, mode_class, headway_min, walk_min, source, is_hidden")
+        .select("id, stop_name, stop_lat, stop_lng, route, headsign, mode_class, headway_min, walk_min, source, is_hidden")
         .eq("user_id", userId)
         .order("walk_min", { ascending: true })
         .order("route", { ascending: true });
@@ -247,12 +247,30 @@ export default function Services({ userId }: { userId: string | null }) {
           >
             <div
               style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: "var(--space-2)",
                 fontSize: "0.75rem",
                 color: "var(--color-text-muted)",
                 marginBottom: "var(--space-1)",
               }}
             >
-              {stopName}
+              <span style={{ flex: 1, minWidth: 0 }}>{stopName}</span>
+              {/* The coordinate, not the name. A stop can be named plausibly
+                  and still be in the wrong suburb; only the pin says so. */}
+              {(() => {
+                const href = mapLink(list[0]?.stop_lat, list[0]?.stop_lng);
+                return href ? (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ flexShrink: 0, color: "var(--color-primary)" }}
+                  >
+                    Map
+                  </a>
+                ) : null;
+              })()}
             </div>
             <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
               {list.map((s) => (

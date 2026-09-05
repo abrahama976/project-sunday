@@ -1378,6 +1378,30 @@ def stop_display_name(loc) -> str:
     return str(loc.get("id") or "").strip() or "unnamed stop"
 
 
+def map_link(lat, lng) -> str | None:
+    """A link that opens this exact point on a map, or None.
+
+    Every travel failure this project has had looked like success: a stop named
+    by its id, a Sans Souci that resolved near Narrabri, an itinerary that was
+    internally consistent and about the wrong place. None of them were visible
+    in the answer. A pin at the coordinate Sunday actually chose makes the one
+    thing prose cannot express — *where it thinks it is* — checkable in a tap.
+
+    Deliberately the coordinate rather than the name. Searching for the name
+    shows what a search engine thinks the name means, which is the question
+    that was already answered wrongly; only the coordinate can contradict it.
+
+    No key, no API call, no request at plan time — this is string formatting.
+    """
+    try:
+        lat_f, lng_f = float(lat), float(lng)
+    except (TypeError, ValueError):
+        return None
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
+        return None
+    return f"https://www.google.com/maps/search/?api=1&query={lat_f:.6f},{lng_f:.6f}"
+
+
 async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
                            radius_m: float = PARK_RIDE_RADIUS_M,
                            classes=None) -> list:

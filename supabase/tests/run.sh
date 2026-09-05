@@ -58,11 +58,21 @@ cp "$MIGRATIONS/20260902120000_travel_alerts.sql"          "$WORK/travel.sql"
 cp "$MIGRATIONS/20260902140000_travel_alert_planning.sql"  "$WORK/travel_planning.sql"
 cp "$MIGRATIONS/20260903150000_nearby_services.sql"        "$WORK/nearby.sql"
 cp "$MIGRATIONS/20260903200000_nearby_services_upsert_fix.sql" "$WORK/nearby_fix.sql"
+# health_logs. The fix has to meet the shape phase 1 and phase 2 left behind —
+# an expression index it must drop, a nullable meal_type it must rewrite, and
+# duplicate rows that index was too weak to prevent. Replaying those two
+# migrations directly is not possible here: phase 1 alters `inventory`, a table
+# phase 3 has since dropped, so the file no longer runs against a current
+# schema at all. seed_health_legacy.sql therefore carries that pre-fix DDL
+# copied verbatim from both migrations, and the fix runs against it.
+cp "$MIGRATIONS/20260603000001_create_user_profile.sql"     "$WORK/user_profile.sql"
+cp "$MIGRATIONS/20260905140000_health_logs_upsert_key.sql"   "$WORK/health_fix.sql"
 cp "$MIGRATIONS/20260606200000_create_agent_turns.sql"     "$WORK/agent_turns.sql"
 cp "$MIGRATIONS/20260903180000_agent_turns_keep_traces.sql" "$WORK/agent_turns_retention.sql"
 cp "$DIR"/_stubs.sql "$DIR"/test_watchdog.sql "$DIR"/test_brain_schema.sql \
    "$DIR"/test_travel_alerts.sql "$DIR"/test_nearby_services.sql \
-   "$DIR"/test_function_grants.sql "$DIR"/test_agent_turns_retention.sql "$WORK/"
+   "$DIR"/test_function_grants.sql "$DIR"/test_agent_turns_retention.sql \
+   "$DIR"/seed_health_legacy.sql "$DIR"/test_health_logs.sql "$WORK/"
 chmod -R a+r "$WORK"
 
 psql_run() {
@@ -81,6 +91,15 @@ psql_run nearby_fix.sql      >/dev/null
 psql_run agent_turns.sql            >/dev/null
 psql_run agent_turns_retention.sql  >/dev/null
 
+# health_logs, in the order production actually saw: the table and its
+# expression index, then the rows that accumulated while that index was inert,
+# and only then the fix. Seeding BEFORE the fix is the whole point — the merge
+# and adoption steps are the part most likely to be wrong, and against an empty
+# table they would pass without executing.
+psql_run user_profile.sql       >/dev/null
+psql_run seed_health_legacy.sql >/dev/null
+psql_run health_fix.sql         >/dev/null
+
 echo
 echo "── watchdog ──────────────────────────────────────────"
 psql_run test_watchdog.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
@@ -96,6 +115,10 @@ psql_run test_travel_alerts.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed '
 echo
 echo "── nearby services ───────────────────────────────────"
 psql_run test_nearby_services.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
+
+echo
+echo "── health logs ───────────────────────────────────────"
+psql_run test_health_logs.sql 2>&1 | grep -E "  ok |FAIL|passed|ERROR" | sed 's/^.*NOTICE: //'
 
 echo
 echo "── function grants ───────────────────────────────────"

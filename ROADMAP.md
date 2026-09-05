@@ -593,7 +593,29 @@ silently, because an empty list also looks like "no station nearby".
    chat wipes the telemetry with it — which already happened once, taking every
    trace from before 2026-09-02. `ON DELETE SET NULL` is a one-line migration
    and the trace view already renders `(message deleted)` for orphans.
-5. **The dormancy was 60 days, not twelve weeks.** The last commit is
+5. **An upsert key the client cannot name — three times.** `nearby_services`
+   (#39), `user_location` (#49) and `health_logs` all had a unique EXPRESSION
+   index. PostgREST emits a plain `ON CONFLICT (a, b, c)`, which Postgres
+   cannot match to an expression, so every upsert died with `42P10`. All three
+   are now plain unique constraints over `NOT NULL` columns. **Before adding a
+   unique index, check whether anything upserts against it** — and prefer a
+   constraint on plain columns with a sentinel default (`''`) over
+   `COALESCE(...)`.
+
+   `health_logs` hid it best: nothing wrote `user_id`, and NULLs are distinct
+   under a unique index, so the constraint sat inert for three months while
+   nine rows accumulated. It would have surfaced the moment a `user_id` was
+   written — the second glass of water of any day.
+
+6. **Lint is red outside the pages touched recently.** `npx eslint src/` fails
+   in `approvals/`, `chat/`, `components/NavBar.tsx`,
+   `components/NotificationPanel.tsx` and `page.tsx` — mostly
+   `react-hooks/purity` (`Date.now()` in render) and
+   `react-hooks/set-state-in-effect`, both of which this Next version enforces
+   and older code predates. `travel/`, `health/` and `api/location/` are clean.
+   Not urgent, but the suite cannot be used as a gate until it is green.
+
+7. **The dormancy was 60 days, not twelve weeks.** The last commit is
    2026-06-06 but `mac_heartbeat.last_seen` reads 2026-07-01 — the worker ran
    for three and a half weeks after the code went quiet. Worth remembering when
    reasoning about what "still worked" at the end.

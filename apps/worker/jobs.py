@@ -192,7 +192,14 @@ Is there a free 15-minute window in the next 2 hours? Reply YES or NO only."""
         )
         ans = response.candidates[0].content.parts[0].text.strip().upper()
         if "YES" in ans:
-            msg = "Hey, it looks like you have a moment — did you eat? Let me log it for you."
+            # Not "let me log it for you". There is no meal-logging tool — the
+            # registry has never had one — so answering "yes, lunch" left the
+            # agent with nothing to call and the offer unmet. A check-in that
+            # points at the button that does exist is honest and one tap; an
+            # offer the assistant cannot keep teaches you not to trust the
+            # next one.
+            msg = ("Hey, it looks like you have a moment — did you eat? "
+                   "Tap Health to log it.")
             await asyncio.to_thread(
                 lambda: client.table("messages").insert({
                     "user_id": uid,
@@ -1102,7 +1109,15 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
                 continue
 
             walk_min = await _walk_minutes(http, origin_ll, stop)
-            for service in await _stop_services(http, headers, stop):
+            found = await _stop_services(http, headers, stop)
+
+            # departure_mon knows the stop's name; /v1/tp/coord, which found it,
+            # does not. Prefer the real one and remember it on the stop record
+            # so the log line and the rename below both read properly.
+            if found["name"]:
+                stop["name"] = found["name"]
+
+            for service in found["services"]:
                 is_rail = service["mode_class"] in _RAIL_CLASSES
                 if stop["distance_m"] > (WALK_RADIUS_RAIL_M if is_rail
                                          else WALK_RADIUS_BUS_M):
@@ -1123,6 +1138,23 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
         print("[nearby_services] found nothing; leaving the existing inventory alone")
         return
 
+    # A stop that just gained a real name is a RENAME, and stop_name is part of
+    # the upsert key — so the new row cannot find the old one to update, and
+    # both would sit in the list forever. Two things have to survive that:
+    # the retirement you set on the old row, and the absence of the old row.
+    existing = []
+    try:
+        existing = (await asyncio.to_thread(
+            lambda: client.table("nearby_services")
+            .select("stop_id, stop_name, route, headsign, is_hidden")
+            .eq("user_id", uid).eq("place_label", label)
+            .eq("source", "discovered").execute()
+        )).data or []
+    except Exception as e:
+        print(f"[nearby_services] could not read the existing inventory: {e}")
+
+    stale = _carry_over_and_find_stale(existing, discovered)
+
     # Upserted one at a time against the unique index rather than deleted and
     # rewritten: a wipe-then-insert would drop is_hidden on every row, so a
     # route you retired would come back every week.
@@ -1139,6 +1171,26 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
         except Exception as e:
             first_error = first_error or e
             print(f"[nearby_services] could not save {record['route']} at {record['stop_name']}: {e}")
+
+    # Only now, and only for stops that were actually rewritten under their new
+    # name. Deleting first would have lost the inventory outright if the upsert
+    # then failed, which is the exact shape of the bug this job already had.
+    if written:
+        for stop_id, old_name in stale:
+            try:
+                await asyncio.to_thread(
+                    lambda s=stop_id, n=old_name: client.table("nearby_services")
+                    .delete()
+                    .eq("user_id", uid).eq("place_label", label)
+                    .eq("source", "discovered")
+                    .eq("stop_id", s).eq("stop_name", n)
+                    .execute()
+                )
+            except Exception as e:
+                print(f"[nearby_services] could not retire the old name {old_name!r}: {e}")
+        if stale:
+            print(f"[nearby_services] renamed {len(stale)} stops that had been "
+                  f"listed by id")
 
     routes = sorted({r["route"] for r in discovered})
     stops = len({r["stop_name"] for r in discovered})
@@ -1162,6 +1214,36 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
 
     print(f"[nearby_services] {written} services at {stops} "
           f"stops near {label}: {', '.join(routes[:12])}")
+
+
+def _carry_over_and_find_stale(existing: list, discovered: list) -> set:
+    """Mark re-retired services in `discovered`; return the rows a rename orphans.
+
+    Pure but for mutating `discovered` in place, and separated out because it is
+    the only part of the refresh that DELETES. Two rules:
+
+    - A service you retired stays retired across a rename. `is_hidden` is a
+      decision about the 306 towards Sans Souci, not about whatever label the
+      API gave its stop that week, so it is carried on (stop_id, route,
+      headsign) — never on stop_name, which is the thing that changed.
+    - A stop whose name changed leaves its old rows behind, because stop_name
+      is part of the upsert key and the new row therefore cannot update the old
+      one. Those are returned so the caller can remove them, and only those:
+      a stop the API simply did not mention this week keeps its rows, since a
+      provider outage must not quietly empty the inventory.
+
+    Returns {(stop_id, old_name)}.
+    """
+    hidden_keys = {(r.get("stop_id"), r.get("route"), r.get("headsign") or "")
+                   for r in existing if r.get("is_hidden")}
+    for record in discovered:
+        if (record["stop_id"], record["route"], record["headsign"]) in hidden_keys:
+            record["is_hidden"] = True
+
+    renamed = {r["stop_id"]: r["stop_name"] for r in discovered}
+    return {(r.get("stop_id"), r.get("stop_name")) for r in existing
+            if r.get("stop_id") in renamed
+            and r.get("stop_name") != renamed[r["stop_id"]]}
 
 
 def _stops_from_locations(locations, origin_ll, radius_m) -> list:
@@ -1299,9 +1381,22 @@ async def _walk_minutes(http, origin_ll, stop):
     return int(round(stop["distance_m"] / 75.0))    # 4.5 km/h in metres/min
 
 
-async def _stop_services(http, headers, stop) -> list:
-    """Which routes serve a stop, where they go, and how often."""
-    from executors.travel_ops import _parse_time, headway_from_departures
+async def _stop_services(http, headers, stop) -> dict:
+    """Which routes serve a stop, where they go, how often — and its real name.
+
+    Returns `{"name": str | None, "services": [...]}`. The name is the reason
+    this returns a dict rather than a list: `/v1/tp/coord`, which is what finds
+    these stops, returns no usable name for any of them, so every one of the 93
+    discovered rows fell through to `stop_display_name`'s id fallback and the
+    services list read as a wall of numbers. `departure_mon` names the stop it
+    is reporting on, and this job already calls it once per stop, so the name
+    costs no extra request — it was being thrown away.
+
+    `None` means the provider offered nothing usable and the caller should keep
+    whatever name it already had. It never means "".
+    """
+    from executors.travel_ops import (_parse_time, headway_from_departures,
+                                      stop_display_name)
 
     params = {
         "outputFormat": "rapidJSON",
@@ -1318,10 +1413,27 @@ async def _stop_services(http, headers, stop) -> list:
             "https://api.transport.nsw.gov.au/v1/tp/departure_mon",
             headers=headers, params=params, timeout=20.0)
         res.raise_for_status()
-        events = (res.json() or {}).get("stopEvents") or []
+        payload = res.json() or {}
+        events = payload.get("stopEvents") or []
     except Exception as e:
         print(f"[nearby_services] departures failed for {stop['name']}: {e}")
-        return []
+        return {"name": None, "services": []}
+
+    # The stop names itself in two places, neither guaranteed: a top-level
+    # `locations` echo of what was asked for, and the `location` on each
+    # departure. Both are tried, and a placeholder in one does not stop the
+    # other being used. `stop_display_name` returns the id when it finds
+    # nothing real, which is exactly the value this is trying to replace — so
+    # a result equal to the id is treated as no answer.
+    name = None
+    for candidate in [*(payload.get("locations") or []),
+                      *(e.get("location") or {} for e in events)]:
+        if not candidate:
+            continue
+        found = stop_display_name(candidate)
+        if found and found != str(candidate.get("id") or "") and found != stop["id"]:
+            name = found
+            break
 
     # Grouped by (route, where it is heading): the 358 towards Mascot and the
     # 358 back are different services to someone deciding which side of the
@@ -1341,9 +1453,12 @@ async def _stop_services(http, headers, stop) -> list:
         seen.setdefault((route, headsign), {"mode_class": mode_class, "times": []})
         seen[(route, headsign)]["times"].append(when)
 
-    return [
-        {"route": route, "headsign": headsign,
-         "mode_class": data["mode_class"],
-         "headway_min": headway_from_departures(data["times"])}
-        for (route, headsign), data in seen.items()
-    ]
+    return {
+        "name": name,
+        "services": [
+            {"route": route, "headsign": headsign,
+             "mode_class": data["mode_class"],
+             "headway_min": headway_from_departures(data["times"])}
+            for (route, headsign), data in seen.items()
+        ],
+    }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 
@@ -15,64 +15,113 @@ type HealthLog = {
   description: string | null;
 };
 
-export default function HealthPage() {
-  const supabase = createClient();
-  const [logs, setLogs] = useState<HealthLog[]>([]);
-  const [loading, setLoading] = useState(true);
+/** Today, in the phone's own timezone. `log_date` is a date, not an instant. */
+function localToday(): string {
+  const tzOffset = new Date().getTimezoneOffset() * 60000;
+  return new Date(Date.now() - tzOffset).toISOString().slice(0, 10);
+}
 
-  const fetchLogs = async () => {
-    setLoading(true);
-    // Use local date string instead of UTC to match log_date format correctly
-    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
-    const today = localISOTime.split("T")[0];
-    
-    const { data, error } = await supabase
+export default function HealthPage() {
+  const [supabase] = useState(() => createClient());
+  const [logs, setLogs] = useState<HealthLog[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchLogs = useCallback(async (uid: string) => {
+    const { data, error: err } = await supabase
       .from("health_logs")
       .select("*")
-      .eq("log_date", today)
+      .eq("user_id", uid)
+      .eq("log_date", localToday())
       .order("created_at", { ascending: false });
-    
-    if (data) setLogs(data);
+    if (err) setError(err.message);
+    else setLogs(data ?? []);
     setLoading(false);
-  };
+  }, [supabase]);
 
   useEffect(() => {
-    fetchLogs();
-    
-    // Set up realtime listener for immediate updates across devices
-    const channel = supabase.channel('health_logs_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'health_logs' }, () => {
-        fetchLogs();
-      })
-      .subscribe();
-      
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
+    let cancelled = false;
 
-  const addLog = async (metric: string, value: number, extra: Partial<HealthLog> = {}) => {
-    const tzOffset = (new Date()).getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1);
-    const today = localISOTime.split("T")[0];
-    
-    await supabase.from("health_logs").insert({
-      log_date: today,
-      metric,
-      value,
-      source: "manual",
-      ...extra,
-    });
-    fetchLogs(); // Optimistic refresh, though realtime will also catch it
+    // Declared inside the effect: react-hooks/set-state-in-effect rejects a
+    // setState-containing function called from an effect body, even an async
+    // one, and this page had been failing lint on exactly that.
+    async function start() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (cancelled) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+      setUserId(user.id);
+      await fetchLogs(user.id);
+    }
+
+    void start();
+    return () => { cancelled = true; };
+  }, [supabase, fetchLogs]);
+
+  useEffect(() => {
+    if (!userId) return;
+    // Scoped to this user's rows. The unfiltered subscription woke this page
+    // for every row in the table, which only looked harmless because every
+    // row in the table happened to be this user's.
+    const channel = supabase.channel("health_logs_changes")
+      .on("postgres_changes",
+          { event: "*", schema: "public", table: "health_logs",
+            filter: `user_id=eq.${userId}` },
+          () => { void fetchLogs(userId); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [supabase, userId, fetchLogs]);
+
+  /**
+   * One row per (user, day, metric, meal type) — upserted, not inserted.
+   *
+   * That is the table's actual rule, and it was unenforceable until now:
+   * nothing wrote `user_id`, and NULLs are distinct under a unique index, so
+   * every insert slipped past the constraint. Writing `user_id` without this
+   * change would have made the second glass of water of any day fail.
+   *
+   * `value` is passed as the new TOTAL rather than a delta, because an upsert
+   * replaces and PostgREST cannot express `value = value + n`. The caller
+   * computes it from what is already on screen.
+   */
+  const setLog = async (
+    metric: string,
+    value: number,
+    mealType = "",
+  ) => {
+    if (!userId) return;
+    const { error: err } = await supabase.from("health_logs").upsert(
+      {
+        user_id: userId,
+        log_date: localToday(),
+        metric,
+        meal_type: mealType,
+        value,
+        source: "manual",
+      },
+      { onConflict: "user_id,log_date,metric,meal_type" },
+    );
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    setError(null);
+    void fetchLogs(userId); // Optimistic refresh; realtime also catches it.
   };
 
-  const addWater = () => addLog("water", 250);
-  const logMeal = (meal_type: string) => addLog("meal", 0, { meal_type });
-
-  const totalWater = logs
+  const waterToday = logs
     .filter((l) => l.metric === "water")
     .reduce((acc, l) => acc + Number(l.value || 0), 0);
+
+  // A running total for the day, so tapping it ten times reads 2500 ml rather
+  // than failing nine times.
+  const addWater = () => setLog("water", waterToday + 250);
+  // Idempotent by design: tapping Lunch twice means the same lunch, not an
+  // error and not a second one.
+  const logMeal = (meal_type: string) => setLog("meal", 0, meal_type);
 
   const meals = logs.filter((l) => l.metric === "meal");
 
@@ -103,7 +152,12 @@ export default function HealthPage() {
 
         {/* Today's Summary */}
         <section>
-          <h2 style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginBottom: "var(--space-3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Today's Summary</h2>
+          <h2 style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginBottom: "var(--space-3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Today&apos;s Summary</h2>
+          {error && (
+            <p style={{ fontSize: "0.8125rem", color: "var(--color-danger)", margin: "0 0 var(--space-3)" }}>
+              {error}
+            </p>
+          )}
           {loading && logs.length === 0 ? (
             <div style={{ color: "var(--color-text-faint)" }}>Loading...</div>
           ) : (
@@ -111,7 +165,7 @@ export default function HealthPage() {
               <div style={cardStyle}>
                 <div style={{ fontSize: "1.75rem", padding: "var(--space-2)" }}>💧</div>
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: "1.125rem", color: "var(--color-text)" }}>{totalWater} ml</div>
+                  <div style={{ fontWeight: 600, fontSize: "1.125rem", color: "var(--color-text)" }}>{waterToday} ml</div>
                   <div style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginTop: "2px" }}>Total Water Logged</div>
                 </div>
               </div>

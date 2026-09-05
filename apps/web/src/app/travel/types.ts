@@ -49,8 +49,18 @@ export type Plan = {
   id: string;
   origin_text: string | null;
   origin_label: string | null;
+  origin_lat: number | null;
+  origin_lng: number | null;
   destination_text: string | null;
   destination_label: string | null;
+  /**
+   * The coordinate the plan was actually built against — not decoration. A
+   * plausible name over the wrong coordinate is this project's signature bug
+   * ("Sans Souci" resolved near Narrabri and every leg below it was correct
+   * about the wrong place), and this is the only field that can reveal it.
+   */
+  destination_lat: number | null;
+  destination_lng: number | null;
   arrive_by: string | null;
   depart_at: string | null;
   car_available: boolean;
@@ -74,6 +84,8 @@ export type TravelRequest = {
 export type NearbyService = {
   id: string;
   stop_name: string;
+  stop_lat: number | null;
+  stop_lng: number | null;
   route: string;
   headsign: string | null;
   mode_class: number | null;
@@ -82,6 +94,28 @@ export type NearbyService = {
   source: string;
   is_hidden: boolean;
 };
+
+/**
+ * A link that opens a coordinate on a map, or null.
+ *
+ * The point is to make "where does Sunday think this is" answerable in a tap.
+ * Prose can describe a stop convincingly and still be about the wrong suburb —
+ * that has happened here — and only the coordinate can contradict it. So this
+ * pins the lat/lng that was actually used, never a search for the name, which
+ * would just re-answer the question that was already answered wrongly.
+ *
+ * Null for a missing or out-of-range coordinate, so the caller renders nothing
+ * rather than a link to the middle of the ocean.
+ */
+export function mapLink(
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+): string | null {
+  if (typeof lat !== "number" || typeof lng !== "number") return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return `https://www.google.com/maps/search/?api=1&query=${lat.toFixed(6)},${lng.toFixed(6)}`;
+}
 
 /** TfNSW product classes. 100 and 99 are walking legs. */
 export const MODE_NAMES: Record<number, string> = {

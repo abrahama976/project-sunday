@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS public.messages (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid()
 );
 
+-- The real helper, verbatim from 20260516131651. Half the app's tables attach a
+-- trigger to it, so any migration chain that reaches one of them fails here
+-- without it. Copied rather than pulled in by running that migration, which
+-- would drag in the whole action_queue rewrite for one four-line function.
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS public.scheduled_jobs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     job_name  text UNIQUE NOT NULL,
