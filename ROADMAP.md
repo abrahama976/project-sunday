@@ -13,7 +13,7 @@ Last updated: **2026-09-05**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260905060000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
+| Supabase | Up | Migrations through `20260905110000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, **Travel**, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings. Travel took the Schedule tab; the full week view stays at `/schedule`, linked from Travel |
 | `apps/worker` | Running at `5811fda` | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
@@ -276,6 +276,31 @@ preferred a phone fix under fifteen minutes old over the saved home, but
 nothing in the app ever sent one — `/api/location` existed the whole time with
 only a curl example for a caller, and `user_location` was empty. "Start from
 where I am" now fills it.
+
+**4n — the location path was broken three ways.** "Start from where I am"
+shipped in 4m and could never have worked. Found by the owner's other
+assistant, which is worth recording: it read the route I had not.
+
+`POST /api/location` demanded an `x-sunday-secret` header for a phone
+automation, and the page's `fetch` sent none — **401, every time**. It also
+never wrote `user_id`, while `resolve_origin` reads `.eq("user_id", …)`, so a
+successful write would still have been invisible. And it upserted on
+`onConflict: "id"` against a column defaulting to `gen_random_uuid()`, which
+never conflicts, so each POST inserted a new row instead of replacing the fix.
+
+Switching the key to `user_id` then hit a fourth: it carried only a *non-unique*
+index, so PostgREST's plain `ON CONFLICT (user_id)` would have failed 42P10 —
+the same error, on the same shape of mistake, as `nearby_services` in 4f. The
+column is now `NOT NULL` under a plain unique constraint, because a unique
+index permits many NULLs and NULL was precisely the value the old code wrote.
+
+The route now takes either a session cookie or the shared secret, so the page
+and a Tasker automation both work, and it resolves the single user rather than
+writing a NULL the worker would ignore.
+
+Verified by replaying the upsert twice against production in the shape
+PostgREST emits: one row, updated in place. Probe deleted immediately — a fix
+under fifteen minutes old would have had Sunday planning from the CBD.
 
 **4b — Ranking.** *(Superseded in part by 4k for deadline queries.)*
 Journeys sort on **arrive, then wait, then changes, then
