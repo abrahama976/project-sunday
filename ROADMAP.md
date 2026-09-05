@@ -15,7 +15,7 @@ Last updated: **2026-09-04**
 |---|---|---|
 | Supabase | Up | Migrations through `20260904100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running, **stale** | Heartbeat `online`, but the running process predates #40 — proven from behaviour, since it accepted a 2024 `depart_at` that `check_requested_time` refuses and planned a 500 km destination the gate rejects. 4g–4i are merged and **not running**. `mac_heartbeat.version` now answers this directly |
+| `apps/worker` | Running, **stale at #37** | Heartbeat `online`, but the Mac checkout is at `60a4423` (#37) and its `origin/main` points there too — no fetch has run since. Everything from #38 on is merged and **not running**. `mac_heartbeat.version` and the startup banner now report this directly instead of it having to be inferred |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -273,6 +273,16 @@ radius is 5 km.
 **Startup checks exist because a key being set proved nothing.** `check_tfnsw`
 and `check_openrouteservice` call the live APIs and print a ✓/✗ banner. They are
 also the only part of the travel code with no test coverage, by necessity.
+
+**A correction, since this document asserted otherwise.** An earlier revision
+of the table above said the Mac had "Pulled 2026-09-04 through 4f — discovery
+ran and wrote for the first time". That was inferred from ten rows appearing in
+`nearby_services`, and it was wrong. The Mac has been at #37 throughout. The
+rows appeared because the *migration* below was applied directly to production,
+and #37 already contained the `on_conflict` upsert — so the old code started
+writing the moment the constraint existed. The code half of 4f has never run.
+Rows appearing is evidence about the database, not about the checkout, and the
+two were conflated here.
 
 **4f — the local network is saved, not just found.** 4e shipped with a key
 PostgREST cannot target. `nearby_services_unique_idx` was an *expression* index
