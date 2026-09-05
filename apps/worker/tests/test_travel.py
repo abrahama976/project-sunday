@@ -29,9 +29,10 @@ from executors.travel_ops import (          # noqa: E402
     _trip_params, park_ride_depart_at, headway_from_departures,
     choose_boarding_points, service_label, describe_frequency,
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
-    parse_user_time, check_requested_time, is_real_stop_id,
+    parse_user_time, check_requested_time, is_real_stop_id, stop_display_name,
+    drive_only_summary, promote_car_free, DRIVE_STRATEGIES, DROP_OFF_CLASSES,
 )
-from jobs import _stops_from_locations, stop_display_name     # noqa: E402
+from jobs import _stops_from_locations                        # noqa: E402
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
 from jobs import travel_replan_due                            # noqa: E402
 
@@ -104,6 +105,35 @@ check("...and it lengthens the journey", w["duration_min"], 51)
 two_trains = {"legs": [walk_leg(0, 5), train_leg(5, 20), train_leg(25, 15, line="T8"),
                        walk_leg(40, 3, to="Office")]}
 check("two vehicle legs is one change", summarise_journey(two_trains)["changes"], 1)
+
+# Getting off a bus and back on the same route is not a change — TfNSW splits a
+# through-service at a timing point, which produced "take the 358 to Sydenham,
+# then take the 358 again". `changes` is a ranking key, so this was not merely
+# cosmetic.
+through = {"legs": [walk_leg(0, 5), train_leg(5, 20), train_leg(25, 15)]}
+check("the same route with no gap is one vehicle, not a change",
+      summarise_journey(through)["changes"], 0)
+
+# But the route number alone does not settle it. All three of these are real
+# changes to anyone actually making the journey.
+waited = {"legs": [walk_leg(0, 5), train_leg(5, 20), train_leg(45, 15)]}
+check("...the same route after a 20-minute wait is a change",
+      summarise_journey(waited)["changes"], 1)
+
+walked_between = {"legs": [walk_leg(0, 5), train_leg(5, 20),
+                           walk_leg(25, 3, to="Other Stop"), train_leg(28, 15)]}
+check("...and walking to another stop for the same route is a change",
+      summarise_journey(walked_between)["changes"], 1)
+
+unnamed = {"legs": [walk_leg(0, 5),
+                    {"duration": 1200, "origin": {"name": "A", "departureTimePlanned": t(5)},
+                     "destination": {"name": "B", "arrivalTimePlanned": t(25)},
+                     "transportation": {"product": {"class": 1}}},
+                    {"duration": 900, "origin": {"name": "B", "departureTimePlanned": t(25)},
+                     "destination": {"name": "C", "arrivalTimePlanned": t(40)},
+                     "transportation": {"product": {"class": 1}}}]}
+check("an unnamed service counts as its own route, so changes are not undercounted",
+      summarise_journey(unnamed)["changes"], 1)
 
 # A journey built only from the timetable is a guess, and says so.
 sched = {"legs": [walk_leg(0, 8), train_leg(8, 30, live=False), walk_leg(38, 4, to="Office")]}
@@ -192,9 +222,81 @@ check("on an equal departure, less waiting still wins",
 check("a deadline over an empty list is still empty", rank_journeys([], DEADLINE), [])
 
 
+print("\n── driving the whole way ─────────────────────────────")
+
+DRIVE = {"minutes": 19, "km": 10.4}
+
+# Backwards from the deadline: the answer to "be there by 9" is a leave time.
+by_ten = drive_only_summary(DRIVE, BASE, arrive_by=BASE + timedelta(hours=2))
+check("a deadline sets the arrival", by_ten["arrive"], BASE + timedelta(hours=2))
+check("...and the departure is the drive before it",
+      by_ten["depart"], BASE + timedelta(hours=2) - timedelta(minutes=19))
+check("a car journey has no waiting", by_ten["wait_min"], 0)
+check("...and no changes", by_ten["changes"], 0)
+check("...and no walking", by_ten["walk_min"], 0)
+check("it is labelled as what it is", by_ten["strategy"], "drive_direct")
+
+# A drive that would have to start in the past is not an option; it becomes a
+# leave-now drive rather than a departure before the present moment.
+too_late = drive_only_summary(DRIVE, BASE, arrive_by=BASE + timedelta(minutes=5))
+check_true("a drive that cannot make the deadline still departs now, not earlier",
+           too_late["depart"] >= BASE)
+
+# Leaving now, forwards.
+now_drive = drive_only_summary(DRIVE, BASE)
+check("with no deadline it leaves now", now_drive["depart"], BASE)
+check("...and arrives a drive later", now_drive["arrive"], BASE + timedelta(minutes=19))
+check("no driving estimate means no option",
+      drive_only_summary({"minutes": None}, BASE), None)
+check("no drive at all means no option", drive_only_summary(None, BASE), None)
+
+
+print("\n── keeping the car-free option visible ───────────────")
+
+# Driving has no waiting and no changes, so it wins nearly every time a car is
+# available — 10 minutes against 37 to Moore Park. Ranking it honestly is
+# right; letting it be the only thing shown is not.
+def tagged(strategy, minutes):
+    j = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, minutes)]})
+    j["strategy"] = strategy
+    return j
+
+
+drove = tagged("drive_direct", 10)
+parked = tagged("park_ride", 20)
+lifted = tagged("drop_off", 22)
+bus = tagged("boarding", 40)
+
+promoted = promote_car_free([drove, parked, lifted, bus])
+check("the winner keeps its place on merit", promoted[0]["strategy"], "drive_direct")
+check("...and the best car-free option is lifted to second",
+      promoted[1]["strategy"], "boarding")
+check("...without losing anything", len(promoted), 4)
+check("...or reordering the rest",
+      [j["strategy"] for j in promoted[2:]], ["park_ride", "drop_off"])
+
+check("a car-free winner is left completely alone",
+      promote_car_free([bus, drove])[0]["strategy"], "boarding")
+check("...and its order is untouched",
+      [j["strategy"] for j in promote_car_free([bus, drove])], ["boarding", "drive_direct"])
+check("already second needs no promotion",
+      [j["strategy"] for j in promote_car_free([drove, bus, parked])],
+      ["drive_direct", "boarding", "park_ride"])
+check("all-driven stays as ranked",
+      [j["strategy"] for j in promote_car_free([drove, parked])],
+      ["drive_direct", "park_ride"])
+check("an empty list is unchanged", promote_car_free([]), [])
+
+check_true("every drive strategy is accounted for",
+           DRIVE_STRATEGIES == {"park_ride", "drop_off", "drive_direct"})
+check_true("a drop-off can end at a bus stop, which parking cannot",
+           5 in DROP_OFF_CLASSES and 5 not in _RAIL_CLASSES)
+
+
 print("\n── describe_alternative() ────────────────────────────")
 
-best = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 20), train_leg(25, 15)]})
+best = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 20),
+                                   train_leg(25, 15, line="T8")]})
 fewer = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 40)]})
 why = describe_alternative(best, fewer)
 check_true("a simpler route says so", "1 fewer change" in why, why)
@@ -231,7 +333,8 @@ check_true("a saving worth its delay survives", describe_alternative(long_walk, 
            describe_alternative(long_walk, mild))
 
 # Fewer changes is a comfort argument and is allowed to cost a few minutes.
-two_hop = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 15), train_leg(20, 15)]})
+two_hop = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 15),
+                                      train_leg(20, 15, line="T8")]})
 one_hop_slower = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 40)]})
 check_true("fewer changes is allowed to cost a little time",
            "fewer change" in describe_alternative(two_hop, one_hop_slower),
@@ -682,7 +785,7 @@ check("a boarding-point option is named by its route",
 
 pr_labelled = dict(parked, strategy="park_ride")
 check("park-and-ride names the drive and the station",
-      describe_strategy(pr_labelled), "drive 20 min to Green Square, then transit")
+      describe_strategy(pr_labelled), "drive 20 min to Green Square and park, then transit")
 
 check("an ORS route yields minutes and km",
       _route_minutes_km({"features": [{"properties": {"summary":

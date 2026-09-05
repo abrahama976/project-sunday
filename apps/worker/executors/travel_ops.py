@@ -288,6 +288,11 @@ _RAIL_CLASSES = {1, 2}
 # technical limit — 800 m is about ten minutes.
 MAX_ACCESS_WALK_M = 800
 
+# Two legs on the same route this close together are one vehicle that the
+# provider split at a timing point. Anything longer is a wait for the next one,
+# which is a change however identical the route number.
+SAME_VEHICLE_GAP_MIN = 2
+
 # Park-and-ride is the expensive strategy: a stop lookup, a drive lookup and a
 # trip query per candidate. Bounded hard, and pruned before any of that spends
 # a request.
@@ -297,6 +302,18 @@ PARK_RIDE_MAX_DRIVE_MIN = 20
 # at the call site so the arithmetic in add_access_leg stays honest rather than
 # carrying a hidden allowance.
 PARK_RIDE_PARKING_MIN = 5
+
+# A drop-off is the same drive without the parking, and it can end anywhere
+# someone can pull over — so buses and light rail become candidates alongside
+# stations. Parking cannot: telling someone to leave a car at a bus stop is
+# advice that does not physically work, which is why the two strategies have
+# different candidate sets rather than a shared one with a flag.
+DROP_OFF_MAX_CANDIDATES = 2
+DROP_OFF_CLASSES = {1, 2, 4, 5}      # train, metro, light rail, bus
+
+# Every drive-assisted strategy, so a caller can ask "was a car involved in
+# this" without matching strings in three places.
+DRIVE_STRATEGIES = frozenset({"park_ride", "drop_off", "drive_direct"})
 
 TRIP_URL = "https://api.transport.nsw.gov.au/v1/tp/trip"
 STOP_FINDER_URL = "https://api.transport.nsw.gov.au/v1/tp/stop_finder"
@@ -440,6 +457,18 @@ def summarise_journey(journey: dict) -> dict | None:
     walk_min = 0
     vehicle_legs = 0
     realtime = False
+    # Changes are counted from consecutive vehicle legs, and two legs are the
+    # SAME vehicle only when all three hold: same route number, no walk between
+    # them, and no real gap. TfNSW splits a through-service at a timing point,
+    # which produced "take the 358 to Sydenham, then take the 358 again" —
+    # billed as a change, and `changes` is a ranking key, so it was not merely
+    # cosmetic.
+    #
+    # The route number alone is not enough. Getting off a 358 and waiting
+    # twenty minutes for the next 358 is a change by any measure a passenger
+    # cares about, and so is walking to another stop to catch the same route.
+    previous_route = None
+    previous_arrival = None
 
     for leg in legs:
         origin = leg.get("origin") or {}
@@ -456,10 +485,29 @@ def summarise_journey(journey: dict) -> dict | None:
 
         minutes = int(round((leg.get("duration") or 0) / 60))
         is_walk = cls in _WALK_CLASSES or cls is None
+        route = ((leg.get("transportation") or {}).get("disassembledName")
+                 or (leg.get("transportation") or {}).get("number") or "").strip()
         if is_walk:
             walk_min += minutes
+            # Walking between two legs of the same route means two vehicles,
+            # so the chain is broken rather than carried across the gap.
+            previous_route = None
+            previous_arrival = None
         else:
-            vehicle_legs += 1
+            gap_min = None
+            if previous_arrival is not None and dep is not None:
+                gap_min = (dep - previous_arrival).total_seconds() / 60.0
+            # An unnamed service counts as its own route: without a name there
+            # is no evidence it is the same vehicle, and under-counting changes
+            # would flatter a journey that does involve getting off.
+            same_vehicle = (previous_route is not None and route
+                            and route == previous_route
+                            and gap_min is not None
+                            and gap_min <= SAME_VEHICLE_GAP_MIN)
+            if not same_vehicle:
+                vehicle_legs += 1
+            previous_route = route
+            previous_arrival = arr
 
         parsed_legs.append({
             "mode": "Walk" if is_walk else _MODE_NAMES.get(cls, "Service"),
@@ -780,11 +828,20 @@ def describe_strategy(summary: dict) -> str:
     strategy = (summary or {}).get("strategy") or ""
     if strategy == "boarding":
         return service_label(summary)
-    if strategy == "park_ride":
-        station = next((l.get("from") for l in (summary.get("legs") or [])
-                        if l.get("mode") not in ("Walk", "Drive") and l.get("from")), "")
-        where = f" to {station}" if station else ""
-        return f"drive {summary.get('drive_min') or 0} min{where}, then transit"
+    if strategy == "drive_direct":
+        return "drive the whole way"
+    if strategy in ("park_ride", "drop_off"):
+        boarding = next((l.get("from") for l in (summary.get("legs") or [])
+                         if l.get("mode") not in ("Walk", "Drive", "Lift")
+                         and l.get("from")), "")
+        where = f" to {boarding}" if boarding else ""
+        minutes = summary.get("drive_min") or 0
+        # Named for what actually happens, because the two are not
+        # interchangeable: one leaves your car at the station all day, the
+        # other spends somebody else's half hour.
+        if strategy == "park_ride":
+            return f"drive {minutes} min{where} and park, then transit"
+        return f"lift {minutes} min{where}, then transit"
     return ""
 
 
@@ -798,6 +855,33 @@ def describe_frequency(summary: dict) -> str:
     if not headway or headway <= 0:
         return ""
     return f"every ~{headway} min"
+
+
+def promote_car_free(ranked: list) -> list:
+    """Ensure the best car-free option is second if it is not already first.
+
+    Driving door to door has no waiting and no changes, so on a straight
+    ranking it wins nearly every time a car is available — 10 minutes against
+    37 to Moore Park. Ranking it honestly is right; letting it be the *only*
+    thing shown is not, because a transit planner that answers "just drive"
+    has stopped answering the question.
+
+    So the order is left alone and one option is lifted: the best journey that
+    involves no car at all, moved to second place if it had fallen further. The
+    winner keeps its place on merit, and the car-free plan is always there to
+    compare against.
+
+    A no-op when nothing is driven, which is the ordinary case.
+    """
+    if not ranked or ranked[0].get("strategy") not in DRIVE_STRATEGIES:
+        return ranked
+    for index, journey in enumerate(ranked[1:], start=1):
+        if journey.get("strategy") not in DRIVE_STRATEGIES:
+            if index == 1:
+                return ranked
+            return [ranked[0], journey] + [j for i, j in enumerate(ranked)
+                                           if i not in (0, index)]
+    return ranked
 
 
 def rank_journeys(summaries: list, arrive_by=None) -> list:
@@ -1166,13 +1250,71 @@ async def _tfnsw_geocode(http, headers, text):
     return resolved.coords()
 
 
-async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
-                           radius_m: float = PARK_RIDE_RADIUS_M) -> list:
-    """Rail stations within `radius_m` of a coordinate. [] rather than raising.
+# EFA emits these instead of leaving a name out, and they must not be treated
+# as one. The first run against /v1/tp/coord wrote "undefined, undefined" as the
+# name of all 158 stops it found — which is not merely ugly: stop_name is part
+# of the upsert key, so every stop collided with every other and 158 stops
+# became 21 rows under a single name.
+_PLACEHOLDER_NAMES = {"", "undefined", "undefined, undefined", "null", "none"}
 
-    stop_finder returns what is nearest without a distance bound of its own, so
-    the radius is applied here. 5 km by default — far enough to reach a station
-    worth driving to, close enough that the drive stays "once in a while".
+# Where a stop's name lives, best first. stop_finder puts it in `name`;
+# /v1/tp/coord does not always, and the field it does use varies by location
+# type, so all of them are tried rather than guessed at.
+_NAME_FIELDS = ("disassembledName", "name")
+
+
+def stop_display_name(loc) -> str:
+    """A usable name for a stop, or its id. Never a placeholder, never blank.
+
+    Falling back to the id rather than to "" is deliberate. The name is part of
+    the upsert key, so an empty or repeated one silently merges distinct stops;
+    an id is unique by construction, so the worst case becomes an ugly label
+    rather than lost rows.
+    """
+    def _clean(value):
+        text = (value or "").strip()
+        return "" if text.lower() in _PLACEHOLDER_NAMES else text
+
+    for field in _NAME_FIELDS:
+        name = _clean(loc.get(field))
+        if name:
+            return name
+
+    # Nested shapes EFA uses for platforms and stop groups.
+    parent = loc.get("parent") or {}
+    for source in (parent.get("disassembledName"), parent.get("name")):
+        name = _clean(source)
+        if name:
+            return name
+
+    properties = loc.get("properties") or {}
+    for key in ("STOP_NAME", "stopName", "STOP_GLOBAL_ID"):
+        name = _clean(properties.get(key))
+        if name:
+            return name
+
+    return str(loc.get("id") or "").strip() or "unnamed stop"
+
+
+async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
+                           radius_m: float = PARK_RIDE_RADIUS_M,
+                           classes=None) -> list:
+    """Boarding points within `radius_m` of a coordinate. [] rather than raising.
+
+    The radius is applied here because the provider has no distance bound of
+    its own. 5 km — far enough to reach Central from Rosebery, close enough
+    that the drive stays "once in a while".
+
+    `classes` is the set of product classes worth driving to, and it differs by
+    what the drive is for:
+
+    - **Parking** only works where there is parking, which means heavy rail and
+      metro. Telling someone to park at a bus stop is advice that does not
+      physically work, so `_RAIL_CLASSES` stays the default.
+    - **A drop-off** works anywhere someone can pull over, so it passes the
+      wider set and buses and light rail become candidates.
+
+    `classes=None` accepts everything.
     """
     # /v1/tp/coord, for the same reason discovery moved to it: stop_finder with
     # type_sf=coord reverse-geocodes and returns the ADDRESS as a single
@@ -1200,43 +1342,70 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
             break
 
     if not locations:
-        print("[trip] no stations found near the origin — park-and-ride "
-              "has nothing to offer for this trip", flush=True)
+        print("[trip] no boarding points found near the origin — nothing to "
+              "drive to for this trip", flush=True)
         return []
+
+    wanted = _RAIL_CLASSES if classes is None else classes
 
     out = []
     for loc in locations:
         if not is_real_stop_id(loc.get("id")):
             continue
-        classes = set(loc.get("productClasses") or [])
+        available = set(loc.get("productClasses") or [])
         # No productClasses at all is kept: absent data is not evidence against.
-        if classes and not (classes & _RAIL_CLASSES):
+        if wanted and available and not (available & wanted):
             continue
         coord = _coord_pair(loc.get("coord"))
         if not coord:
             continue
-        if haversine_m(origin_ll, coord) > radius_m:
+        distance = haversine_m(origin_ll, coord)
+        if distance > radius_m:
             continue
-        out.append({"id": loc.get("id"), "name": loc.get("name") or "",
-                    "lat": coord[0], "lng": coord[1]})
+        out.append({"id": loc.get("id"),
+                    "name": stop_display_name(loc),
+                    "lat": coord[0], "lng": coord[1],
+                    "distance_m": distance,
+                    "classes": available})
         if len(out) >= limit:
             break
+    out.sort(key=lambda s: s["distance_m"])
     return out
 
 
 async def _drive_and_park_ride(http, headers, origin, destination,
                                arrive_by=None, depart_at=None,
-                               origin_ll=None, dest_ll=None):
-    """The driving comparison, and any park-and-ride worth considering.
+                               origin_ll=None, dest_ll=None,
+                               car_available=False):
+    """The driving comparison, and any drive-assisted options worth considering.
 
-    Both need the same two geocodes, so they share them. Returns
-    `({minutes, km} | None, [summaries])` and never raises: losing the driving
-    line must not lose the transit answer.
+    Returns `({minutes, km} | None, [summaries])` and never raises: losing the
+    driving line must not lose the transit answer.
 
-    Park-and-ride is the one strategy that cannot keep the real origin — the
-    transit query has to start at the station — so its drive leg is added back
-    explicitly by `add_access_leg`, plus a parking allowance. Without that the
-    option would be ranked as though you teleported to the car park.
+    **The comparison always runs.** Knowing a car would take twenty minutes
+    less is useful even when there is no car — it is what you are giving up,
+    and it may be the thing that makes you go and find one.
+
+    **The drive-assisted options only run when `car_available`.** Not having a
+    car is the normal case, so offering "drive to Green Square and park" by
+    default is offering something the user cannot do. It is set from the
+    current request and nothing else — never from the profile, never
+    remembered — because whether a car is free today is not a durable fact
+    about a person.
+
+    Three strategies, and their differences are physical rather than cosmetic:
+
+    - `park_ride`  — you drive and leave the car. Costs a parking allowance,
+      and only works where parking exists, so **stations only**. The car is
+      stranded there until you come back the same way.
+    - `drop_off`   — someone drives you and takes the car back. No parking, and
+      it can end **anywhere someone can pull over**, so buses and light rail
+      are candidates too.
+    - `drive_direct` — the whole way by car. No transit leg at all.
+
+    Every drive leg is charged back through `add_access_leg`, so a driven
+    option is ranked having paid for its drive rather than as though you
+    teleported to the car park.
     """
     # plan_journeys has already resolved both ends through TfNSW, so reuse them
     # rather than paying ORS for the same answer — and so this works at all when
@@ -1256,20 +1425,53 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     minutes, km = await _ors_route(http, start, end, "driving-car")
     drive = {"minutes": minutes, "km": km} if minutes is not None else None
 
+    if not car_available:
+        return (drive, [])
+
     origin_ll = (start[1], start[0])     # ORS speaks [lon, lat]; compare in (lat, lng)
     dest_ll = (end[1], end[0])
 
-    stations = await _nearby_stations(http, headers, origin_ll)
-    candidates = [st for st in stations
-                  if station_is_toward(origin_ll, (st["lat"], st["lng"]), dest_ll)]
-
     summaries = []
-    for station in candidates[:PARK_RIDE_MAX_CANDIDATES]:
+
+    # Driving the whole way. No transit query, no boarding point — the drive
+    # already reaches the destination, so it is built here rather than fetched.
+    if drive:
+        whole_way = drive_only_summary(drive, _dt_now_utc(),
+                                       parse_user_time(arrive_by),
+                                       parse_user_time(depart_at))
+        if whole_way:
+            summaries.append(whole_way)
+
+    # One lookup, two candidate sets. Parking needs a station; a drop-off does
+    # not, so the wider set is filtered down rather than fetched twice.
+    nearby = await _nearby_stations(http, headers, origin_ll,
+                                    classes=DROP_OFF_CLASSES)
+    toward = [st for st in nearby
+              if station_is_toward(origin_ll, (st["lat"], st["lng"]), dest_ll)]
+
+    parkable = [st for st in toward
+                if not st.get("classes") or (st["classes"] & _RAIL_CLASSES)]
+
+    plans = ([(st, "park_ride", PARK_RIDE_PARKING_MIN)
+              for st in parkable[:PARK_RIDE_MAX_CANDIDATES]]
+             + [(st, "drop_off", 0)
+                for st in toward[:DROP_OFF_MAX_CANDIDATES]])
+
+    seen = set()
+    for station, strategy, extra_min in plans:
+        # The same stop can be both parkable and drop-offable. Querying it
+        # twice would spend a request to learn the same timetable; the drive
+        # cost is what differs, and that is applied after.
+        key = (station.get("id") or station["name"], strategy)
+        if key in seen:
+            continue
+        seen.add(key)
+
         drive_min, _km = await _ors_route(
             http, start, [station["lng"], station["lat"]], "driving-car")
         if drive_min is None or drive_min > PARK_RIDE_MAX_DRIVE_MIN:
             continue
-        access_min = drive_min + PARK_RIDE_PARKING_MIN
+        access_min = drive_min + extra_min
         # With a deadline TfNSW plans backwards and needs no shift; without one
         # it must be told you cannot board until you have driven there.
         station_depart = depart_at if arrive_by else park_ride_depart_at(
@@ -1282,9 +1484,60 @@ async def _drive_and_park_ride(http, headers, origin, destination,
             summary = summarise_journey(journey)
             if not summary:
                 continue
-            summary["strategy"] = "park_ride"
-            summaries.append(add_access_leg(summary, access_min, mode="Drive"))
+            summary["strategy"] = strategy
+            label = "Drive" if strategy == "park_ride" else "Lift"
+            summaries.append(add_access_leg(summary, access_min, mode=label))
     return (drive, summaries)
+
+
+def drive_only_summary(drive, now, arrive_by=None, depart_at=None):
+    """Driving door to door, shaped like any other journey. Pure, or None.
+
+    Built rather than fetched: the driving time is already known, and a car
+    journey has no timetable to look up. Shaped identically to a transit
+    summary so ranking, the gate and formatting need no special case — the
+    alternative was a fourth thing every caller had to remember to handle.
+
+    No waiting and no changes, which is exactly why it usually wins on time and
+    why `plan_journeys` keeps the best car-free option alongside it rather than
+    letting it be the only answer.
+    """
+    from datetime import timedelta as _td
+
+    minutes = drive.get("minutes") if drive else None
+    if minutes is None:
+        return None
+    minutes = int(round(minutes))
+
+    if arrive_by is not None:
+        arrive = arrive_by
+        depart = arrive - _td(minutes=minutes)
+        # A drive that would have to start in the past is not an option.
+        if depart < now:
+            depart, arrive = now, now + _td(minutes=minutes)
+    else:
+        depart = depart_at or now
+        arrive = depart + _td(minutes=minutes)
+
+    km = drive.get("km")
+    return {
+        "depart": depart,
+        "arrive": arrive,
+        "duration_min": minutes,
+        "walk_min": 0,
+        "wait_min": 0,
+        "changes": 0,
+        "realtime": False,
+        "strategy": "drive_direct",
+        "fare": None,
+        "legs": [{
+            "mode": "Drive", "line": "",
+            "from": "your location", "to": "your destination",
+            "depart": depart, "arrive": arrive,
+            "minutes": minutes, "realtime": False,
+            "km": km,
+        }],
+    }
 
 
 async def load_nearby_services(client, user_id: str, place_label: str = "home") -> list:
@@ -1335,6 +1588,7 @@ async def plan_journeys(
     client=None,
     user_id: str | None = None,
     depth: str = "full",
+    car_available: bool = False,
 ) -> dict:
     """Ranked journeys as data: `{ok, journeys, origin_note, drive}` or `{ok, error}`.
 
@@ -1484,10 +1738,11 @@ async def plan_journeys(
 
         drive = None
         if full and OPENROUTESERVICE_API_KEY:
-            drive, park_ride = await _drive_and_park_ride(
+            drive, driven = await _drive_and_park_ride(
                 http, headers, origin, destination, arrive_by, depart_at,
-                origin_ll=origin_ll, dest_ll=dest_ll)
-            summaries.extend(park_ride)
+                origin_ll=origin_ll, dest_ll=dest_ll,
+                car_available=car_available)
+            summaries.extend(driven)
 
     if not summaries:
         # Both ends resolved — otherwise we returned above — so this really is
@@ -1532,7 +1787,10 @@ async def plan_journeys(
         return {"ok": False,
                 "error": f"TfNSW returned journeys for {destination} but none had usable times."}
 
-    return {"ok": True, "journeys": ranked, "origin_note": origin_note, "drive": drive}
+    ranked = promote_car_free(ranked)
+
+    return {"ok": True, "journeys": ranked, "origin_note": origin_note,
+            "drive": drive, "car_available": car_available}
 
 
 async def trip_plan(
@@ -1542,6 +1800,7 @@ async def trip_plan(
     depart_at: str | None = None,
     client=None,
     user_id: str | None = None,
+    car_available: bool = False,
 ) -> str:
     """Search for a way there, rank the options, and say why each is offered.
 
@@ -1553,8 +1812,14 @@ async def trip_plan(
 
     `arrive_by` / `depart_at` are ISO-8601. Give `arrive_by` when there is a
     meeting to be at; that is what makes a leave-by time meaningful.
+
+    `car_available` unlocks driving to a station and parking, being dropped at
+    a stop, and driving the whole way. Default false, and set from what the
+    user just said rather than from anything remembered: whether a car is free
+    this morning is not a durable fact about a person.
     """
-    result = await plan_journeys(destination, origin, arrive_by, depart_at, client, user_id)
+    result = await plan_journeys(destination, origin, arrive_by, depart_at,
+                                 client, user_id, car_available=car_available)
     if not result["ok"]:
         return result["error"]
     return format_journeys(result["journeys"], result["origin_note"],
@@ -1622,10 +1887,12 @@ async def leave_by(
     origin: str | None = None,
     client=None,
     user_id: str | None = None,
+    car_available: bool = False,
 ) -> str:
     """When to leave to arrive somewhere on time, with the journey behind it."""
     result = await plan_journeys(destination, arrive_by=arrive_by,
-                                 origin=origin, client=client, user_id=user_id)
+                                 origin=origin, client=client, user_id=user_id,
+                                 car_available=car_available)
     if not result["ok"]:
         return result["error"]
 
