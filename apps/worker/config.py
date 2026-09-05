@@ -81,6 +81,10 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 WORKER_RECONNECT_MAX_RETRIES = 5
 WORKER_RECONNECT_BACKOFF_BASE_SECONDS = 2
 APPROVAL_POLL_INTERVAL_SECONDS = 5
+# How often the worker looks for a trip the app asked it to plan. Tighter
+# than the approval poll because somebody is watching a spinner: this is the
+# floor on how long Plan takes to answer, and it costs one cheap SELECT.
+TRAVEL_POLL_INTERVAL_SECONDS = 2
 APPROVAL_HOLD_SECONDS = 5
 
 ALLOWED_WRITE_ROOT = Path.home() / "Projects" / "PersonalAI"

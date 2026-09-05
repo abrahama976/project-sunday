@@ -832,16 +832,18 @@ def describe_strategy(summary: dict) -> str:
         return "drive the whole way"
     if strategy in ("park_ride", "drop_off"):
         boarding = next((l.get("from") for l in (summary.get("legs") or [])
-                         if l.get("mode") not in ("Walk", "Drive", "Lift")
+                         if l.get("mode") not in ("Walk", "Drive", "Dropped off")
                          and l.get("from")), "")
-        where = f" to {boarding}" if boarding else ""
+        where = f" at {boarding}" if boarding else ""
         minutes = summary.get("drive_min") or 0
         # Named for what actually happens, because the two are not
         # interchangeable: one leaves your car at the station all day, the
-        # other spends somebody else's half hour.
+        # other spends somebody else's half hour. "lift" was the first wording
+        # and said neither — it read as a mode of transport rather than as
+        # somebody doing you a favour.
         if strategy == "park_ride":
-            return f"drive {minutes} min{where} and park, then transit"
-        return f"lift {minutes} min{where}, then transit"
+            return f"drive {minutes} min{where.replace(' at ', ' to ')} and park, then transit"
+        return f"dropped off{where} after a {minutes} min drive, then transit"
     return ""
 
 
@@ -855,6 +857,86 @@ def describe_frequency(summary: dict) -> str:
     if not headway or headway <= 0:
         return ""
     return f"every ~{headway} min"
+
+
+def _plain_summary(summary) -> dict:
+    """A journey summary as JSON, with datetimes as ISO strings. Pure.
+
+    Postgres will not take a datetime through PostgREST, and a plan that fails
+    to save because of a type it could have converted is a plan lost for no
+    reason. Explicit rather than a default= hook on json.dumps, because this
+    also drops the parsed leg objects nothing downstream reads.
+    """
+    if not summary:
+        return {}
+
+    def _iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    out = {}
+    for key, value in summary.items():
+        if key == "legs":
+            out["legs"] = [{k: _iso(v) for k, v in (leg or {}).items()}
+                           for leg in (value or [])]
+        else:
+            out[key] = _iso(value)
+    return out
+
+
+def plan_as_row(result: dict, user_id: str, request_id=None) -> dict:
+    """A plan_journeys result as a travel_plans row. Pure, so it is testable.
+
+    Takes both the successful and failed shapes: a failure is still a plan
+    worth keeping, because "every option waited two hours" and "I could not
+    find the place" are different answers and the difference is the useful
+    part. `state` carries which.
+    """
+    origin_ll = result.get("origin_ll") or (None, None)
+    dest_ll = result.get("destination_ll") or (None, None)
+    ok = bool(result.get("ok"))
+    return {
+        "user_id": user_id,
+        "request_id": request_id,
+        "origin_text": result.get("origin_text"),
+        "origin_label": result.get("origin_label"),
+        "origin_lat": origin_ll[0],
+        "origin_lng": origin_ll[1],
+        "destination_text": result.get("destination_text"),
+        "destination_label": result.get("destination_label"),
+        "destination_lat": dest_ll[0],
+        "destination_lng": dest_ll[1],
+        "arrive_by": result.get("arrive_by"),
+        "depart_at": result.get("depart_at"),
+        "car_available": bool(result.get("car_available")),
+        "drop_off_available": bool(result.get("drop_off_available")),
+        "options": [_plain_summary(j) for j in (result.get("journeys") or [])],
+        "rejected": result.get("rejected") or [],
+        "drive": result.get("drive"),
+        "state": "ok" if ok else (result.get("state") or "failed"),
+        "reason": None if ok else result.get("error"),
+    }
+
+
+async def persist_travel_plan(client, user_id, result, request_id=None):
+    """Write the plan and return its id, or None. Never raises.
+
+    Losing the record must not lose the answer — the same rule log_turn
+    follows. A journey the user can see and a row nobody wrote is a much better
+    outcome than an exception on the way back from a successful search.
+    """
+    if client is None or not user_id:
+        return None
+    try:
+        res = await asyncio.to_thread(
+            lambda: client.table("travel_plans")
+            .insert(plan_as_row(result, user_id, request_id))
+            .execute()
+        )
+    except Exception as e:
+        print(f"[trip] could not save the plan: {e}", flush=True)
+        return None
+    rows = getattr(res, "data", None) or []
+    return rows[0].get("id") if rows else None
 
 
 def promote_car_free(ranked: list) -> list:
@@ -1376,7 +1458,7 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
 async def _drive_and_park_ride(http, headers, origin, destination,
                                arrive_by=None, depart_at=None,
                                origin_ll=None, dest_ll=None,
-                               car_available=False):
+                               car_available=False, drop_off_available=False):
     """The driving comparison, and any drive-assisted options worth considering.
 
     Returns `({minutes, km} | None, [summaries])` and never raises: losing the
@@ -1386,22 +1468,32 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     less is useful even when there is no car — it is what you are giving up,
     and it may be the thing that makes you go and find one.
 
-    **The drive-assisted options only run when `car_available`.** Not having a
-    car is the normal case, so offering "drive to Green Square and park" by
-    default is offering something the user cannot do. It is set from the
-    current request and nothing else — never from the profile, never
-    remembered — because whether a car is free today is not a durable fact
-    about a person.
+    **The drive-assisted options are gated, and by two separate flags**, because
+    they answer different questions. Not having a car is the normal case, so
+    offering "drive to Green Square and park" by default is offering something
+    the user cannot do. Both are set from the current request and nothing else
+    — never from the profile, never remembered — because whether a car is free
+    today is not a durable fact about a person.
+
+    - `car_available`      — a car the user drives themselves.
+    - `drop_off_available` — somebody else is driving.
+
+    They are not the same permission, and one boolean for both would produce
+    the error this module is otherwise careful to avoid. If a friend is
+    dropping you, you have no car to leave at the station, so `park_ride` is as
+    physically wrong for you as parking at a bus stop.
 
     Three strategies, and their differences are physical rather than cosmetic:
 
-    - `park_ride`  — you drive and leave the car. Costs a parking allowance,
-      and only works where parking exists, so **stations only**. The car is
-      stranded there until you come back the same way.
-    - `drop_off`   — someone drives you and takes the car back. No parking, and
-      it can end **anywhere someone can pull over**, so buses and light rail
-      are candidates too.
-    - `drive_direct` — the whole way by car. No transit leg at all.
+    - `park_ride`    — *needs `car_available`.* You drive and leave the car.
+      Costs a parking allowance, and only works where parking exists, so
+      **stations only**. The car is stranded there until you come back.
+    - `drop_off`     — *needs `drop_off_available`.* Somebody drives you and
+      takes the car away again. No parking allowance and no parking
+      requirement, so it can end **anywhere a car can pull over** — buses and
+      light rail included.
+    - `drive_direct` — *needs either.* The whole way by car, whoever is at the
+      wheel. No transit leg at all.
 
     Every drive leg is charged back through `add_access_leg`, so a driven
     option is ranked having paid for its drive rather than as though you
@@ -1425,7 +1517,7 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     minutes, km = await _ors_route(http, start, end, "driving-car")
     drive = {"minutes": minutes, "km": km} if minutes is not None else None
 
-    if not car_available:
+    if not (car_available or drop_off_available):
         return (drive, [])
 
     origin_ll = (start[1], start[0])     # ORS speaks [lon, lat]; compare in (lat, lng)
@@ -1449,13 +1541,15 @@ async def _drive_and_park_ride(http, headers, origin, destination,
     toward = [st for st in nearby
               if station_is_toward(origin_ll, (st["lat"], st["lng"]), dest_ll)]
 
-    parkable = [st for st in toward
-                if not st.get("classes") or (st["classes"] & _RAIL_CLASSES)]
-
-    plans = ([(st, "park_ride", PARK_RIDE_PARKING_MIN)
-              for st in parkable[:PARK_RIDE_MAX_CANDIDATES]]
-             + [(st, "drop_off", 0)
-                for st in toward[:DROP_OFF_MAX_CANDIDATES]])
+    plans = []
+    if car_available:
+        parkable = [st for st in toward
+                    if not st.get("classes") or (st["classes"] & _RAIL_CLASSES)]
+        plans += [(st, "park_ride", PARK_RIDE_PARKING_MIN)
+                  for st in parkable[:PARK_RIDE_MAX_CANDIDATES]]
+    if drop_off_available:
+        plans += [(st, "drop_off", 0)
+                  for st in toward[:DROP_OFF_MAX_CANDIDATES]]
 
     seen = set()
     for station, strategy, extra_min in plans:
@@ -1485,7 +1579,7 @@ async def _drive_and_park_ride(http, headers, origin, destination,
             if not summary:
                 continue
             summary["strategy"] = strategy
-            label = "Drive" if strategy == "park_ride" else "Lift"
+            label = "Drive" if strategy == "park_ride" else "Dropped off"
             summaries.append(add_access_leg(summary, access_min, mode=label))
     return (drive, summaries)
 
@@ -1589,6 +1683,7 @@ async def plan_journeys(
     user_id: str | None = None,
     depth: str = "full",
     car_available: bool = False,
+    drop_off_available: bool = False,
 ) -> dict:
     """Ranked journeys as data: `{ok, journeys, origin_note, drive}` or `{ok, error}`.
 
@@ -1667,14 +1762,20 @@ async def plan_journeys(
         # indistinguishable from "no services run". That is why every trip this
         # project has ever planned came back empty. stop_finder resolves the
         # same text happily, so it goes through there first.
+        origin_label = origin
+        dest_label = destination
+
         origin_ll = _as_lonlat(origin)
         if origin_ll:
             origin_ll = (origin_ll[1], origin_ll[0])
         else:
             resolved_origin = await resolve_place(http, headers, origin)
             if not resolved_origin.ok:
-                return {"ok": False, "error": resolved_origin.reason}
+                return {"ok": False, "error": resolved_origin.reason,
+                        "state": resolved_origin.state,
+                        "alternatives": [c.name for c in resolved_origin.alternatives]}
             origin_ll = resolved_origin.coords()
+            origin_label = resolved_origin.selected.name or origin
 
         # The destination is measured against the origin, which is what turns
         # "Sans Souci" resolving to Narrabri from an answer into a rejection.
@@ -1691,8 +1792,14 @@ async def plan_journeys(
                 # wording. Collapsing them is what produced "there's a
                 # limitation with the public transport data" when the truth was
                 # "I looked up the wrong Newtown".
-                return {"ok": False, "error": resolved_dest.reason}
+                #
+                # The candidates ride along so a UI can offer them as a choice
+                # rather than making the user retype a better guess.
+                return {"ok": False, "error": resolved_dest.reason,
+                        "state": resolved_dest.state,
+                        "alternatives": [c.name for c in resolved_dest.alternatives]}
             dest_ll = resolved_dest.coords()
+            dest_label = resolved_dest.selected.name or destination
 
         # Coordinates from here on: unambiguous, and they cannot be
         # re-interpreted differently by each query in the fan-out.
@@ -1741,7 +1848,8 @@ async def plan_journeys(
             drive, driven = await _drive_and_park_ride(
                 http, headers, origin, destination, arrive_by, depart_at,
                 origin_ll=origin_ll, dest_ll=dest_ll,
-                car_available=car_available)
+                car_available=car_available,
+                drop_off_available=drop_off_available)
             summaries.extend(driven)
 
     if not summaries:
@@ -1789,8 +1897,23 @@ async def plan_journeys(
 
     ranked = promote_car_free(ranked)
 
-    return {"ok": True, "journeys": ranked, "origin_note": origin_note,
-            "drive": drive, "car_available": car_available}
+    return {
+        "ok": True,
+        "journeys": ranked,
+        "origin_note": origin_note,
+        "drive": drive,
+        "car_available": car_available,
+        "drop_off_available": drop_off_available,
+        # Everything below exists so the answer survives being rendered. The
+        # string that format_journeys returns is for chat; a UI, and anything
+        # that wants to learn where this person goes, needs the structure.
+        "origin_label": origin_label,
+        "origin_ll": origin_ll,
+        "destination_label": dest_label,
+        "destination_ll": dest_ll,
+        "rejected": [{"reason": reason, "summary": _plain_summary(journey)}
+                     for journey, reason in rejected],
+    }
 
 
 async def trip_plan(
@@ -1801,6 +1924,7 @@ async def trip_plan(
     client=None,
     user_id: str | None = None,
     car_available: bool = False,
+    drop_off_available: bool = False,
 ) -> str:
     """Search for a way there, rank the options, and say why each is offered.
 
@@ -1819,7 +1943,8 @@ async def trip_plan(
     this morning is not a durable fact about a person.
     """
     result = await plan_journeys(destination, origin, arrive_by, depart_at,
-                                 client, user_id, car_available=car_available)
+                                 client, user_id, car_available=car_available,
+                                 drop_off_available=drop_off_available)
     if not result["ok"]:
         return result["error"]
     return format_journeys(result["journeys"], result["origin_note"],
@@ -1888,11 +2013,13 @@ async def leave_by(
     client=None,
     user_id: str | None = None,
     car_available: bool = False,
+    drop_off_available: bool = False,
 ) -> str:
     """When to leave to arrive somewhere on time, with the journey behind it."""
     result = await plan_journeys(destination, arrive_by=arrive_by,
                                  origin=origin, client=client, user_id=user_id,
-                                 car_available=car_available)
+                                 car_available=car_available,
+                                 drop_off_available=drop_off_available)
     if not result["ok"]:
         return result["error"]
 

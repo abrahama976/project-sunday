@@ -199,11 +199,19 @@ carried across sessions: whether a car is free this morning is not a durable
 fact about a person, and this project has already written one transient fact
 somewhere permanent.
 
-| Strategy | Drives to | Extra cost | Cap |
-|---|---|---|---|
-| `park_ride` | rail and metro **only** | +5 min parking | ≤2 |
-| `drop_off` | any boarding point, buses included | 0 | ≤2 |
-| `drive_direct` | the destination itself | 0 | 1 |
+| Strategy | Needs | Drives to | Extra cost | Cap |
+|---|---|---|---|---|
+| `park_ride` | `car_available` | rail and metro **only** | +5 min parking | ≤2 |
+| `drop_off` | `drop_off_available` | any boarding point, buses included | 0 | ≤2 |
+| `drive_direct` | either | the destination itself | 0 | 1 |
+
+**Two flags, not one.** "I have a car" and "a friend can drop me" are different
+permissions, and collapsing them into one boolean would produce exactly the
+error this module is otherwise careful about: if somebody else is driving, you
+have no car to leave at the station, so offering park-and-ride is as physically
+wrong as offering to park at a bus stop. The first version had one flag and got
+this wrong; it was the owner asking for "a friend dropping option" that
+surfaced it.
 
 The two candidate sets differ because the difference is physical, not
 cosmetic. Parking works where there is parking; telling someone to leave a car

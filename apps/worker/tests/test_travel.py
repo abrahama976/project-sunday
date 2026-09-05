@@ -31,6 +31,7 @@ from executors.travel_ops import (          # noqa: E402
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
     parse_user_time, check_requested_time, is_real_stop_id, stop_display_name,
     drive_only_summary, promote_car_free, DRIVE_STRATEGIES, DROP_OFF_CLASSES,
+    plan_as_row, _plain_summary,
 )
 from jobs import _stops_from_locations                        # noqa: E402
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
@@ -291,6 +292,93 @@ check_true("every drive strategy is accounted for",
            DRIVE_STRATEGIES == {"park_ride", "drop_off", "drive_direct"})
 check_true("a drop-off can end at a bus stop, which parking cannot",
            5 in DROP_OFF_CLASSES and 5 not in _RAIL_CLASSES)
+
+
+print("\n── naming the drive for what it is ───────────────────")
+
+# "lift 6 min to X" was the first wording and said neither whose car it is nor
+# what happens to it. The two options are not interchangeable and the label has
+# to carry the difference.
+def driven(strategy, drive_min):
+    j = summarise_journey({"legs": [walk_leg(0, 2), train_leg(10, 25)]})
+    j["strategy"] = strategy
+    j["drive_min"] = drive_min
+    return j
+
+
+park_text = describe_strategy(driven("park_ride", 8))
+drop_text = describe_strategy(driven("drop_off", 6))
+
+check_true("park-and-ride says you park", "park" in park_text, park_text)
+check_true("...and names the drive", "8 min" in park_text, park_text)
+check_true("a drop-off says you were dropped off",
+           "dropped off" in drop_text, drop_text)
+check_true("...and never says you park",
+           "park" not in drop_text, drop_text)
+check_true("...and still names the drive", "6 min" in drop_text, drop_text)
+check("driving the whole way says so",
+      describe_strategy({"strategy": "drive_direct"}), "drive the whole way")
+
+
+print("\n── a plan that survives being answered ───────────────")
+
+# plan_journeys builds ranked options, the strategy that found each, and every
+# rejection with its reason — then format_journeys rendered it to a string and
+# all of that was lost. It is why there could be no travel UI, why a failure
+# collapsed to one summary sentence, and why nothing could learn from where
+# this person actually goes.
+
+sample = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 25)]})
+flat = _plain_summary(sample)
+check_true("datetimes become ISO strings, which is what Postgres will take",
+           isinstance(flat["depart"], str) and flat["depart"].startswith("2026-"))
+check_true("...inside the legs too",
+           isinstance(flat["legs"][0]["depart"], str))
+check("the numbers survive unchanged", flat["duration_min"], sample["duration_min"])
+check("an empty summary flattens to an empty dict", _plain_summary(None), {})
+
+good = {
+    "ok": True,
+    "journeys": [dict(sample, strategy="boarding")],
+    "origin_label": "Lakes Hotel, Gardeners Rd",
+    "origin_ll": (-33.9228, 151.2065),
+    "destination_label": "Kogarah Station",
+    "destination_ll": (-33.9634, 151.1350),
+    "destination_text": "Kogarah Station",
+    "origin_text": None,
+    "drive": {"minutes": 19, "km": 10.4},
+    "rejected": [{"reason": "it arrives before it departs", "summary": {}}],
+    "car_available": True,
+    "drop_off_available": False,
+}
+row = plan_as_row(good, "user-1", "req-1")
+check("the row belongs to its user", row["user_id"], "user-1")
+check("...and to its request", row["request_id"], "req-1")
+check("what the text was taken to mean is recorded",
+      row["destination_label"], "Kogarah Station")
+check("...with the coordinates it resolved to", row["destination_lat"], -33.9634)
+check("the options come through", len(row["options"]), 1)
+check("...JSON-safe", isinstance(row["options"][0]["arrive"], str), True)
+check("the rejections keep their reasons", len(row["rejected"]), 1)
+check("a successful plan is in the ok state", row["state"], "ok")
+check("...and carries no failure reason", row["reason"], None)
+check("the flags are recorded, so 'why was I offered parking' is answerable",
+      (row["car_available"], row["drop_off_available"]), (True, False))
+
+# A failure is still worth keeping. "Every option waited two hours" and "I
+# could not find the place" are different answers, and the difference is the
+# useful part.
+bad = {"ok": False, "error": "'Newtown' could be more than one place.",
+       "state": "ambiguous", "destination_text": "Newtown"}
+row = plan_as_row(bad, "user-1")
+check("a failed plan is still a row", row["destination_text"], "Newtown")
+check("...carrying why it failed", row["state"], "ambiguous")
+check("...in words", row["reason"], "'Newtown' could be more than one place.")
+check("...with no options", row["options"], [])
+check("a failure with no state falls back to 'failed'",
+      plan_as_row({"ok": False, "error": "x"}, "u")["state"], "failed")
+check("missing coordinates are None, not a crash",
+      plan_as_row({"ok": True}, "u")["origin_lat"], None)
 
 
 print("\n── describe_alternative() ────────────────────────────")
