@@ -168,7 +168,8 @@ TOOLS = [
                 "destination": {"type": "string", "description": "Where they are going — a stop name, address or suburb. Include the city or suburb when a name could exist twice ('Newtown, Sydney'), otherwise you may be asked which one you meant."},
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location — that is the normal case. A saved place label ('home', 'work') is also understood."},
                 "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T07:00. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
-                "depart_at": {"type": "string", "description": "ISO-8601 LOCAL time they want to leave, e.g. 2026-09-05T07:00. Same rules as arrive_by: resolve against NOW, today or later."}
+                "depart_at": {"type": "string", "description": "ISO-8601 LOCAL time they want to leave, e.g. 2026-09-05T07:00. Same rules as arrive_by: resolve against NOW, today or later."},
+                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says a car or a lift is available — 'I have the car', 'someone can drop me', 'I'm driving today'. Unlocks driving to a station and parking, being dropped at a stop, and driving the whole way. Never assume it: they usually do not have one, and offering a drive they cannot take is worse than not offering it. Do not infer it from their profile or from an earlier day."}
             },
             "required": ["destination"]
         }
@@ -187,7 +188,8 @@ TOOLS = [
             "properties": {
                 "destination": {"type": "string", "description": "Where they are going"},
                 "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T09:30. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
-                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."}
+                "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."},
+                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says a car or a lift is available. Same rule as trip_plan — never assumed, never carried over from their profile or an earlier day."}
             },
             "required": ["destination", "arrive_by"]
         }

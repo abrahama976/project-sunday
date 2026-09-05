@@ -1093,14 +1093,20 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
         stops = await _find_stops(http, headers, origin_ll,
                                   max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M))
         for stop in stops:
-            # Rail is worth walking further for than a bus is.
-            limit = (WALK_RADIUS_RAIL_M if (stop["classes"] & _RAIL_CLASSES)
-                     else WALK_RADIUS_BUS_M)
-            if stop["distance_m"] > limit:
+            # Rail is worth walking further for than a bus is, and the test is
+            # per SERVICE rather than per stop. Applied to the stop, one train
+            # platform lent its 2 km allowance to every bus that happened to
+            # call there — which is how a bus thirty minutes' walk away ended
+            # up in the boarding pool, competing with the one at the corner.
+            if stop["distance_m"] > max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M):
                 continue
 
             walk_min = await _walk_minutes(http, origin_ll, stop)
             for service in await _stop_services(http, headers, stop):
+                is_rail = service["mode_class"] in _RAIL_CLASSES
+                if stop["distance_m"] > (WALK_RADIUS_RAIL_M if is_rail
+                                         else WALK_RADIUS_BUS_M):
+                    continue
                 discovered.append({
                     "user_id": uid, "place_label": label,
                     "stop_id": stop["id"], "stop_name": stop["name"],
@@ -1158,52 +1164,6 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
           f"stops near {label}: {', '.join(routes[:12])}")
 
 
-# EFA emits these instead of leaving a name out, and they must not be treated
-# as one. The first run against /v1/tp/coord wrote "undefined, undefined" as the
-# name of all 158 stops it found — which is not merely ugly: stop_name is part
-# of the upsert key, so every stop collided with every other and 158 stops
-# became 21 rows under a single name.
-_PLACEHOLDER_NAMES = {"", "undefined", "undefined, undefined", "null", "none"}
-
-# Where a stop's name lives, best first. stop_finder puts it in `name`;
-# /v1/tp/coord does not always, and the field it does use varies by location
-# type, so all of them are tried rather than guessed at.
-_NAME_FIELDS = ("disassembledName", "name")
-
-
-def stop_display_name(loc) -> str:
-    """A usable name for a stop, or its id. Never a placeholder, never blank.
-
-    Falling back to the id rather than to "" is deliberate. The name is part of
-    the upsert key, so an empty or repeated one silently merges distinct stops;
-    an id is unique by construction, so the worst case becomes an ugly label
-    rather than lost rows.
-    """
-    def _clean(value):
-        text = (value or "").strip()
-        return "" if text.lower() in _PLACEHOLDER_NAMES else text
-
-    for field in _NAME_FIELDS:
-        name = _clean(loc.get(field))
-        if name:
-            return name
-
-    # Nested shapes EFA uses for platforms and stop groups.
-    parent = loc.get("parent") or {}
-    for source in (parent.get("disassembledName"), parent.get("name")):
-        name = _clean(source)
-        if name:
-            return name
-
-    properties = loc.get("properties") or {}
-    for key in ("STOP_NAME", "stopName", "STOP_GLOBAL_ID"):
-        name = _clean(properties.get(key))
-        if name:
-            return name
-
-    return str(loc.get("id") or "").strip() or "unnamed stop"
-
-
 def _stops_from_locations(locations, origin_ll, radius_m) -> list:
     """EFA locations to stop records, pseudo-locations dropped. Pure.
 
@@ -1211,7 +1171,8 @@ def _stops_from_locations(locations, origin_ll, radius_m) -> list:
     `properties.distance`: the coordinate is already needed, the arithmetic is
     free, and it is one less field whose meaning has to be taken on trust.
     """
-    from executors.travel_ops import _coord_pair, haversine_m, is_real_stop_id
+    from executors.travel_ops import (_coord_pair, haversine_m, is_real_stop_id,
+                                      stop_display_name)
 
     out = []
     for loc in locations or []:

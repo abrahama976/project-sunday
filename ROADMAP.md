@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-09-04**
+Last updated: **2026-09-05**
 
 ---
 
@@ -15,7 +15,7 @@ Last updated: **2026-09-04**
 |---|---|---|
 | Supabase | Up | Migrations through `20260904100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running at `160c450` | Pulled and restarted 2026-09-05, twelve commits forward from #37. `mac_heartbeat.version` now reports the running sha, so this row no longer has to be inferred |
+| `apps/worker` | Running at `5811fda` | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -23,7 +23,7 @@ Last updated: **2026-09-04**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | **Proven, partly** | 2026-09-04: Rosebery → Newtown, leave 7:23 PM arrive 7:58 PM on the 358, with a driving comparison. That came from the **baseline query alone** — `nearby_services` held only the retired fake rows (4h), so the boarding-point fan-out has still never run. Park-and-ride never has either (4i) |
+| **Travel** | **Working** | 2026-09-05, Rosebery → Moore Park by 7 PM: leave 6:16, arrive 6:52 — eight minutes of slack, not two hours. Bus 358 → Light Rail L2, so cross-mode planning is real. `nearby_services` holds **93 services across 35 stops** including T8 at Green Square. Park-and-ride still unproven end to end |
 
 ---
 
@@ -192,6 +192,52 @@ The owner's stated preference was "arrive on time, then least waiting". This
 was "arrive on time" implemented as "arrive earliest" — the words matched and
 the behaviour did not.
 
+**4l — the car, when there is one.** Three drive-assisted strategies, all
+behind an explicit `car_available` flag that is **false by default** and set
+only from what the user just said. Never inferred from the profile, never
+carried across sessions: whether a car is free this morning is not a durable
+fact about a person, and this project has already written one transient fact
+somewhere permanent.
+
+| Strategy | Drives to | Extra cost | Cap |
+|---|---|---|---|
+| `park_ride` | rail and metro **only** | +5 min parking | ≤2 |
+| `drop_off` | any boarding point, buses included | 0 | ≤2 |
+| `drive_direct` | the destination itself | 0 | 1 |
+
+The two candidate sets differ because the difference is physical, not
+cosmetic. Parking works where there is parking; telling someone to leave a car
+at a bus stop is advice that does not survive contact with the bus stop. A
+drop-off ends anywhere someone can pull over, so the wider set applies. They
+are named for what actually happens — one strands your car at the station, the
+other spends somebody else's half hour.
+
+All within 5 km straight-line and 20 minutes' drive, still filtered by
+`station_is_toward` so it never drives away from the destination, and still
+required to beat the best car-free option by ten minutes.
+
+**Driving door to door has no waiting and no changes**, so on a straight
+ranking it wins nearly every time — ten minutes against thirty-seven to Moore
+Park. Ranking it honestly is right; letting it be the *only* answer is not,
+because a transit planner that says "just drive" has stopped answering the
+question. `promote_car_free` leaves the order alone and lifts one option: the
+best journey involving no car, to second place. The winner keeps its place on
+merit and the car-free plan is always there to compare against.
+
+The driving *comparison line* still prints whether or not a car is available —
+the owner's call, and a good one: knowing what you are giving up is useful
+even when you cannot take it.
+
+**Two bugs fixed alongside.** Consecutive legs on the same route were counted
+as a change, so "the 358, then the 358 again" cost a journey a transfer it
+never had. They are one vehicle only when the route matches **and** nothing was
+walked between them **and** the gap is under two minutes — because getting off
+a 358 to wait twenty minutes for the next 358 is a change by any measure a
+passenger cares about, and so is walking to another stop for it. And the walk
+radius is now per *service* rather than per stop: one train platform was
+lending its 2 km allowance to every bus that happened to call there, which is
+how a bus thirty minutes away ended up competing with the one at the corner.
+
 **4b — Ranking.** *(Superseded in part by 4k for deadline queries.)*
 Journeys sort on **arrive, then wait, then changes, then
 duration**. That order is the feature: the stated goal was less time standing on
@@ -231,6 +277,8 @@ them in is a one-row update once a geocoder is reachable.
       pool, and every stop named `undefined, undefined`
 - [x] 4k — **a deadline is not "now"** (below). Ranking answered the wrong
       question and sent you out of the house two hours early
+- [x] 4l — **the car, when there is one** (below). Park-and-ride, drop-off
+      and driving the whole way, behind an explicit car-available flag
 - [x] **Proved it.** 2026-09-04, Rosebery → Newtown: leave 7:23 PM, arrive
       7:58 PM, 358 from Lakes Hotel, with the driving comparison. Four attempts,
       each defeated by a different bug — all four are fixed in 4i.
