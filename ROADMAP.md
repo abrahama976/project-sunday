@@ -13,8 +13,8 @@ Last updated: **2026-09-05**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260904100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
-| `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
+| Supabase | Up | Migrations through `20260905060000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
+| `apps/web` | Deployed | Today, **Travel**, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings. Travel took the Schedule tab; the full week view stays at `/schedule`, linked from Travel |
 | `apps/worker` | Running at `5811fda` | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
@@ -245,6 +245,37 @@ passenger cares about, and so is walking to another stop for it. And the walk
 radius is now per *service* rather than per stop: one train platform was
 lending its 2 km allowance to every bus that happened to call there, which is
 how a bus thirty minutes away ended up competing with the one at the corner.
+
+**4m — a page for it, and a plan that outlives the answer.** Everything above
+was reachable only by typing a sentence into chat and hoping the model set the
+right arguments. `/travel` replaces the Schedule tab with controls.
+
+The blocker was never the UI. `plan_journeys` built ranked options, each tagged
+with the strategy that found it, plus every rejection and its reason — and then
+`format_journeys` rendered it to a string and the structure was gone. That one
+fact is why there could be no page, why a failure collapsed to a single summary
+sentence when per-option reasons existed, and why nothing could learn from
+where this person actually goes.
+
+`travel_plans` keeps it; `travel_requests` is the inbox. Vercel cannot reach
+the Mac, so the page inserts a row and the worker's poll answers it — the same
+shape as `action_queue`, roughly three to eight seconds. No model call, so
+tapping Plan repeatedly costs nothing against the 250/day cap.
+
+The page shows the leave time largest, because that is the question almost
+every trip is really asking; the strategy badge on each card, which is the only
+way to see whether the fan-out ran or quietly fell back to one corridor; and
+the rejected options with their reasons, which is how the gate's thresholds get
+validated against reality instead of staying guesses.
+
+Two things it closes. **The services correction UI** promised in 4e finally
+exists — `is_hidden` and `source='user'` shipped in #35 and had no controls, so
+the design has been half-built ever since; 93 services across 35 stops is too
+many to leave uncurated. And **live location**: `resolve_origin` has always
+preferred a phone fix under fifteen minutes old over the saved home, but
+nothing in the app ever sent one — `/api/location` existed the whole time with
+only a curl example for a caller, and `user_location` was empty. "Start from
+where I am" now fills it.
 
 **4b — Ranking.** *(Superseded in part by 4k for deadline queries.)*
 Journeys sort on **arrive, then wait, then changes, then

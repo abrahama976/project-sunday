@@ -8,7 +8,7 @@ import NotificationPanel from "./NotificationPanel";
 /* ── Tab definitions ──────────────────────────────────────── */
 const TABS = [
   { href: "/",          label: "Today",    icon: "today"    },
-  { href: "/schedule",  label: "Schedule", icon: "schedule" },
+  { href: "/travel",    label: "Travel",   icon: "schedule" },
   { href: "/chat",      label: "Chat",     icon: "chat"     },
   { href: "/tasks",     label: "Tasks",    icon: "tasks"    },
   { href: "/more",      label: "More",     icon: "more"     },
