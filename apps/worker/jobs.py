@@ -1158,6 +1158,52 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
           f"stops near {label}: {', '.join(routes[:12])}")
 
 
+# EFA emits these instead of leaving a name out, and they must not be treated
+# as one. The first run against /v1/tp/coord wrote "undefined, undefined" as the
+# name of all 158 stops it found — which is not merely ugly: stop_name is part
+# of the upsert key, so every stop collided with every other and 158 stops
+# became 21 rows under a single name.
+_PLACEHOLDER_NAMES = {"", "undefined", "undefined, undefined", "null", "none"}
+
+# Where a stop's name lives, best first. stop_finder puts it in `name`;
+# /v1/tp/coord does not always, and the field it does use varies by location
+# type, so all of them are tried rather than guessed at.
+_NAME_FIELDS = ("disassembledName", "name")
+
+
+def stop_display_name(loc) -> str:
+    """A usable name for a stop, or its id. Never a placeholder, never blank.
+
+    Falling back to the id rather than to "" is deliberate. The name is part of
+    the upsert key, so an empty or repeated one silently merges distinct stops;
+    an id is unique by construction, so the worst case becomes an ugly label
+    rather than lost rows.
+    """
+    def _clean(value):
+        text = (value or "").strip()
+        return "" if text.lower() in _PLACEHOLDER_NAMES else text
+
+    for field in _NAME_FIELDS:
+        name = _clean(loc.get(field))
+        if name:
+            return name
+
+    # Nested shapes EFA uses for platforms and stop groups.
+    parent = loc.get("parent") or {}
+    for source in (parent.get("disassembledName"), parent.get("name")):
+        name = _clean(source)
+        if name:
+            return name
+
+    properties = loc.get("properties") or {}
+    for key in ("STOP_NAME", "stopName", "STOP_GLOBAL_ID"):
+        name = _clean(properties.get(key))
+        if name:
+            return name
+
+    return str(loc.get("id") or "").strip() or "unnamed stop"
+
+
 def _stops_from_locations(locations, origin_ll, radius_m) -> list:
     """EFA locations to stop records, pseudo-locations dropped. Pure.
 
@@ -1181,7 +1227,7 @@ def _stops_from_locations(locations, origin_ll, radius_m) -> list:
         if distance > radius_m:
             continue
         out.append({
-            "id": stop_id, "name": loc.get("name") or "",
+            "id": stop_id, "name": stop_display_name(loc),
             "lat": coord[0], "lng": coord[1], "distance_m": distance,
             "classes": set(loc.get("productClasses") or []),
         })
@@ -1236,7 +1282,16 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
             continue
         stops = _stops_from_locations(locations, origin_ll, radius_m)
         if stops:
-            print(f"[nearby_services] coord({type_1}) found {len(stops)} stops")
+            # Naming the nearest one, because "found 158 stops" is exactly what
+            # was printed on the run that saved every one of them as
+            # "undefined, undefined". A count says the call worked; a name says
+            # the rows will be usable.
+            nearest = stops[0]
+            print(f"[nearby_services] coord({type_1}) found {len(stops)} stops, "
+                  f"nearest {nearest['name']} ({nearest['distance_m']:.0f} m)")
+            if nearest["name"] == str(nearest["id"]):
+                print("[nearby_services] warning: stop names fell back to ids — "
+                      "EFA returned no usable name field for this location type")
             return stops
 
     params = {

@@ -31,7 +31,7 @@ from executors.travel_ops import (          # noqa: E402
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
     parse_user_time, check_requested_time, is_real_stop_id,
 )
-from jobs import _stops_from_locations                        # noqa: E402
+from jobs import _stops_from_locations, stop_display_name     # noqa: E402
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
 from jobs import travel_replan_due                            # noqa: E402
 
@@ -357,6 +357,58 @@ check("case does not rescue it", is_real_stop_id("COORD:1:2"), False)
 check("nor does leading whitespace", is_real_stop_id("  coord:1:2"), False)
 check("an empty id is not a stop", is_real_stop_id(""), False)
 check("None is not a stop", is_real_stop_id(None), False)
+
+
+print("\n── naming a stop ─────────────────────────────────────")
+
+# What /v1/tp/coord actually returned on the first live run. All 158 stops came
+# back with this as their name, and since stop_name is part of the upsert key,
+# they collided into 21 rows under one name.
+check("EFA's undefined placeholder is not a name",
+      stop_display_name({"id": "201710", "name": "undefined, undefined"}),
+      "201710")
+check("...nor is a bare 'undefined'",
+      stop_display_name({"id": "1", "name": "undefined"}), "1")
+check("...nor blank, nor whitespace",
+      stop_display_name({"id": "1", "name": "   "}), "1")
+
+check("the short name is preferred",
+      stop_display_name({"id": "1", "disassembledName": "Green Square Station",
+                         "name": "Green Square Station, Botany Rd, Zetland"}),
+      "Green Square Station")
+check("...and the full name is used when there is no short one",
+      stop_display_name({"id": "1", "name": "Green Square Station, Botany Rd"}),
+      "Green Square Station, Botany Rd")
+check("a placeholder short name falls through to the real full name",
+      stop_display_name({"id": "1", "disassembledName": "undefined, undefined",
+                         "name": "Lakes Hotel, Gardeners Rd"}),
+      "Lakes Hotel, Gardeners Rd")
+
+# Platforms and stop groups nest the name one level down.
+check("a parent's name is used when the stop has none",
+      stop_display_name({"id": "1", "name": "undefined, undefined",
+                         "parent": {"name": "Central Station"}}),
+      "Central Station")
+check("properties are the last place looked",
+      stop_display_name({"id": "1", "properties": {"STOP_NAME": "Mascot"}}),
+      "Mascot")
+
+# Falling back to the id rather than "" is the point: an id is unique, so the
+# worst case is an ugly label instead of rows merging into one another.
+check("with nothing at all, the id is the name",
+      stop_display_name({"id": "G201868"}), "G201868")
+check("with truly nothing, something printable", stop_display_name({}), "unnamed stop")
+
+# And the whole reason this matters: two real stops must stay two rows.
+two_stops = [
+    {"id": "201710", "name": "undefined, undefined",
+     "coord": [-33.9066, 151.2064], "productClasses": [1]},
+    {"id": "202010", "name": "undefined, undefined",
+     "coord": [-33.9150, 151.2000], "productClasses": [5]},
+]
+named = _stops_from_locations(two_stops, (-33.922863, 151.206547), 5000)
+check("two unnamed stops keep two distinct names",
+      len({s["name"] for s in named}), 2)
 
 
 print("\n── _stops_from_locations() ───────────────────────────")

@@ -15,7 +15,7 @@ Last updated: **2026-09-04**
 |---|---|---|
 | Supabase | Up | Migrations through `20260904100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings |
-| `apps/worker` | Running, **stale at #37** | Heartbeat `online`, but the Mac checkout is at `60a4423` (#37) and its `origin/main` points there too — no fetch has run since. Everything from #38 on is merged and **not running**. `mac_heartbeat.version` and the startup banner now report this directly instead of it having to be inferred |
+| `apps/worker` | Running at `160c450` | Pulled and restarted 2026-09-05, twelve commits forward from #37. `mac_heartbeat.version` now reports the running sha, so this row no longer has to be inferred |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -406,6 +406,25 @@ deliberately: the Werris Creek itinerary fails four of them independently, and
 the gate should not depend on knowing which upstream bug produced its input.
 Rejections carry their reason, so the failure message says *what was wrong*
 rather than "none of them work", which only invites the same question again.
+
+**4j — the first real discovery run, and what it exposed.** 2026-09-05, the
+first time any of 4f–4i executed. `coord(STOP)` returned **158 stops** — the
+endpoint parameters were right — and rail entered the pool for the first time:
+**T8 at Green Square on a 4-minute headway**, alongside twelve bus routes
+instead of one corridor.
+
+It also wrote `undefined, undefined` as the name of every one of them. EFA's
+`/v1/tp/coord` does not put a stop's name where `stop_finder` does, and the
+placeholder was taken at face value. Not merely ugly: `stop_name` is part of
+the upsert key, so all 158 stops collided and **21 rows survived under a single
+name**. `stop_display_name` now tries `disassembledName`, `name`, the parent,
+then `properties`, rejects EFA's placeholders explicitly, and falls back to the
+**stop id** rather than to an empty string — because an id is unique by
+construction, so the worst case is an ugly label instead of merged rows.
+
+The count in the log said the call worked; only a name says the rows will be
+usable, so the line now prints the nearest stop's name and warns when the id
+fallback fires.
 
 Also fixed alongside: `_nearby_stations` had the same `type_sf=coord` bug as
 discovery, returning the address, whose product class is bus — so the rail

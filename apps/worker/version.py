@@ -43,7 +43,12 @@ def _read_version() -> str:
         return "unknown"
     # A dirty tree is worth knowing about: it means the running code is not any
     # commit, so comparing the sha against a merged PR proves nothing.
-    dirty = "+dirty" if _git("status", "--porcelain") else ""
+    #
+    # Tracked files only. The first run reported `160c450+dirty` because of one
+    # untracked scratch file, which says nothing about whether the code matches
+    # the commit — and a flag that cries wolf gets ignored, which would defeat
+    # the point of adding it. This is what `git describe --dirty` counts too.
+    dirty = "+dirty" if _git("status", "--porcelain", "--untracked-files=no") else ""
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     branch = "" if branch in ("", "HEAD") else f" ({branch})"
     return f"{sha}{dirty}{branch}"
