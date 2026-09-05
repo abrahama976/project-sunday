@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import OptionCard from "./option_card";
 import Services from "./services";
-import { Plan, Option, isDriven, clock, duration } from "./types";
+import { Plan, Option, isDriven, clock, duration, mapLink } from "./types";
 
 /**
  * Travel — plan a trip, and see why each option is offered.
@@ -238,6 +238,7 @@ export default function TravelPage() {
 
   const options: Option[] = plan?.options ?? [];
   const carFreeIndex = options.findIndex((o) => !isDriven(o));
+  const destinationMap = mapLink(plan?.destination_lat, plan?.destination_lng);
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "var(--space-6) var(--space-4) var(--space-12)" }}>
@@ -424,17 +425,50 @@ export default function TravelPage() {
           }}
         >
           <p style={{ margin: 0, fontSize: "0.875rem" }}>{plan.reason}</p>
+          {/* A failure that still resolved a coordinate is the most useful
+              place of all to offer the pin: "every option was implausible" and
+              "it resolved 400 km away" read identically until you look. */}
+          {destinationMap && (
+            <p style={{ margin: "var(--space-2) 0 0", fontSize: "0.75rem" }}>
+              It searched to{" "}
+              <a
+                href={destinationMap}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--color-primary)" }}
+              >
+                this point
+              </a>
+              . If that is the wrong place, name the suburb too.
+            </p>
+          )}
         </div>
       )}
 
       {plan && options.length > 0 && (
         <section style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", marginBottom: "var(--space-6)" }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-            <h2 style={{ fontSize: "0.9375rem", fontWeight: 600, margin: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "var(--space-3)" }}>
+            <h2 style={{ fontSize: "0.9375rem", fontWeight: 600, margin: 0, minWidth: 0 }}>
               {plan.destination_label || plan.destination_text}
             </h2>
-            <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
+            <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)", flexShrink: 0 }}>
               from {plan.origin_label || "home"}
+              {/* One tap to see where Sunday thinks it is going. Everything
+                  below this line is correct *about that coordinate*, so when
+                  the answer feels wrong this is the first thing to check. */}
+              {destinationMap && (
+                <>
+                  {" · "}
+                  <a
+                    href={destinationMap}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "var(--color-primary)" }}
+                  >
+                    Map
+                  </a>
+                </>
+              )}
             </span>
           </div>
 

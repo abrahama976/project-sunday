@@ -31,9 +31,9 @@ from executors.travel_ops import (          # noqa: E402
     format_services, as_efa_coord, _RAIL_CLASSES, PARK_RIDE_PARKING_MIN,
     parse_user_time, check_requested_time, is_real_stop_id, stop_display_name,
     drive_only_summary, promote_car_free, DRIVE_STRATEGIES, DROP_OFF_CLASSES,
-    plan_as_row, _plain_summary,
+    plan_as_row, _plain_summary, map_link,
 )
-from jobs import _stops_from_locations                        # noqa: E402
+from jobs import _stops_from_locations, _carry_over_and_find_stale  # noqa: E402
 from executors.calendar_ops import is_placeholder_event_id   # noqa: E402
 from jobs import travel_replan_due                            # noqa: E402
 
@@ -1109,6 +1109,71 @@ for real in ("4f8s0nk3q1p2r5t7v9x0y2z4a6",
              "abc123XYZ"):
     check_true(f"a real id is accepted: {real[:18]}…",
                not is_placeholder_event_id(real))
+
+print("\n── a link that shows where it actually looked ────────")
+
+# The one thing prose cannot express. Every travel bug this project has had was
+# an answer that was internally consistent about the wrong place, so the pin
+# has to be the coordinate that was used, not a search for the name.
+check("a coordinate becomes a map link",
+      map_link(-33.9173, 151.2043),
+      "https://www.google.com/maps/search/?api=1&query=-33.917300,151.204300")
+check("a missing coordinate is no link", map_link(None, 151.2), None)
+check("a half-missing coordinate is no link", map_link(-33.9, None), None)
+check("text is not a coordinate", map_link("home", "work"), None)
+# Better no link than one to the middle of the ocean: an out-of-range pair is
+# itself the symptom, and a plausible-looking link would hide it.
+check("an out-of-range latitude is refused", map_link(-95.0, 151.2), None)
+check("an out-of-range longitude is refused", map_link(-33.9, 251.2), None)
+# lat/lng, in that order. EFA takes lon:lat and that reversal has bitten here
+# before, so the argument order is pinned by a test rather than by a comment.
+check_true("latitude comes first",
+           (map_link(-33.9, 151.2) or "").endswith("-33.900000,151.200000"))
+check("a string that parses is accepted", map_link("-33.9", "151.2"),
+      "https://www.google.com/maps/search/?api=1&query=-33.900000,151.200000")
+
+print("\n── renaming a stop without losing what you decided ───")
+
+# Discovery names stops by id when the provider gives nothing better, so the
+# week it starts returning real names, every stop is a rename. stop_name is
+# part of the upsert key, so the new rows cannot update the old ones.
+_existing = [
+    {"stop_id": "2018123", "stop_name": "2018123", "route": "343",
+     "headsign": "Central", "is_hidden": False},
+    {"stop_id": "2018123", "stop_name": "2018123", "route": "306",
+     "headsign": "Sans Souci", "is_hidden": True},
+    {"stop_id": "2020999", "stop_name": "Waterloo Station", "route": "M1",
+     "headsign": "Sydenham", "is_hidden": False},
+]
+_discovered = [
+    {"stop_id": "2018123", "stop_name": "Lakes Hotel, Gardeners Rd",
+     "route": "343", "headsign": "Central", "is_hidden": False},
+    {"stop_id": "2018123", "stop_name": "Lakes Hotel, Gardeners Rd",
+     "route": "306", "headsign": "Sans Souci", "is_hidden": False},
+    {"stop_id": "2020999", "stop_name": "Waterloo Station", "route": "M1",
+     "headsign": "Sydenham", "is_hidden": False},
+]
+_stale = _carry_over_and_find_stale(_existing, _discovered)
+
+check("only the renamed stop's old rows are stale",
+      _stale, {("2018123", "2018123")})
+check_true("a stop whose name did not change is left alone",
+           ("2020999", "Waterloo Station") not in _stale)
+# The retirement is a decision about the 306, not about the label its stop
+# happened to carry. Losing it would put a route you hid back on the page.
+check_true("a retired service stays retired through the rename",
+           _discovered[1]["is_hidden"] is True)
+check_true("...and a visible one at the same stop stays visible",
+           _discovered[0]["is_hidden"] is False)
+
+# A provider outage must not empty the inventory. A stop that simply was not
+# mentioned this week is not stale — it is absent, which is a different thing.
+_absent = _carry_over_and_find_stale(
+    [{"stop_id": "9999", "stop_name": "Somewhere", "route": "1",
+      "headsign": "X", "is_hidden": False}],
+    [],
+)
+check("a stop the provider did not mention is not deleted", _absent, set())
 
 print("\n── the harness itself ────────────────────────────────")
 
