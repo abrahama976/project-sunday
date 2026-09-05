@@ -173,7 +173,27 @@ NSW Open Data trip planner. Real-time where the feed has it:
 timetable, and an answer says which one it used rather than presenting a
 timetable as fact.
 
-**4b — Ranking.** Journeys sort on **arrive, then wait, then changes, then
+**4k — a deadline is not the same question as "now".** Asked to reach Kogarah
+by 9:00 AM, it answered "leave at 7:01, arrive 7:49, journey 48 minutes" — a
+two-hour-early departure and a 48-minute trip in the same breath, and 71
+minutes standing on a platform.
+
+Ranking sorted on **earliest arrival**, always. That is right when leaving now
+and wrong under a deadline, where every candidate already arrives in time
+because the gate rejects the ones that do not — so "earliest" was ranking on a
+question nobody had asked. A deadline asks *when do I need to leave*, so the
+winner is now the **latest departure that still makes it**.
+
+Latest *arrival* would not have worked: a slow journey can arrive later while
+leaving earlier, which is the same bug wearing a different hat. It is pinned as
+its own test.
+
+The owner's stated preference was "arrive on time, then least waiting". This
+was "arrive on time" implemented as "arrive earliest" — the words matched and
+the behaviour did not.
+
+**4b — Ranking.** *(Superseded in part by 4k for deadline queries.)*
+Journeys sort on **arrive, then wait, then changes, then
 duration**. That order is the feature: the stated goal was less time standing on
 a platform, which is not the same as the shortest total trip. An alternative is
 only mentioned when its saving covers its cost — `_ALT_MAX_LATER_MIN = 15`.
@@ -207,6 +227,10 @@ them in is a one-row update once a geocoder is reachable.
 - [x] 4h — **a stop, not an address** (below). Discovery saved a fake stop
 - [x] 4i — **which place, and is this journey real** (below). `resolve_place`
       and the plausibility gate
+- [x] 4j — **the first real discovery run** (below). 158 stops, rail in the
+      pool, and every stop named `undefined, undefined`
+- [x] 4k — **a deadline is not "now"** (below). Ranking answered the wrong
+      question and sent you out of the house two hours early
 - [x] **Proved it.** 2026-09-04, Rosebery → Newtown: leave 7:23 PM, arrive
       7:58 PM, 358 from Lakes Hotel, with the driving comparison. Four attempts,
       each defeated by a different bug — all four are fixed in 4i.

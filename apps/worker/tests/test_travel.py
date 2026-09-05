@@ -159,6 +159,38 @@ check("on a tie, less waiting wins", rank_journeys([patient, brisk])[0]["wait_mi
 check("None summaries are dropped, not crashed on", len(rank_journeys([None, early, None])), 1)
 check("an empty list ranks to empty", rank_journeys([]), [])
 
+# With a deadline, earliest arrival is the wrong question. The real one, from
+# 2026-09-05: asked to reach Kogarah by 9:00 AM it chose the option leaving at
+# 7:01 to arrive at 7:49, then reported a 48-minute journey and a two-hour-early
+# departure in the same answer. 71 minutes on a platform, for no reason.
+DEADLINE = BASE + timedelta(hours=2)                       # 10:00
+
+# Both arrive in time; one leaves an hour and a half later.
+crack_of_dawn = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 25)]})    # 08:00 → 08:30
+sensible = summarise_journey({"legs": [walk_leg(90, 5), train_leg(95, 25)]})       # 09:30 → 10:00
+
+check("without a deadline, the earliest arrival still wins",
+      rank_journeys([sensible, crack_of_dawn])[0]["arrive"], crack_of_dawn["arrive"])
+check("with a deadline, the latest departure that makes it wins",
+      rank_journeys([crack_of_dawn, sensible], DEADLINE)[0]["depart"],
+      sensible["depart"])
+
+# Latest ARRIVAL would not do. A slow journey can arrive later while leaving
+# earlier, which is the same bug wearing a different hat.
+slow_early = summarise_journey({"legs": [walk_leg(30, 5), train_leg(35, 85)]})     # 08:30 → 10:00
+quick_late = summarise_journey({"legs": [walk_leg(80, 5), train_leg(85, 25)]})     # 09:20 → 09:50
+check("a slow journey arriving later does not beat a later departure",
+      rank_journeys([slow_early, quick_late], DEADLINE)[0]["depart"],
+      quick_late["depart"])
+
+# Ties still break on waiting, in both modes.
+same_dep_waits = summarise_journey({"legs": [walk_leg(60, 5), train_leg(80, 20)]})   # 15 min wait
+same_dep_brisk = summarise_journey({"legs": [walk_leg(60, 5), train_leg(65, 35)]})   # no wait
+check("on an equal departure, less waiting still wins",
+      rank_journeys([same_dep_waits, same_dep_brisk], DEADLINE)[0]["wait_min"], 0)
+
+check("a deadline over an empty list is still empty", rank_journeys([], DEADLINE), [])
+
 
 print("\n── describe_alternative() ────────────────────────────")
 
