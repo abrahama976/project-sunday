@@ -9,6 +9,7 @@ from config import (
     WORKER_RECONNECT_MAX_RETRIES,
     WORKER_RECONNECT_BACKOFF_BASE_SECONDS,
     APPROVAL_POLL_INTERVAL_SECONDS,
+    TRAVEL_POLL_INTERVAL_SECONDS,
     TOOL_TIER_MAP,
 )
 from heartbeat import run_heartbeat
@@ -281,6 +282,80 @@ async def poll_approved(client: Client):
         except Exception as e:
             print(f"[poll] error: {e}", flush=True)
 
+async def poll_travel_requests(client: Client):
+    """Plan trips the app asked for, and write the answer back.
+
+    The web app runs on Vercel and this runs on a Mac, so nothing up there can
+    call down here. Every feature that needs the worker goes through the
+    database and a poll — messages, approvals, reminders — and trip planning
+    from a UI is the same problem with the same answer.
+
+    Claimed the way execute_action claims: an UPDATE guarded on the status it
+    expects, so two workers, or one worker and a retry, cannot plan the same
+    request twice. Costs no model call — TfNSW and arithmetic only — so a
+    person tapping Plan repeatedly spends nothing against the 250/day cap.
+    """
+    from executors.travel_ops import plan_journeys, persist_travel_plan
+
+    while True:
+        try:
+            await asyncio.sleep(TRAVEL_POLL_INTERVAL_SECONDS)
+            rows = await asyncio.to_thread(
+                lambda: client.table("travel_requests").select("*")
+                .eq("status", "pending").order("created_at").limit(5).execute()
+            )
+            for request in (rows.data or []):
+                claim = await asyncio.to_thread(
+                    lambda r=request: client.table("travel_requests")
+                    .update({"status": "planning",
+                             "started_at": datetime.now(timezone.utc).isoformat()})
+                    .eq("id", r["id"]).eq("status", "pending").execute()
+                )
+                if not claim.data:
+                    continue        # somebody else got there first
+
+                try:
+                    result = await plan_journeys(
+                        destination=request["destination_text"],
+                        origin=request.get("origin_text"),
+                        arrive_by=request.get("arrive_by"),
+                        depart_at=request.get("depart_at"),
+                        client=client, user_id=request["user_id"],
+                        car_available=bool(request.get("car_available")),
+                        drop_off_available=bool(request.get("drop_off_available")),
+                    )
+                except Exception as e:
+                    result = {"ok": False, "error": f"Planning failed: {e}"}
+
+                # The request's own fields fill in what plan_journeys does not
+                # carry — it is answering a question, not describing one.
+                merged = {
+                    "origin_text": request.get("origin_text"),
+                    "destination_text": request["destination_text"],
+                    "arrive_by": request.get("arrive_by"),
+                    "depart_at": request.get("depart_at"),
+                    "car_available": bool(request.get("car_available")),
+                    "drop_off_available": bool(request.get("drop_off_available")),
+                    **result,
+                }
+                plan_id = await persist_travel_plan(
+                    client, request["user_id"], merged, request["id"])
+
+                await asyncio.to_thread(
+                    lambda r=request, p=plan_id, res=result:
+                    client.table("travel_requests").update({
+                        "status": "done" if res.get("ok") else "failed",
+                        "plan_id": p,
+                        "error": None if res.get("ok") else res.get("error"),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", r["id"]).execute()
+                )
+                print(f"[travel] planned {request['destination_text']} → "
+                      f"{'ok' if result.get('ok') else 'failed'}", flush=True)
+        except Exception as e:
+            print(f"[travel] poll error: {e}", flush=True)
+
+
 async def reap_stale_processing(client: Client):
     """Every 5 minutes, find action_queue rows stuck in 'processing' for >10 min
     and reset them to 'approved' so the worker can retry via idempotency key."""
@@ -521,6 +596,9 @@ async def main():
             print(f"[poll] CRITICAL: approval loop died: {task.exception()}", flush=True)
             sys.exit(1)
     poll_task = asyncio.create_task(poll_approved(client))
+    travel_task = asyncio.create_task(poll_travel_requests(client))
+    travel_task.add_done_callback(
+        lambda t: None if t.cancelled() else t.exception())
     poll_task.add_done_callback(_on_poll_done)
 
     # Start stale processing reaper (Fix 4)

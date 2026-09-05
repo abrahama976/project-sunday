@@ -859,6 +859,86 @@ def describe_frequency(summary: dict) -> str:
     return f"every ~{headway} min"
 
 
+def _plain_summary(summary) -> dict:
+    """A journey summary as JSON, with datetimes as ISO strings. Pure.
+
+    Postgres will not take a datetime through PostgREST, and a plan that fails
+    to save because of a type it could have converted is a plan lost for no
+    reason. Explicit rather than a default= hook on json.dumps, because this
+    also drops the parsed leg objects nothing downstream reads.
+    """
+    if not summary:
+        return {}
+
+    def _iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    out = {}
+    for key, value in summary.items():
+        if key == "legs":
+            out["legs"] = [{k: _iso(v) for k, v in (leg or {}).items()}
+                           for leg in (value or [])]
+        else:
+            out[key] = _iso(value)
+    return out
+
+
+def plan_as_row(result: dict, user_id: str, request_id=None) -> dict:
+    """A plan_journeys result as a travel_plans row. Pure, so it is testable.
+
+    Takes both the successful and failed shapes: a failure is still a plan
+    worth keeping, because "every option waited two hours" and "I could not
+    find the place" are different answers and the difference is the useful
+    part. `state` carries which.
+    """
+    origin_ll = result.get("origin_ll") or (None, None)
+    dest_ll = result.get("destination_ll") or (None, None)
+    ok = bool(result.get("ok"))
+    return {
+        "user_id": user_id,
+        "request_id": request_id,
+        "origin_text": result.get("origin_text"),
+        "origin_label": result.get("origin_label"),
+        "origin_lat": origin_ll[0],
+        "origin_lng": origin_ll[1],
+        "destination_text": result.get("destination_text"),
+        "destination_label": result.get("destination_label"),
+        "destination_lat": dest_ll[0],
+        "destination_lng": dest_ll[1],
+        "arrive_by": result.get("arrive_by"),
+        "depart_at": result.get("depart_at"),
+        "car_available": bool(result.get("car_available")),
+        "drop_off_available": bool(result.get("drop_off_available")),
+        "options": [_plain_summary(j) for j in (result.get("journeys") or [])],
+        "rejected": result.get("rejected") or [],
+        "drive": result.get("drive"),
+        "state": "ok" if ok else (result.get("state") or "failed"),
+        "reason": None if ok else result.get("error"),
+    }
+
+
+async def persist_travel_plan(client, user_id, result, request_id=None):
+    """Write the plan and return its id, or None. Never raises.
+
+    Losing the record must not lose the answer — the same rule log_turn
+    follows. A journey the user can see and a row nobody wrote is a much better
+    outcome than an exception on the way back from a successful search.
+    """
+    if client is None or not user_id:
+        return None
+    try:
+        res = await asyncio.to_thread(
+            lambda: client.table("travel_plans")
+            .insert(plan_as_row(result, user_id, request_id))
+            .execute()
+        )
+    except Exception as e:
+        print(f"[trip] could not save the plan: {e}", flush=True)
+        return None
+    rows = getattr(res, "data", None) or []
+    return rows[0].get("id") if rows else None
+
+
 def promote_car_free(ranked: list) -> list:
     """Ensure the best car-free option is second if it is not already first.
 
@@ -1682,14 +1762,20 @@ async def plan_journeys(
         # indistinguishable from "no services run". That is why every trip this
         # project has ever planned came back empty. stop_finder resolves the
         # same text happily, so it goes through there first.
+        origin_label = origin
+        dest_label = destination
+
         origin_ll = _as_lonlat(origin)
         if origin_ll:
             origin_ll = (origin_ll[1], origin_ll[0])
         else:
             resolved_origin = await resolve_place(http, headers, origin)
             if not resolved_origin.ok:
-                return {"ok": False, "error": resolved_origin.reason}
+                return {"ok": False, "error": resolved_origin.reason,
+                        "state": resolved_origin.state,
+                        "alternatives": [c.name for c in resolved_origin.alternatives]}
             origin_ll = resolved_origin.coords()
+            origin_label = resolved_origin.selected.name or origin
 
         # The destination is measured against the origin, which is what turns
         # "Sans Souci" resolving to Narrabri from an answer into a rejection.
@@ -1706,8 +1792,14 @@ async def plan_journeys(
                 # wording. Collapsing them is what produced "there's a
                 # limitation with the public transport data" when the truth was
                 # "I looked up the wrong Newtown".
-                return {"ok": False, "error": resolved_dest.reason}
+                #
+                # The candidates ride along so a UI can offer them as a choice
+                # rather than making the user retype a better guess.
+                return {"ok": False, "error": resolved_dest.reason,
+                        "state": resolved_dest.state,
+                        "alternatives": [c.name for c in resolved_dest.alternatives]}
             dest_ll = resolved_dest.coords()
+            dest_label = resolved_dest.selected.name or destination
 
         # Coordinates from here on: unambiguous, and they cannot be
         # re-interpreted differently by each query in the fan-out.
@@ -1805,9 +1897,23 @@ async def plan_journeys(
 
     ranked = promote_car_free(ranked)
 
-    return {"ok": True, "journeys": ranked, "origin_note": origin_note,
-            "drive": drive, "car_available": car_available,
-            "drop_off_available": drop_off_available}
+    return {
+        "ok": True,
+        "journeys": ranked,
+        "origin_note": origin_note,
+        "drive": drive,
+        "car_available": car_available,
+        "drop_off_available": drop_off_available,
+        # Everything below exists so the answer survives being rendered. The
+        # string that format_journeys returns is for chat; a UI, and anything
+        # that wants to learn where this person goes, needs the structure.
+        "origin_label": origin_label,
+        "origin_ll": origin_ll,
+        "destination_label": dest_label,
+        "destination_ll": dest_ll,
+        "rejected": [{"reason": reason, "summary": _plain_summary(journey)}
+                     for journey, reason in rejected],
+    }
 
 
 async def trip_plan(
