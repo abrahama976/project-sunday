@@ -800,15 +800,35 @@ def describe_frequency(summary: dict) -> str:
     return f"every ~{headway} min"
 
 
-def rank_journeys(summaries: list) -> list:
-    """Best first: earliest arrival, then least waiting, then fewest changes.
+def rank_journeys(summaries: list, arrive_by=None) -> list:
+    """Best first. What "best" means depends on whether there is a deadline.
 
-    Arrival wins because that is what a calendar cares about. Waiting comes
-    before changes because a single change with no wait beats a direct service
-    you stand around for — which is the ordering Maps does not offer.
+    **Leaving now**, the best journey is the one that arrives soonest. Waiting
+    comes before changes because a single change with no wait beats a direct
+    service you stand around for — the ordering Maps does not offer.
+
+    **With a deadline**, arriving soonest is the wrong goal and produced a
+    genuinely silly answer: asked to reach Kogarah by 9:00 AM, it picked the
+    option leaving at 7:01 and arriving at 7:49, then reported a 48-minute
+    journey and a two-hour-early departure in the same breath. Every option
+    reaching this point already arrives in time — the gate rejects the ones
+    that do not — so "earliest" was ranking on a question nobody asked and
+    spending 71 minutes of the user's morning on a platform.
+
+    What a deadline asks is *when do I need to leave*, so the winner is the
+    **latest departure** that still makes it. Latest arrival would not do:
+    a slow journey can arrive later while leaving earlier, which is the same
+    bug wearing a different hat.
+
+    Waiting, changes and duration break ties in both modes, in that order.
     """
+    usable = [s for s in summaries if s]
+    if arrive_by is not None:
+        return sorted(usable, key=lambda s: (-s["depart"].timestamp(),
+                                             s["wait_min"], s["changes"],
+                                             s["duration_min"]))
     return sorted(
-        [s for s in summaries if s],
+        usable,
         key=lambda s: (s["arrive"], s["wait_min"], s["changes"], s["duration_min"]),
     )
 
@@ -1504,7 +1524,10 @@ async def plan_journeys(
             f"I found journeys to {destination}, but none of them work: they have "
             "either already departed or arrive too late.")}
 
-    ranked = rank_journeys(checked)
+    # arrive_dt, so a deadline ranks by the latest departure that makes it
+    # rather than by the earliest arrival. Without it, "get me there by 9"
+    # answers "leave at 7 and wait an hour", which is true and useless.
+    ranked = rank_journeys(checked, arrive_dt)
     if not ranked:
         return {"ok": False,
                 "error": f"TfNSW returned journeys for {destination} but none had usable times."}
