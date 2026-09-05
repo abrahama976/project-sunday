@@ -293,6 +293,32 @@ check_true("a drop-off can end at a bus stop, which parking cannot",
            5 in DROP_OFF_CLASSES and 5 not in _RAIL_CLASSES)
 
 
+print("\n── naming the drive for what it is ───────────────────")
+
+# "lift 6 min to X" was the first wording and said neither whose car it is nor
+# what happens to it. The two options are not interchangeable and the label has
+# to carry the difference.
+def driven(strategy, drive_min):
+    j = summarise_journey({"legs": [walk_leg(0, 2), train_leg(10, 25)]})
+    j["strategy"] = strategy
+    j["drive_min"] = drive_min
+    return j
+
+
+park_text = describe_strategy(driven("park_ride", 8))
+drop_text = describe_strategy(driven("drop_off", 6))
+
+check_true("park-and-ride says you park", "park" in park_text, park_text)
+check_true("...and names the drive", "8 min" in park_text, park_text)
+check_true("a drop-off says you were dropped off",
+           "dropped off" in drop_text, drop_text)
+check_true("...and never says you park",
+           "park" not in drop_text, drop_text)
+check_true("...and still names the drive", "6 min" in drop_text, drop_text)
+check("driving the whole way says so",
+      describe_strategy({"strategy": "drive_direct"}), "drive the whole way")
+
+
 print("\n── describe_alternative() ────────────────────────────")
 
 best = summarise_journey({"legs": [walk_leg(0, 5), train_leg(5, 20),

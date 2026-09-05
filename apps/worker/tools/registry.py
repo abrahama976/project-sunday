@@ -169,7 +169,8 @@ TOOLS = [
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location — that is the normal case. A saved place label ('home', 'work') is also understood."},
                 "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T07:00. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
                 "depart_at": {"type": "string", "description": "ISO-8601 LOCAL time they want to leave, e.g. 2026-09-05T07:00. Same rules as arrive_by: resolve against NOW, today or later."},
-                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says a car or a lift is available — 'I have the car', 'someone can drop me', 'I'm driving today'. Unlocks driving to a station and parking, being dropped at a stop, and driving the whole way. Never assume it: they usually do not have one, and offering a drive they cannot take is worse than not offering it. Do not infer it from their profile or from an earlier day."}
+                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says they have a car THEY will drive — 'I have the car', 'I'm driving today'. Unlocks driving to a station and parking, and driving the whole way. Never assume it: they usually do not have one, and offering a drive they cannot take is worse than not offering it. Do not infer it from their profile or from an earlier day."},
+                "drop_off_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says SOMEONE ELSE can drive them — 'my friend can drop me', 'my brother is driving me', 'I can get a lift'. Unlocks being dropped at any stop, bus stops included, with no parking needed. Set this INSTEAD of car_available when a friend is driving: they have no car to leave at a station, so parking options would be useless to them."}
             },
             "required": ["destination"]
         }
@@ -189,7 +190,8 @@ TOOLS = [
                 "destination": {"type": "string", "description": "Where they are going"},
                 "arrive_by": {"type": "string", "description": "ISO-8601 LOCAL time they must arrive by, e.g. 2026-09-05T09:30. Resolve 'tomorrow' and similar against NOW in the system prompt; the date must be today or later."},
                 "origin": {"type": "string", "description": "Starting point. Omit to use their current or saved location."},
-                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says a car or a lift is available. Same rule as trip_plan — never assumed, never carried over from their profile or an earlier day."}
+                "car_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says they have a car they will drive themselves. Same rule as trip_plan — never assumed, never carried over from their profile or an earlier day."},
+                "drop_off_available": {"type": "boolean", "description": "TRUE only if the user's CURRENT message says someone else can drive them — a friend, a lift. Set this instead of car_available when it is not their own car."}
             },
             "required": ["destination", "arrive_by"]
         }
