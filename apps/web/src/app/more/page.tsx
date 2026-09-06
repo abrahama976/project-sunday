@@ -9,7 +9,10 @@ const MENU_ITEMS = [
   // them: /approvals existed but nothing in the app linked to it except the
   // bell and a Today card that only appears when the count is above zero.
   { href: "/approvals", label: "Approvals", desc: "Actions waiting for your OK", icon: "✅" },
-  { href: "/schedule",  label: "Schedule",  desc: "Today's timeline and travel", icon: "📅" },
+  { href: "/travel",    label: "Travel",    desc: "Plan trips, live departures, local transit", icon: "🚆" },
+  // ...and Schedule stopped being about travel when Travel took the tab, so
+  // the description no longer promises something the page does not do.
+  { href: "/schedule",  label: "Schedule",  desc: "Today's timeline and calendar", icon: "📅" },
   { href: "/health",    label: "Health",    desc: "Water, meals, sleep logs",    icon: "🍎" },
   { href: "/traces",    label: "Traces",    desc: "How Sunday reached its answers", icon: "🔍" },
   { href: "/profile",   label: "Profile",   desc: "What the AI knows about you",  icon: "👤" },

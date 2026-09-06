@@ -87,7 +87,16 @@ APPROVAL_POLL_INTERVAL_SECONDS = 5
 TRAVEL_POLL_INTERVAL_SECONDS = 2
 APPROVAL_HOLD_SECONDS = 5
 
-ALLOWED_WRITE_ROOT = Path.home() / "Projects" / "PersonalAI"
+# Overridable because the path is not the same everywhere the worker can run —
+# a container has no ~/Projects/PersonalAI. The default is unchanged, so the Mac
+# behaves exactly as before unless something deliberately sets the variable.
+#
+# This is a safety boundary (file_write cannot escape it), so it is worth being
+# explicit that it is now only as trustworthy as the environment. That is an
+# acceptable trade here: the same environment already holds the service-role
+# key, so anything that can set this can do far worse directly.
+ALLOWED_WRITE_ROOT = Path(os.getenv(
+    "ALLOWED_WRITE_ROOT", str(Path.home() / "Projects" / "PersonalAI")))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
