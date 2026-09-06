@@ -1253,6 +1253,86 @@ check_true("each option carries its own map link",
 check("a resolution with no alternatives offers nothing",
       place_options(ResolvedPlace(requested="x", state=AMBIGUOUS)), [])
 
+print("\n── learning where you keep going ─────────────────────")
+
+from jobs import frequent_destinations                          # noqa: E402
+
+
+def _plan(name, day, lat=-33.9, lng=151.2):
+    return {"destination_label": name, "destination_text": name,
+            "destination_lat": lat, "destination_lng": lng,
+            "created_at": f"2026-09-{day:02d}T09:00:00+00:00"}
+
+
+# Days, not trips. Planning the same journey four times in one afternoon means
+# the first three answers were unsatisfying — that is a signal about the
+# planner, not evidence the place matters.
+_same_day = [_plan("Chullora", 1) for _ in range(6)]
+check("six plans on one day is not a habit",
+      frequent_destinations(_same_day, []), [])
+
+_three_days = [_plan("Chullora", 1), _plan("Chullora", 4), _plan("Chullora", 9)]
+_learned = frequent_destinations(_three_days, [])
+check("three separate days is", [d["name"] for d in _learned], ["Chullora"])
+check("...and the day count is carried, since it is what justifies asking",
+      _learned[0]["days"], 3)
+
+check("a place already saved is never offered again",
+      frequent_destinations(_three_days, ["Chullora"]), [])
+check("...matched without regard to case",
+      frequent_destinations(_three_days, ["chullora"]), [])
+
+# Most-visited first, so the most useful question is asked first.
+_mixed = _three_days + [_plan("Kogarah", 2), _plan("Kogarah", 3),
+                        _plan("Kogarah", 5), _plan("Kogarah", 7)]
+check("the most frequent place is offered first",
+      [d["name"] for d in frequent_destinations(_mixed, [])],
+      ["Kogarah", "Chullora"])
+
+# A place can move, and the newest successful plan is the best evidence of
+# where it is now.
+_moved = [_plan("Gym", 1, -33.80, 151.10), _plan("Gym", 2, -33.80, 151.10),
+          _plan("Gym", 8, -33.88, 151.21)]
+check("the most recent coordinate wins",
+      round(frequent_destinations(_moved, [])[0]["lat"], 2), -33.88)
+
+check("a plan with no destination is skipped",
+      frequent_destinations([{"destination_label": "", "created_at": "2026-09-01"}], []),
+      [])
+check("a plan with no date is skipped",
+      frequent_destinations([{"destination_label": "X", "created_at": None}] * 5, []),
+      [])
+check("no history means nothing to ask", frequent_destinations([], []), [])
+
+print("\n── a tool is three edits, or it is broken ────────────")
+
+# CLAUDE.md: a new tool needs registry.py (declaration), TOOL_TIER_MAP (tier)
+# and _make_registry (executor). Nothing checked that, and the failure modes
+# are quiet in different ways — a missing tier silently falls through to
+# `approve`, and a missing executor only raises when the model finally calls
+# the tool, which may be days later. save_place is the fourth tool added this
+# way, so the rule is worth a test rather than a paragraph.
+from tools.registry import TOOLS                              # noqa: E402
+from config import TOOL_TIER_MAP                              # noqa: E402
+import main                                                   # noqa: E402
+
+_declared = {t["name"] for t in TOOLS}
+_executors = set(main._make_registry([None], [None]).keys())
+
+_missing_tier = sorted(_declared - set(TOOL_TIER_MAP))
+_missing_exec = sorted(_declared - _executors)
+# The reverse: an executor for something the model is never told about is dead
+# weight, and usually means a rename went half-done.
+_orphan_exec = sorted(_executors - _declared)
+
+check("every declared tool has a tier", _missing_tier, [])
+check("every declared tool has an executor", _missing_exec, [])
+check("no executor is unreachable", _orphan_exec, [])
+check_true("save_place made it through all three",
+           "save_place" in _declared
+           and TOOL_TIER_MAP.get("save_place") == "approve"
+           and "save_place" in _executors)
+
 print("\n── the harness itself ────────────────────────────────")
 
 # The stubs exist to satisfy imports, never to answer questions. A stub that

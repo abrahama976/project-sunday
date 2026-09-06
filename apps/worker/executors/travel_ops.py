@@ -5,7 +5,7 @@ import re
 from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUTES,
                     BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M,
                     USER_TIMEZONE)
-from utils import resolve_origin
+from utils import resolve_origin, row
 from travel.contracts import ResolvedPlace, NOT_FOUND, RESOLVED
 from travel.resolve import candidate_from_location, choose_place, saved_place_match
 from travel.gate import gate_journeys, rejection_summary
@@ -1286,6 +1286,55 @@ async def resolve_saved_label(client, user_id, text) -> dict | None:
     if place.get("address"):
         return {"origin": place["address"], "label": place["label"]}
     return None
+
+
+async def save_place(client, user_id, label: str, address: str,
+                     lat=None, lng=None, **_ignored) -> str:
+    """Remember a place under a short name. Approve-tier: never autonomous.
+
+    Writing to `saved_places` changes how every later trip is planned — "work"
+    becoming the wrong address quietly redirects every future answer — so this
+    is a write-tier tool by design, queued to `action_queue` and executed only
+    after you approve it. The learning job proposes; it does not save.
+
+    Existing labels are updated rather than duplicated, because two rows called
+    "work" would make `saved_place_match` pick one arbitrarily. `is_default` is
+    never touched: which place is home is a decision, and nothing that arrives
+    through the queue gets to change it.
+    """
+    label = (label or "").strip()
+    address = (address or "").strip()
+    if not label or not address:
+        return "Error: a place needs both a label and an address."
+    if client is None or not user_id:
+        return "Error: no user to save this for."
+
+    record = {"user_id": user_id, "label": label, "address": address}
+    if lat is not None and lng is not None:
+        try:
+            record["lat"], record["lng"] = float(lat), float(lng)
+        except (TypeError, ValueError):
+            pass                      # A bad coordinate is dropped, not fatal.
+
+    try:
+        existing = row(await asyncio.to_thread(
+            lambda: client.table("saved_places").select("id, label")
+            .eq("user_id", user_id).ilike("label", label)
+            .limit(1).maybe_single().execute()
+        ))
+        if existing:
+            await asyncio.to_thread(
+                lambda: client.table("saved_places")
+                .update({k: v for k, v in record.items() if k != "user_id"})
+                .eq("id", existing["id"]).execute()
+            )
+            return f"Updated '{label}' to {address}."
+        await asyncio.to_thread(
+            lambda: client.table("saved_places").insert(record).execute()
+        )
+        return f"Saved '{label}' as {address}."
+    except Exception as e:
+        return f"Error: could not save the place ({e})."
 
 
 async def _stop_finder(http, headers, text, origin_ll, allow_long_distance):

@@ -131,6 +131,9 @@ TOOL_TIER_MAP = {
     "trip_plan":            "auto",
     "leave_by":             "auto",
     "nearby_services":      "auto",
+    # Approve, not auto: saved_places is read by every later trip, so a wrong
+    # "work" quietly redirects every future answer rather than failing once.
+    "save_place":           "approve",
     # Profile & memory
     "update_profile":       "approve",
     "brain_learn":          "approve",

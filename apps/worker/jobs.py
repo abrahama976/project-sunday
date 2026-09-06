@@ -6,7 +6,7 @@ Each handler has the signature:
 These are registered with the Scheduler in main.py.
 """
 import asyncio
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import Client
 from utils import as_datetime, display_name, resolve_user, row
@@ -860,6 +860,266 @@ def travel_replan_due(planned_at, planned_leave_at, now,
     if (planned_leave_at - now) <= timedelta(minutes=lead_minutes):
         return True
     return (now - planned_at) >= timedelta(minutes=min_interval_minutes)
+
+
+# A place has to turn up on this many DIFFERENT days before it is worth
+# asking about. Days rather than trips, because planning the same journey four
+# times in one afternoon means the first three answers were not good enough,
+# not that the place matters.
+LEARN_MIN_DAYS = 3
+
+# And recently enough to still be true. Somewhere you went every day in March
+# and never since is not a saved place, it is a memory.
+LEARN_WINDOW_DAYS = 60
+
+
+def frequent_destinations(plans: list, known_labels, min_days=LEARN_MIN_DAYS) -> list:
+    """Places worth offering to remember, most-visited first. Pure.
+
+    `plans` are travel_plans rows; `known_labels` the labels already saved.
+    Returns `[{name, address, lat, lng, days}]`.
+
+    Counts distinct local DAYS, not rows. The same trip planned four times in
+    one afternoon is one day's interest and usually means the first three
+    answers were unsatisfying — a signal about the planner, not the place.
+    """
+    known = {str(label or "").strip().lower() for label in (known_labels or [])}
+    seen = {}
+    for plan in plans or []:
+        name = (plan.get("destination_label")
+                or plan.get("destination_text") or "").strip()
+        if not name or name.lower() in known:
+            continue
+        created = str(plan.get("created_at") or "")[:10]
+        if not created:
+            continue
+        entry = seen.setdefault(name.lower(), {
+            "name": name, "days": set(),
+            "address": plan.get("destination_text") or name,
+            "lat": plan.get("destination_lat"),
+            "lng": plan.get("destination_lng"),
+        })
+        entry["days"].add(created)
+        # Keep the most recent coordinate: a place can move, and the newest
+        # successful plan is the best evidence of where it is now.
+        if plan.get("destination_lat") is not None:
+            entry["lat"] = plan["destination_lat"]
+            entry["lng"] = plan["destination_lng"]
+
+    frequent = [
+        {"name": e["name"], "address": e["address"],
+         "lat": e["lat"], "lng": e["lng"], "days": len(e["days"])}
+        for e in seen.values() if len(e["days"]) >= min_days
+    ]
+    frequent.sort(key=lambda d: (-d["days"], d["name"].lower()))
+    return frequent
+
+
+async def travel_learn(client: Client, gemini_api_key: str) -> None:
+    """Offer to remember places you keep travelling to. Proposes, never saves.
+
+    The feedback loop you asked for: Sunday notices a destination coming up
+    again and again, and asks — in the app, on the Approvals page — whether to
+    remember it. Approving it makes "how do I get to the gym" work from then on.
+
+    Deliberately a QUEUED SUGGESTION rather than a write. `saved_places` is read
+    by every later trip, so a wrong guess at "work" silently redirects every
+    future answer instead of failing once and visibly. Approve tier is the
+    project's rule for exactly this shape of change, and this job respects it
+    rather than making an exception for itself.
+
+    Makes no model call — SQL and counting.
+    """
+    try:
+        user = await resolve_user(client)
+    except Exception as e:
+        print(f"[travel_learn] no user: {e}")
+        return
+    uid = user["user_id"]
+
+    since = (datetime.now(timezone.utc)
+             - timedelta(days=LEARN_WINDOW_DAYS)).isoformat()
+    try:
+        plans = (await asyncio.to_thread(
+            lambda: client.table("travel_plans")
+            .select("destination_label, destination_text, destination_lat, "
+                    "destination_lng, created_at")
+            .eq("user_id", uid).eq("state", "ok")
+            .gte("created_at", since).execute()
+        )).data or []
+        saved = (await asyncio.to_thread(
+            lambda: client.table("saved_places").select("label, address")
+            .eq("user_id", uid).execute()
+        )).data or []
+    except Exception as e:
+        print(f"[travel_learn] could not read history: {e}")
+        return
+
+    known = [p.get("label") for p in saved] + [p.get("address") for p in saved]
+    candidates = frequent_destinations(plans, known)
+    if not candidates:
+        print("[travel_learn] nothing frequent enough to ask about yet")
+        return
+
+    for place in candidates:
+        # Asked once, ever. A suggestion you denied must not come back every
+        # night — that is nagging, not learning — so any existing row for this
+        # place, in ANY status, counts as already asked.
+        try:
+            asked = (await asyncio.to_thread(
+                lambda p=place: client.table("action_queue")
+                .select("id").eq("user_id", uid)
+                .eq("action_type", "save_place")
+                .eq("payload->>label", p["name"])
+                .limit(1).execute()
+            )).data or []
+        except Exception as e:
+            print(f"[travel_learn] could not check what was already asked: {e}")
+            return
+        if asked:
+            continue
+
+        payload = {"label": place["name"], "address": place["address"]}
+        if place["lat"] is not None and place["lng"] is not None:
+            payload["lat"], payload["lng"] = place["lat"], place["lng"]
+        # `why` rides in the payload rather than in a column, because
+        # action_queue has none for it — the approvals page renders the payload
+        # — and because it is genuinely part of the proposal: "3 different
+        # days" is what makes this worth a tap rather than a shrug. save_place
+        # ignores the key.
+        payload["why"] = (f"planned a trip here on {place['days']} different "
+                          f"days in the last {LEARN_WINDOW_DAYS}")
+        try:
+            await asyncio.to_thread(
+                lambda p=payload: client.table("action_queue").insert({
+                    "user_id": uid,
+                    "action_type": "save_place",
+                    "payload": p,
+                    "tier": "approve",
+                    "status": "awaiting_approval",
+                    "approved": None,
+                }).execute()
+            )
+            print(f"[travel_learn] asked about {place['name']} "
+                  f"({place['days']} days)")
+        except Exception as e:
+            print(f"[travel_learn] could not queue {place['name']}: {e}")
+
+
+async def travel_preview(client: Client, gemini_api_key: str) -> None:
+    """Tomorrow's first trip, tonight. One message, in the app.
+
+    `travel_watch` has a six-hour horizon, which is right for a leave-now alert
+    and useless for the question you actually ask in the evening: is tomorrow
+    going to be a problem. An 8am event was invisible until 2am, by which time
+    knowing you need to leave at 6:40 is no use to anyone.
+
+    So this runs once, in the evening, over tomorrow's located events — and
+    writes a message rather than a push, because you asked for these in-app.
+
+    One message covering every event, not one per event. Three separate pushes
+    about the same day is a notification you learn to dismiss.
+
+    Makes no model call: TfNSW lookups and formatting.
+    """
+    from executors.travel_ops import plan_journeys, leave_time_from
+    from config import TRAVEL_BUFFER_MINUTES
+
+    try:
+        user = await resolve_user(client)
+    except Exception as e:
+        print(f"[travel_preview] no user: {e}")
+        return
+    uid = user["user_id"]
+
+    tz_res = await asyncio.to_thread(
+        lambda: client.table("user_location").select("timezone")
+        .eq("user_id", uid).limit(1).maybe_single().execute()
+    )
+    tz = ZoneInfo(row(tz_res).get("timezone") or "Australia/Sydney")
+    now = datetime.now(tz)
+    tomorrow = (now + timedelta(days=1)).date()
+    start = datetime.combine(tomorrow, time(0, 0), tzinfo=tz)
+    end = datetime.combine(tomorrow, time(23, 59), tzinfo=tz)
+
+    try:
+        events = (await asyncio.to_thread(
+            lambda: client.table("calendar_events")
+            .select("event_id, title, start_time, location")
+            .eq("user_id", uid)
+            .gte("start_time", start.isoformat())
+            .lte("start_time", end.isoformat())
+            .order("start_time").execute()
+        )).data or []
+    except Exception as e:
+        print(f"[travel_preview] could not read tomorrow: {e}")
+        return
+
+    located = [e for e in events if (e.get("location") or "").strip()]
+    if not located:
+        print("[travel_preview] nothing with a location tomorrow")
+        return
+
+    lines = []
+    for event in located[:3]:
+        starts = _parse_time_local(event.get("start_time"), tz)
+        if not starts:
+            continue
+        try:
+            plan = await plan_journeys(
+                client=client, user_id=uid,
+                destination=event["location"],
+                arrive_by=starts.isoformat(),
+                depth="baseline",
+            )
+        except Exception as e:
+            print(f"[travel_preview] could not plan {event.get('title')}: {e}")
+            continue
+
+        title = (event.get("title") or "your event").strip()
+        when = starts.strftime("%-I:%M %p").lower()
+        if not plan.get("ok") or not plan.get("journeys"):
+            # Said plainly rather than silently skipped. "I could not work out
+            # how to get there" is exactly the thing worth knowing the night
+            # before, while there is still time to do something about it.
+            lines.append(f"• {title} at {when} — I couldn't find a way there. "
+                         f"({plan.get('error') or 'no options'})")
+            continue
+
+        best = plan["journeys"][0]
+        leave = leave_time_from(best, TRAVEL_BUFFER_MINUTES)
+        leave_text = leave.strftime("%-I:%M %p").lower() if leave else "—"
+        lines.append(f"• {title} at {when} — leave about {leave_text}, "
+                     f"{best['duration_min']} min.")
+
+    if not lines:
+        return
+
+    body = ("Tomorrow's travel:\n" + "\n".join(lines)
+            + "\n\nI'll re-check these on the day, closer to the time.")
+    try:
+        await asyncio.to_thread(
+            lambda: client.table("messages").insert({
+                "user_id": uid, "role": "assistant",
+                "content": body, "model_used": "system",
+            }).execute()
+        )
+        print(f"[travel_preview] previewed {len(lines)} trips for tomorrow")
+    except Exception as e:
+        print(f"[travel_preview] could not write the preview: {e}")
+
+
+def _parse_time_local(value, tz):
+    """An event start as an aware datetime in `tz`, or None. Never raises."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
 
 
 async def travel_watch(client: Client, gemini_api_key: str) -> None:

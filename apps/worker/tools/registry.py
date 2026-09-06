@@ -214,6 +214,26 @@ TOOLS = [
         }
     },
     {
+        "name": "save_place",
+        "description": (
+            "Remember an address under a short name like 'work', 'gym' or "
+            "'mum's', so later trips can just say the name. Use when the user "
+            "tells you where somewhere is, or asks you to remember a place. "
+            "An existing label is updated rather than duplicated. This does "
+            "NOT change which place is home."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Short name, e.g. 'work'."},
+                "address": {"type": "string", "description": "Street address or place name."},
+                "lat": {"type": "number", "description": "Latitude, if already known."},
+                "lng": {"type": "number", "description": "Longitude, if already known."}
+            },
+            "required": ["label", "address"]
+        }
+    },
+    {
         "name": "transit_departures",
         "description": "Get real-time upcoming transit departures for a stop in Sydney using TfNSW API.",
         "parameters": {
