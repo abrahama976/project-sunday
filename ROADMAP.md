@@ -5,7 +5,7 @@ the Antigravity handover, all of which disagreed with each other and with the
 code. If something here is wrong, fix it here rather than starting a new
 document.
 
-Last updated: **2026-09-05**
+Last updated: **2026-09-06**
 
 ---
 
@@ -13,9 +13,9 @@ Last updated: **2026-09-05**
 
 | Component | State | Note |
 |---|---|---|
-| Supabase | Up | Migrations through `20260905110000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
+| Supabase | Up | Migrations through `20260906100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, **Travel**, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings. Travel took the Schedule tab; the full week view stays at `/schedule`, linked from Travel |
-| `apps/worker` | Running at `5811fda` | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
+| `apps/worker` | Running at `5811fda` — **behind `main`** | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -23,7 +23,7 @@ Last updated: **2026-09-05**
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
-| **Travel** | **Working** | 2026-09-05, Rosebery → Moore Park by 7 PM: leave 6:16, arrive 6:52 — eight minutes of slack, not two hours. Bus 358 → Light Rail L2, so cross-mode planning is real. `nearby_services` holds **93 services across 35 stops** including T8 at Green Square. Park-and-ride still unproven end to end |
+| **Travel** | **Working** | 2026-09-05, Rosebery → Moore Park by 7 PM: leave 6:16, arrive 6:52 — eight minutes of slack, not two hours. Bus 358 → Light Rail L2, so cross-mode planning is real. `nearby_services` holds **93 services across 35 stops** including T8 at Green Square. Park-and-ride still unproven end to end. Ambiguous names are now offered as tappable choices with map pins; a web search rewrites the query for venue names, never the coordinate |
 
 ---
 
@@ -569,12 +569,49 @@ silently, because an empty list also looks like "no station nearby".
 
 ---
 
-## Deferred
+## Deliberately unfinished
 
+Winding up here rather than pretending. Each of these was considered and left,
+and the reason matters more than the list.
+
+- **Park-and-ride is unproven.** It has never produced a single option. The
+  `type_sf=coord` bug that caused that is fixed, but nothing has confirmed the
+  fix against the live API, because no environment that could run the code had a
+  TfNSW key. **This is the one item most likely to be quietly broken.** To
+  settle it: ask for a trip somewhere with parking, with the car available, and
+  see whether a `park_ride` strategy appears.
+- **Health and meals have no tool.** The Health page writes rows; the agent
+  cannot. `meal_checkin` used to offer "let me log it for you" and now points at
+  the page instead, which is honest but not the same as being able to.
+- **No container.** The worker runs from a checkout on the Mac under `launchd`.
+  Docker was considered and set aside as more moving parts than one machine
+  needs.
+- **Two security items were deprioritised, twice, explicitly.** The Google OAuth
+  client whose secret was pasted into a chat is still live, and the Supabase
+  **service-role key** — which bypasses RLS entirely — appeared in a screenshot
+  and has not been rotated. Recorded here because a decision to accept a risk
+  should be written down, not because it is being reopened.
+- **The ntfy topic is public.** Anyone who knows `sunday-…` can read every push.
+  This is why the travel learning loop asks in-app rather than by notification.
 - Streaming responses — complex to reconcile with intermediate loop steps
 - Voice input
 - Multi-user context isolation (Sprint 5, and see Phase 3 above)
 - Per-user ntfy channels — `poll_reminders` currently uses one global topic
+- Phone GPS as a live origin — the API and table exist and work; nothing
+  automatically posts a location yet, so "start from where I am now" needs a
+  Shortcut or Tasker job at the phone end
+
+---
+
+## What to do first, next time
+
+1. **Pull the worker.** It reports `5811fda`; `main` is far ahead. Every travel
+   fix below is inert until it does. `mac_heartbeat.version` is the check.
+2. **Prove park-and-ride**, per the note above.
+3. **Watch `travel_learn` for a week.** It needs a destination planned on three
+   different days before it asks anything, and there is one plan row in the
+   table today, so it will be silent for a while. Silence is expected; an
+   *unwanted* suggestion is the bug worth reporting.
 
 ---
 
@@ -607,13 +644,15 @@ silently, because an empty list also looks like "no station nearby".
    nine rows accumulated. It would have surfaced the moment a `user_id` was
    written — the second glass of water of any day.
 
-6. **Lint is red outside the pages touched recently.** `npx eslint src/` fails
-   in `approvals/`, `chat/`, `components/NavBar.tsx`,
-   `components/NotificationPanel.tsx` and `page.tsx` — mostly
-   `react-hooks/purity` (`Date.now()` in render) and
-   `react-hooks/set-state-in-effect`, both of which this Next version enforces
-   and older code predates. `travel/`, `health/` and `api/location/` are clean.
-   Not urgent, but the suite cannot be used as a gate until it is green.
+6. **~~Lint is red~~ — fixed, and it found two real bugs.** `npx eslint src/`
+   now passes clean, so the command in CLAUDE.md is finally usable as a gate.
+   Getting there was not cosmetic: the dashboard's `currentTime` was set once
+   at mount and never again, so `isOnline` compared the heartbeat against a
+   frozen clock and reported the worker **online indefinitely** after it
+   stopped; and `NavBar` kept a second realtime channel open on `action_queue`
+   to feed a badge that had moved to the notification bell. Both surfaced only
+   because `react-hooks/purity` and `react-hooks/set-state-in-effect` were
+   asked why the state was shaped that way.
 
 7. **The dormancy was 60 days, not twelve weeks.** The last commit is
    2026-06-06 but `mac_heartbeat.last_seen` reads 2026-07-01 — the worker ran

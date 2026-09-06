@@ -72,8 +72,6 @@ function ThinkingDot() {
 /* ── Message row ────────────────────────────────────────── */
 function MessageRow({ msg }: { msg: Message }) {
   const [showTime, setShowTime] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
   const isUser = msg.role === "user";
 
   return (
@@ -120,7 +118,12 @@ function MessageRow({ msg }: { msg: Message }) {
             opacity: showTime ? 1 : 0,
             transition: "opacity 150ms",
           }}>
-            {mounted ? formatTime(msg.created_at) : <span style={{ visibility: "hidden" }}>--:--</span>}
+            {/* The server and the browser format a local time differently, so
+                this used to render blank until a mount effect flipped a flag —
+                a setState in an effect body purely to say "we are on the
+                client now". suppressHydrationWarning says the same thing to
+                React directly, and the time is correct on first paint. */}
+            <span suppressHydrationWarning>{formatTime(msg.created_at)}</span>
           </span>
           {!isUser && msg.model_used && msg.model_used !== "system" && (
             <span style={{
@@ -274,8 +277,6 @@ export default function ChatPage() {
       }
     );
 
-    let pollInterval: number | undefined;
-
     const setupRealtimeChannel = async () => {
       if (cancelled) return;
       if (channelRef.current) {
@@ -327,15 +328,18 @@ export default function ChatPage() {
 
     void setupRealtimeChannel();
 
-      // Polling FALLBACK, and now actually a fallback. This used to run
-      // unconditionally alongside a healthy Realtime channel, refetching the
-      // whole history every four seconds — roughly 900 queries an hour per open
-      // tab, and the likeliest reason the chat felt unsettled while reading it.
-      pollInterval = setInterval(() => {
-        if (connStatusRef.current === "connected") return;
-        void loadHistory();
-      }, 4000) as unknown as number;
-    // End of setupRealtimeChannel
+    // Polling FALLBACK, and now actually a fallback. This used to run
+    // unconditionally alongside a healthy Realtime channel, refetching the
+    // whole history every four seconds — roughly 900 queries an hour per open
+    // tab, and the likeliest reason the chat felt unsettled while reading it.
+    //
+    // Assigned once, so const. It was `let`, declared thirty lines earlier and
+    // indented as though it sat inside setupRealtimeChannel, which is what made
+    // the single assignment look like a reassignment to a reader.
+    const pollInterval = setInterval(() => {
+      if (connStatusRef.current === "connected") return;
+      void loadHistory();
+    }, 4000) as unknown as number;
 
 
     return () => {

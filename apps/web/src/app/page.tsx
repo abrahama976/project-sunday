@@ -93,12 +93,25 @@ function Card({ children, href }: { children: React.ReactNode; href?: string }) 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   
-  const [mounted, setMounted] = useState(false);
+  // Null until the browser has a clock. The server and the browser format a
+  // local date differently, so this doubles as the hydration guard `mounted`
+  // used to be — one piece of state instead of two saying the same thing.
+  //
+  // Ticking rather than set once. It was read by `isOnline`, which compares it
+  // to the worker's last heartbeat, so a value frozen at mount meant the
+  // dashboard kept reporting "online" indefinitely after the worker stopped.
+  //
+  // The first read happens in a timeout callback, not in the effect body: a
+  // setState directly in an effect body is the cascading-render pattern React
+  // now rejects, and a zero-delay timeout is indistinguishable on screen.
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
-  useEffect(() => { 
-    setMounted(true); 
-    setCurrentTime(new Date());
+  useEffect(() => {
+    const tick = () => setCurrentTime(new Date());
+    const soon = setTimeout(tick, 0);
+    const every = setInterval(tick, 30000);
+    return () => { clearTimeout(soon); clearInterval(every); };
   }, []);
+  const mounted = currentTime !== null;
 
   const [brief, setBrief] = useState<Message | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -132,7 +145,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let pollInterval: number | undefined;
 
     const loadData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -240,7 +252,9 @@ export default function DashboardPage() {
       )
       .subscribe();
 
-    pollInterval = setInterval(() => {
+    // Assigned once, so const — it was `let`, declared a hundred lines above
+    // where it is set.
+    const pollInterval = setInterval(() => {
       void loadData();
     }, 30000) as unknown as number;
 

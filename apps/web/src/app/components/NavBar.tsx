@@ -1,8 +1,6 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import NotificationPanel from "./NotificationPanel";
 
 /* ── Tab definitions ──────────────────────────────────────── */
@@ -62,47 +60,14 @@ function TabIcon({ name, active }: { name: string; active: boolean }) {
   }
 }
 
-/* ── Pending approval count badge ─────────────────────────── */
-function usePendingCount() {
-  const supabase = useMemo(() => createClient(), []);
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchCount = async () => {
-      const { count: c, error } = await supabase
-        .from("action_queue")
-        .select("*", { count: "exact", head: true })
-        .eq("status", "awaiting_approval")
-        .neq("tier", "auto");
-      if (!cancelled && !error && c !== null) setCount(c);
-    };
-
-    void fetchCount();
-
-    const channel = supabase
-      .channel("nav-approval-count")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "action_queue" },
-        () => { void fetchCount(); }
-      )
-      .subscribe();
-
-    return () => {
-      cancelled = true;
-      supabase.removeChannel(channel);
-    };
-  }, [supabase]);
-
-  return count;
-}
+/* The pending-approval badge this file used to own now lives in the
+   notification bell, which subscribes to the same table. The hook was left
+   behind, unread — so every page kept a second realtime channel open to count
+   something nothing displayed. */
 
 /* ── NavBar Component ─────────────────────────────────────── */
 export default function NavBar() {
   const pathname = usePathname();
-  const pendingCount = usePendingCount();
 
   // Hide nav on login page
   if (pathname === "/login") return null;

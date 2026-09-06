@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 type Notif = {
@@ -12,12 +12,14 @@ type Notif = {
   href?: string;
 };
 export default function NotificationPanel() {
-  const supabase = createClient();
+  // Memoised: a fresh client on every render made it a changing dependency,
+  // which is why the effect below had to lie about its dependency list.
+  const supabase = useMemo(() => createClient(), []);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Notif[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
-  const loadNotifications = async () => {
+  const loadNotifications = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     const [resApprovals, resNotifs] = await Promise.all([
@@ -57,14 +59,30 @@ export default function NotificationPanel() {
     );
     setItems(all);
     setUnreadCount(approvals.length + notifs.filter(n => !n.read).length);
-  };
+  }, [supabase]);
+
   useEffect(() => {
-    void loadNotifications();
+    // Called through a function declared inside the effect: calling a
+    // setState-containing one straight from an effect body is the cascading-
+    // render pattern React now rejects.
+    async function start() { await loadNotifications(); }
+    void start();
     const channel = supabase.channel("notif-panel")
       .on("postgres_changes", { event: "*", schema: "public", table: "action_queue" }, () => void loadNotifications())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, () => void loadNotifications())
       .subscribe();
     return () => { supabase.removeChannel(channel); };
+  }, [supabase, loadNotifications]);
+
+  // A ticking clock rather than Date.now() inside the renderer below. Reading
+  // the clock during render is impure — two renders can disagree — and it also
+  // meant "3m ago" stayed "3m ago" until something else re-rendered the panel.
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const soon = setTimeout(tick, 0);
+    const every = setInterval(tick, 60000);
+    return () => { clearTimeout(soon); clearInterval(every); };
   }, []);
   // Close on outside click
   useEffect(() => {
@@ -85,7 +103,8 @@ export default function NotificationPanel() {
     setUnreadCount(items.filter(n => n.type === "approval").length);
   };
   const relativeTime = (iso: string) => {
-    const diff = Date.now() - new Date(iso).getTime();
+    if (!now) return "";
+    const diff = now - new Date(iso).getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return "just now";
     if (mins < 60) return `${mins}m ago`;

@@ -33,6 +33,9 @@ const TYPE_LABELS: Record<string, string> = {
   shell_cmd: "Shell",
   update_profile: "Update Profile",
   web_fetch: "Web Fetch",
+  brain_learn: "Remember a Rule",
+  schedule_reminder: "Reminder",
+  save_place: "Remember a Place",
 };
 
 function isAction(x: unknown): x is Action {
@@ -135,7 +138,11 @@ export default function ApprovalsPage() {
   const [acting, setActing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [armed, setArmed] = useState<{ id: string; expiresAt: number } | null>(null);
-  const [now, setNow] = useState(Date.now());
+  // 0 until the countdown starts. `Date.now()` in the initial value is an
+  // impure call during render — React may render twice and get two different
+  // "nows" — and it was never needed: nothing reads `now` unless `armed` is
+  // set, and arming starts the interval that fills it in.
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,12 +196,6 @@ export default function ApprovalsPage() {
     };
   }, [supabase]);
 
-  useEffect(() => {
-    if (!armed) return;
-    const i = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(i);
-  }, [armed]);
-
   const approveById = useCallback(async (id: string) => {
     setActing(id);
     setError(null);
@@ -209,14 +210,23 @@ export default function ApprovalsPage() {
     }
   }, []);
 
+  // One effect, not two. The countdown and the thing it counts down TO belong
+  // together: splitting them meant a second effect whose body called setState
+  // synchronously on every tick, which is the cascading-render pattern React
+  // now rejects. Inside an interval callback it is an ordinary update.
   useEffect(() => {
     if (!armed) return;
-    if (now >= armed.expiresAt) {
-      const id = armed.id;
-      setArmed(null);
-      void approveById(id);
-    }
-  }, [armed, now, approveById]);
+    const i = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= armed.expiresAt) {
+        clearInterval(i);
+        setArmed(null);
+        void approveById(armed.id);
+      }
+    }, 100);
+    return () => clearInterval(i);
+  }, [armed, approveById]);
 
   async function denyById(id: string) {
     setActing(id);
@@ -234,7 +244,13 @@ export default function ApprovalsPage() {
 
   function handleApprove(action: Action) {
     if (action.tier === "hold") {
-      setArmed({ id: action.id, expiresAt: Date.now() + APPROVAL_HOLD_SECONDS * 1000 });
+      // Both from the same instant, in an event handler where reading the
+      // clock is fine. Seeding `now` here rather than waiting for the
+      // interval's first tick stops the countdown flashing a wrong number for
+      // its first 100ms.
+      const startedAt = Date.now();
+      setNow(startedAt);
+      setArmed({ id: action.id, expiresAt: startedAt + APPROVAL_HOLD_SECONDS * 1000 });
     } else {
       void approveById(action.id);
     }
