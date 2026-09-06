@@ -425,6 +425,59 @@ export default function TravelPage() {
           }}
         >
           <p style={{ margin: 0, fontSize: "0.875rem" }}>{plan.reason}</p>
+
+          {/* The candidates, as a choice rather than a sentence. Tapping one
+              re-plans against that exact name; the pin beside it is how you
+              tell two identically-named suburbs apart before you commit. */}
+          {(plan.place_options?.length ?? 0) > 0 && (
+            <div style={{ marginTop: "var(--space-3)" }}>
+              <div style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", marginBottom: "var(--space-2)" }}>
+                Did you mean {plan.unresolved === "origin" ? "one of these to start from" : "one of these"}?
+              </div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                {plan.place_options!.map((option, i) => (
+                  <li key={i} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDestination(option.name);
+                        void startPlan(option.name);
+                      }}
+                      style={{
+                        flex: 1,
+                        textAlign: "left",
+                        minWidth: 0,
+                        padding: "var(--space-2) var(--space-3)",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid var(--color-border)",
+                        background: "var(--color-surface)",
+                        color: "var(--color-text)",
+                        fontSize: "0.8125rem",
+                        fontFamily: "inherit",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {option.name}
+                      {option.kind && (
+                        <span style={{ color: "var(--color-text-faint)" }}> · {option.kind}</span>
+                      )}
+                    </button>
+                    {option.map_url && (
+                      <a
+                        href={option.map_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ flexShrink: 0, fontSize: "0.75rem", color: "var(--color-primary)" }}
+                      >
+                        Map
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* A failure that still resolved a coordinate is the most useful
               place of all to offer the pin: "every option was implausible" and
               "it resolved 400 km away" read identically until you look. */}
