@@ -15,7 +15,7 @@ Last updated: **2026-09-06**
 |---|---|---|
 | Supabase | Up | Migrations through `20260906100000`. Every one since `travel_alerts` was applied **directly** — the `Supabase Preview` check is `skipped` on merge, so nothing deploys itself. Prod version stamps therefore differ from the repo filenames |
 | `apps/web` | Deployed | Today, **Travel**, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings. Travel took the Schedule tab; the full week view stays at `/schedule`, linked from Travel |
-| `apps/worker` | Running at `5811fda` — **behind `main`** | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists |
+| `apps/worker` | **Behind `main`, and dirty** | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists. **Do not write a sha here**; read it. At the last check it said `fc17d67+dirty`, i.e. PR #47 plus uncommitted local edits, so a plain `git pull` may conflict — `git status` first |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
 | LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
@@ -605,8 +605,11 @@ and the reason matters more than the list.
 
 ## What to do first, next time
 
-1. **Pull the worker.** It reports `5811fda`; `main` is far ahead. Every travel
-   fix below is inert until it does. `mac_heartbeat.version` is the check.
+1. **Pull the worker.** It reports `fc17d67+dirty`; `main` is far ahead. Every
+   travel fix below is inert until it catches up, and `+dirty` means there are
+   uncommitted edits in the checkout — run `git status` before pulling rather
+   than discovering the conflict mid-merge. `mac_heartbeat.version` is the
+   check afterwards, and it updates on the next heartbeat.
 2. **Prove park-and-ride**, per the note above.
 3. **Watch `travel_learn` for a week.** It needs a destination planned on three
    different days before it asks anything, and there is one plan row in the
