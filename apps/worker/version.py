@@ -38,6 +38,18 @@ def _git(*args) -> str:
 
 
 def _read_version() -> str:
+    # A container has no .git, so the sha has to be stamped in at build time or
+    # this reports "unknown" forever — which would quietly undo the whole point
+    # of the version stamp for anything not run from a checkout.
+    #
+    # It is trusted, and it can lie: whatever sets it asserts what is running.
+    # That is fine when a build stamps it from the commit it built, and it is
+    # why the git read below stays the default rather than the fallback of last
+    # resort — a checkout still reports what is actually there, `+dirty` and all.
+    env_sha = os.getenv("GIT_SHA")
+    if env_sha:
+        return env_sha.strip()
+
     sha = _git("rev-parse", "--short", "HEAD")
     if not sha:
         return "unknown"
