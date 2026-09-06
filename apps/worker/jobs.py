@@ -1023,7 +1023,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
     from executors.travel_ops import (
         STOP_FINDER_URL, _coord_pair, _parse_time, headway_from_departures,
         haversine_m, _as_lonlat, _ors_geocode, _ors_route, _RAIL_CLASSES,
-        _tfnsw_geocode,
+        _tfnsw_geocode, is_real_stop_id,
     )
     from config import TFNSW_API_KEY, WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M
 
@@ -1146,7 +1146,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
     try:
         existing = (await asyncio.to_thread(
             lambda: client.table("nearby_services")
-            .select("stop_id, stop_name, route, headsign, is_hidden")
+            .select("id, stop_id, stop_name, route, headsign, is_hidden")
             .eq("user_id", uid).eq("place_label", label)
             .eq("source", "discovered").execute()
         )).data or []
@@ -1191,6 +1191,29 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
         if stale:
             print(f"[nearby_services] renamed {len(stale)} stops that had been "
                   f"listed by id")
+
+        # Rows written before discovery moved to /v1/tp/coord, when everything
+        # hung off a `coord:` pseudo-location — the home ADDRESS stored as a
+        # stop, with ten bus routes and a nought-minute walk. `is_real_stop_id`
+        # has stopped new ones since, but the refresh only ever upserts, so the
+        # old ones sat at the top of the services list looking like the nearest
+        # stop in Rosebery. A pseudo-id can never become valid, so unlike a
+        # stop the provider merely failed to mention this week, these are
+        # always safe to remove.
+        pseudo = [r for r in (existing or [])
+                  if not is_real_stop_id(r.get("stop_id"))]
+        if pseudo:
+            try:
+                await asyncio.to_thread(
+                    lambda: client.table("nearby_services").delete()
+                    .eq("user_id", uid).eq("place_label", label)
+                    .eq("source", "discovered")
+                    .in_("id", [r["id"] for r in pseudo]).execute()
+                )
+                print(f"[nearby_services] removed {len(pseudo)} rows left over "
+                      f"from the pseudo-location bug")
+            except Exception as e:
+                print(f"[nearby_services] could not remove stale pseudo-stops: {e}")
 
     routes = sorted({r["route"] for r in discovered})
     stops = len({r["stop_name"] for r in discovered})

@@ -71,8 +71,27 @@ export type Plan = {
   /** ok | ambiguous | implausible | not_found | failed */
   state: string;
   reason: string | null;
+  /**
+   * What the name could have meant, when it was ambiguous. Offered as buttons
+   * rather than prose: two Newtowns are the same word in a sentence and
+   * different points on a map, so each option carries its own coordinate.
+   */
+  place_options: PlaceOption[] | null;
+  /** Which end failed — the two need different answers from the reader. */
+  unresolved: "origin" | "destination" | null;
   created_at: string;
 };
+
+export type PlaceOption = {
+  name: string;
+  lat: number | null;
+  lng: number | null;
+  kind: string;
+  map_url: string | null;
+};
+
+/** How far you would walk before it stops being walking. Your stated limit. */
+export const MAX_WALK_MIN = 20;
 
 export type TravelRequest = {
   id: string;

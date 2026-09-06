@@ -6,7 +6,7 @@ from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUT
                     BOARDING_POINT_LIMIT, PARK_RIDE_MIN_SAVING_MIN, PARK_RIDE_RADIUS_M,
                     USER_TIMEZONE)
 from utils import resolve_origin
-from travel.contracts import ResolvedPlace, NOT_FOUND
+from travel.contracts import ResolvedPlace, NOT_FOUND, RESOLVED
 from travel.resolve import candidate_from_location, choose_place, saved_place_match
 from travel.gate import gate_journeys, rejection_summary
 
@@ -914,6 +914,11 @@ def plan_as_row(result: dict, user_id: str, request_id=None) -> dict:
         "drive": result.get("drive"),
         "state": "ok" if ok else (result.get("state") or "failed"),
         "reason": None if ok else result.get("error"),
+        # The places it could have meant, each with a coordinate. Stored rather
+        # than only messaged, so the Travel page can offer them as buttons and
+        # the choice is one tap instead of a retyped guess.
+        "place_options": result.get("place_options") or [],
+        "unresolved": result.get("which") if not ok else None,
     }
 
 
@@ -1283,15 +1288,11 @@ async def resolve_saved_label(client, user_id, text) -> dict | None:
     return None
 
 
-async def resolve_place(http, headers, text, origin_ll=None,
-                        allow_long_distance=False):
-    """What `text` means, as a ResolvedPlace. Never raises.
+async def _stop_finder(http, headers, text, origin_ll, allow_long_distance):
+    """One stop_finder lookup, as a ResolvedPlace. Never raises.
 
-    Replaces a geocoder that took the first candidate carrying a parseable
-    coordinate, whatever it was — which is how "Sans Souci" became Narrabri and
-    "Newtown" became the wrong Newtown. EFA returns isBest, matchQuality, type
-    and a coordinate; all four are now used, and the choosing is done by
-    `choose_place`, which is pure and tested.
+    Split out so `resolve_place` can run it more than once against differently
+    worded queries without duplicating the request or the error handling.
     """
     params = {
         "outputFormat": "rapidJSON",
@@ -1318,6 +1319,66 @@ async def resolve_place(http, headers, text, origin_ll=None,
     ]
     return choose_place(text, candidates,
                         allow_long_distance=allow_long_distance)
+
+
+async def resolve_place(http, headers, text, origin_ll=None,
+                        allow_long_distance=False):
+    """What `text` means, as a ResolvedPlace. Never raises.
+
+    Replaces a geocoder that took the first candidate carrying a parseable
+    coordinate, whatever it was — which is how "Sans Souci" became Narrabri and
+    "Newtown" became the wrong Newtown. EFA returns isBest, matchQuality, type
+    and a coordinate; all four are now used, and the choosing is done by
+    `choose_place`, which is pure and tested.
+
+    A web search assists on both sides of that lookup, and never replaces it —
+    TfNSW performs every geocode, because a coordinate scraped from a search
+    snippet would sit underneath every leg of the journey. See travel/lookup.py.
+
+    - Before, only for text that looks like a VENUE rather than a place.
+      stop_finder is excellent at suburbs and poor at business names, so
+      "Kogarah" goes straight through and "Qudos Bank Arena" is worth a search
+      that turns it into "Qudos Bank Arena, Sydney Olympic Park NSW".
+    - After, only when TfNSW found nothing. At that point the alternative is
+      not a worse answer, it is no answer.
+    """
+    from travel.lookup import needs_search, place_hint
+
+    # Before. Conditional, so the common case pays nothing.
+    if needs_search(text):
+        refined = await place_hint(text)
+        if refined:
+            print(f"[trip] search refined {text!r} to {refined!r}")
+            found = await _stop_finder(http, headers, refined, origin_ll,
+                                       allow_long_distance)
+            if found.state == RESOLVED:
+                # `requested` stays what the user said, so every message and
+                # every stored row still quotes them rather than the machine's
+                # rewrite of them.
+                found.requested = text
+                found.source = "search"
+                return found
+
+    found = await _stop_finder(http, headers, text, origin_ll,
+                               allow_long_distance)
+    if found.state != NOT_FOUND or not text:
+        return found
+
+    # After. Only a genuine miss reaches this — an ambiguous or implausible
+    # result means TfNSW knew several places by that name, and a search cannot
+    # improve on that; asking the user is the honest move and choose_place has
+    # already set it up.
+    if not needs_search(text):
+        refined = await place_hint(text)
+        if refined:
+            print(f"[trip] search rescued {text!r} as {refined!r}")
+            rescued = await _stop_finder(http, headers, refined, origin_ll,
+                                         allow_long_distance)
+            if rescued.state == RESOLVED:
+                rescued.requested = text
+                rescued.source = "search"
+                return rescued
+    return found
 
 
 async def _tfnsw_geocode(http, headers, text):
@@ -1376,6 +1437,32 @@ def stop_display_name(loc) -> str:
             return name
 
     return str(loc.get("id") or "").strip() or "unnamed stop"
+
+
+def place_options(resolved) -> list:
+    """A rejected resolution's candidates, as rows a UI can offer as choices.
+
+    Names alone were not enough. "Newtown" and "Newtown" are the same word in a
+    list and different places on a map, so a choice made from names is a guess
+    with extra steps. Each option carries its coordinate and therefore its own
+    map pin, which is the only thing that can tell them apart.
+
+    Pure and JSON-safe — it is stored on the plan row and read by the browser.
+    """
+    options = []
+    for candidate in (getattr(resolved, "alternatives", None) or []):
+        name = (getattr(candidate, "name", "") or "").strip()
+        if not name:
+            continue
+        options.append({
+            "name": name,
+            "lat": getattr(candidate, "lat", None),
+            "lng": getattr(candidate, "lng", None),
+            "kind": (getattr(candidate, "kind", "") or "").strip(),
+            "map_url": map_link(getattr(candidate, "lat", None),
+                                getattr(candidate, "lng", None)),
+        })
+    return options
 
 
 def map_link(lat, lng) -> str | None:
@@ -1797,7 +1884,9 @@ async def plan_journeys(
             if not resolved_origin.ok:
                 return {"ok": False, "error": resolved_origin.reason,
                         "state": resolved_origin.state,
-                        "alternatives": [c.name for c in resolved_origin.alternatives]}
+                        "which": "origin",
+                        "alternatives": [c.name for c in resolved_origin.alternatives],
+                        "place_options": place_options(resolved_origin)}
             origin_ll = resolved_origin.coords()
             origin_label = resolved_origin.selected.name or origin
 
@@ -1821,7 +1910,9 @@ async def plan_journeys(
                 # rather than making the user retype a better guess.
                 return {"ok": False, "error": resolved_dest.reason,
                         "state": resolved_dest.state,
-                        "alternatives": [c.name for c in resolved_dest.alternatives]}
+                        "which": "destination",
+                        "alternatives": [c.name for c in resolved_dest.alternatives],
+                        "place_options": place_options(resolved_dest)}
             dest_ll = resolved_dest.coords()
             dest_label = resolved_dest.selected.name or destination
 

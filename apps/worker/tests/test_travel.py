@@ -1175,6 +1175,84 @@ _absent = _carry_over_and_find_stale(
 )
 check("a stop the provider did not mention is not deleted", _absent, set())
 
+print("\n── asking TfNSW a better question ────────────────────")
+
+from travel.lookup import (                       # noqa: E402
+    needs_search, search_query, suburb_from_text, refine,
+)
+
+# A search is worth it for a venue, never for a place that already resolves.
+# Running it on every plain suburb would put scraped text on the hot path of
+# something that works, and cost latency for nothing.
+for place in ("Kogarah", "Sans Souci", "Blacktown", "Sydney Olympic Park"):
+    check_true(f"{place!r} needs no search", not needs_search(place))
+check_true("an address needs no search", not needs_search("314 Gardeners Rd"))
+check_true("a saved label needs no search", not needs_search("home"))
+check_true("text that already names its suburb needs no search",
+           not needs_search("Qudos Bank Arena, Sydney Olympic Park NSW"))
+check_true("blank text needs no search", not needs_search(""))
+
+for venue in ("Qudos Bank Arena", "Royal Prince Alfred Hospital",
+              "Nick's Seafood", "the little bakery on King Street"):
+    check_true(f"{venue!r} is worth a search", needs_search(venue))
+
+check("the query is anchored to NSW", search_query("Qudos Bank Arena"),
+      "Qudos Bank Arena Sydney NSW address suburb")
+
+# A postcode is the strongest signal a snippet carries, and the format
+# Australian addresses are actually written in.
+check("a suburb is read from a postcode line",
+      suburb_from_text("Edwin Flack Ave, Sydney Olympic Park NSW 2127, Australia"),
+      "Sydney Olympic Park")
+check("...and from a bare NSW mention",
+      suburb_from_text("The venue is in Moore Park, NSW and seats 45,500"),
+      "Moore Park")
+check("nothing is invented when no suburb is named",
+      suburb_from_text("Opening hours are 9am to 5pm daily."), None)
+check("empty text yields nothing", suburb_from_text(""), None)
+
+check("the refined query keeps the user's own words",
+      refine("Qudos Bank Arena", "Edwin Flack Ave, Sydney Olympic Park NSW 2127"),
+      "Qudos Bank Arena, Sydney Olympic Park NSW")
+# None, not the original text: the caller has to be able to tell "the search
+# added nothing" from "the search suggested this", or it repeats a lookup it
+# has already done and reports a query it did not run.
+check("a search that adds nothing returns None",
+      refine("Qudos Bank Arena", "no useful text here"), None)
+check("a suburb already present is not repeated",
+      refine("Arena, Sydney Olympic Park", "Sydney Olympic Park NSW 2127"), None)
+
+print("\n── the places a name could have meant ────────────────")
+
+from travel.contracts import PlaceCandidate, ResolvedPlace, AMBIGUOUS  # noqa: E402
+from executors.travel_ops import place_options                          # noqa: E402
+
+_ambiguous = ResolvedPlace(
+    requested="Newtown", state=AMBIGUOUS,
+    alternatives=[
+        PlaceCandidate(name="Newtown", lat=-33.8983, lng=151.1794,
+                       kind="locality", quality=900, is_best=True,
+                       distance_km=4.2),
+        PlaceCandidate(name="Newtown", lat=-32.9333, lng=151.7000,
+                       kind="locality", quality=880, is_best=False,
+                       distance_km=118.0),
+        # No name: unusable as a choice, so it must not become a button.
+        PlaceCandidate(name="", lat=-33.0, lng=151.0, kind="street",
+                       quality=100, is_best=False, distance_km=None),
+    ])
+_options = place_options(_ambiguous)
+
+check("a nameless candidate is not offered", len(_options), 2)
+check("each option keeps its own coordinate",
+      [round(o["lat"], 4) for o in _options], [-33.8983, -32.9333])
+# The whole point: two identical names, two different pins. Without these the
+# choice is a guess with extra steps.
+check_true("each option carries its own map link",
+           all(o["map_url"] for o in _options)
+           and _options[0]["map_url"] != _options[1]["map_url"])
+check("a resolution with no alternatives offers nothing",
+      place_options(ResolvedPlace(requested="x", state=AMBIGUOUS)), [])
+
 print("\n── the harness itself ────────────────────────────────")
 
 # The stubs exist to satisfy imports, never to answer questions. A stub that

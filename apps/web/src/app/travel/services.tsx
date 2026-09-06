@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { NearbyService, MODE_NAMES, mapLink } from "./types";
+import { NearbyService, MODE_NAMES, mapLink, MAX_WALK_MIN } from "./types";
 
 /**
  * The local network, and the ability to correct it.
@@ -100,6 +100,7 @@ function ServiceRow({
 export default function Services({ userId }: { userId: string | null }) {
   const [services, setServices] = useState<NearbyService[] | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [showFar, setShowFar] = useState(false);
   const [adding, setAdding] = useState(false);
   const [route, setRoute] = useState("");
   const [stop, setStop] = useState("");
@@ -199,8 +200,17 @@ export default function Services({ userId }: { userId: string | null }) {
   const hidden = services.filter((s) => s.is_hidden);
   const shown = showHidden ? services : visible;
 
+  // Past your stated 20-minute limit it is not really a walk, and with 93
+  // services the far ones bury the ones at the corner. Collapsed rather than
+  // hidden in the database: an automatic decision that rewrites `is_hidden`
+  // would fight you every week when discovery re-runs, and would silently
+  // undo an un-hide. This is presentation only — nothing is written.
+  const near = shown.filter((s) => (s.walk_min ?? 0) <= MAX_WALK_MIN);
+  const far = shown.filter((s) => (s.walk_min ?? 0) > MAX_WALK_MIN);
+  const listed = showFar ? [...near, ...far] : near;
+
   const byStop = new Map<string, NearbyService[]>();
-  for (const s of shown) {
+  for (const s of listed) {
     const list = byStop.get(s.stop_name) ?? [];
     list.push(s);
     byStop.set(s.stop_name, list);
@@ -213,7 +223,7 @@ export default function Services({ userId }: { userId: string | null }) {
           Services near home
         </h2>
         <span style={{ fontSize: "0.75rem", color: "var(--color-text-faint)" }}>
-          {visible.length} in use
+          {near.length} within {MAX_WALK_MIN} min
         </span>
       </div>
 
@@ -282,6 +292,20 @@ export default function Services({ userId }: { userId: string | null }) {
       )}
 
       <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
+        {far.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowFar((v) => !v)}
+            style={{
+              background: "none", border: "none", padding: 0, cursor: "pointer",
+              fontSize: "0.75rem", color: "var(--color-primary)",
+            }}
+          >
+            {showFar
+              ? `Hide the ${far.length} further away`
+              : `Show ${far.length} further than ${MAX_WALK_MIN} min`}
+          </button>
+        )}
         {hidden.length > 0 && (
           <button
             type="button"
