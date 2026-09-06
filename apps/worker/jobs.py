@@ -1359,6 +1359,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
 
         stops = await _find_stops(http, headers, origin_ll,
                                   max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M))
+        walk_budget = _WalkBudget()
         for stop in stops:
             # Rail is worth walking further for than a bus is, and the test is
             # per SERVICE rather than per stop. Applied to the stop, one train
@@ -1368,7 +1369,7 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
             if stop["distance_m"] > max(WALK_RADIUS_BUS_M, WALK_RADIUS_RAIL_M):
                 continue
 
-            walk_min = await _walk_minutes(http, origin_ll, stop)
+            walk_min = await _walk_minutes(http, origin_ll, stop, walk_budget)
             found = await _stop_services(http, headers, stop)
 
             # departure_mon knows the stop's name; /v1/tp/coord, which found it,
@@ -1474,6 +1475,15 @@ async def refresh_nearby_services(client: Client, gemini_api_key: str) -> None:
                       f"from the pseudo-location bug")
             except Exception as e:
                 print(f"[nearby_services] could not remove stale pseudo-stops: {e}")
+
+    walk_budget.note_exhausted()
+    if walk_budget.stopped:
+        # Said once, plainly. Four hundred identical "ORS route failed" lines
+        # is not a report, it is a wall — and the answer is not degraded enough
+        # to be worth one, let alone hundreds.
+        print(f"[nearby_services] walking times past the nearest "
+              f"{WALK_ORS_MAX_CALLS} stops are straight-line estimates "
+              f"({walk_budget.stopped})")
 
     routes = sorted({r["route"] for r in discovered})
     stops = len({r["stop_name"] for r in discovered})
@@ -1616,8 +1626,13 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
             print(f"[nearby_services] coord({type_1}) found {len(stops)} stops, "
                   f"nearest {nearest['name']} ({nearest['distance_m']:.0f} m)")
             if nearest["name"] == str(nearest["id"]):
-                print("[nearby_services] warning: stop names fell back to ids — "
-                      "EFA returned no usable name field for this location type")
+                # Expected, not alarming: /coord has never named these stops.
+                # departure_mon does, and refresh_nearby_services asks it per
+                # stop straight after this, so the ids here are provisional.
+                # Worded as a warning it read like a failure on a run that went
+                # on to name all 87 rows correctly.
+                print("[nearby_services] /coord gave no names; will take them "
+                      "from departure_mon per stop")
             return stops
 
     params = {
@@ -1644,21 +1659,72 @@ async def _find_stops(http, headers, origin_ll, radius_m) -> list:
     return stops
 
 
-async def _walk_minutes(http, origin_ll, stop):
-    """Walking minutes to a stop, or a straight-line estimate if ORS is absent.
+# ORS's free tier allows 40 directions requests a minute. Discovery finds 158
+# stops and used to ask about every one of them as fast as it could, which
+# earns a 429 within seconds and then keeps asking — a few hundred failed
+# requests per run, each one still spending quota.
+#
+# Only the nearest stops are worth a real route anyway. Beyond a few hundred
+# metres the difference between the street distance and the crow-flies estimate
+# is smaller than the difference between walking briskly and not.
+WALK_ORS_MAX_CALLS = 20
+
+# And once the provider starts refusing, it will keep refusing for the rest of
+# the run. Three in a row is not a blip.
+WALK_ORS_MAX_FAILURES = 3
+
+
+class _WalkBudget:
+    """How many real walking routes this discovery run may still ask for.
+
+    Exists because the alternative — asking about every stop and swallowing the
+    failures — is indistinguishable from working, right up until you read the
+    log. It bounds the spend and, more importantly, stops asking once the
+    answers stop coming.
+    """
+
+    def __init__(self, limit=WALK_ORS_MAX_CALLS):
+        self.left = limit
+        self.consecutive_failures = 0
+        self.stopped = ""
+
+    def allows(self) -> bool:
+        return self.left > 0 and not self.stopped
+
+    def record(self, ok: bool) -> None:
+        self.left -= 1
+        if ok:
+            self.consecutive_failures = 0
+            return
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= WALK_ORS_MAX_FAILURES:
+            self.stopped = "the routing provider stopped answering"
+
+    def note_exhausted(self) -> None:
+        if not self.stopped and self.left <= 0:
+            self.stopped = f"the {WALK_ORS_MAX_CALLS}-route budget for this run"
+
+
+async def _walk_minutes(http, origin_ll, stop, budget: "_WalkBudget|None" = None):
+    """Walking minutes to a stop, or a straight-line estimate. Never raises.
 
     The estimate is deliberately pessimistic — 4.5 km/h over the crow-flies
-    distance, which real streets always exceed — so a missing key degrades the
-    number rather than the answer. It is labelled nowhere as exact, and the
-    honest alternative would be to skip the stop entirely.
+    distance, which real streets always exceed — so a missing key, a rate limit
+    or an outage degrades the number rather than the answer. It is labelled
+    nowhere as exact, and the honest alternative would be to skip the stop.
+
+    `budget` bounds how many stops get a real route. Stops arrive nearest
+    first, so the budget is spent where the difference actually matters.
     """
     from executors.travel_ops import _ors_route
     from config import OPENROUTESERVICE_API_KEY
 
-    if OPENROUTESERVICE_API_KEY:
+    if OPENROUTESERVICE_API_KEY and (budget is None or budget.allows()):
         minutes, _km = await _ors_route(
             http, [origin_ll[1], origin_ll[0]], [stop["lng"], stop["lat"]],
             "foot-walking")
+        if budget is not None:
+            budget.record(minutes is not None)
         if minutes is not None:
             return minutes
     return int(round(stop["distance_m"] / 75.0))    # 4.5 km/h in metres/min

@@ -1333,6 +1333,34 @@ check_true("save_place made it through all three",
            and TOOL_TIER_MAP.get("save_place") == "approve"
            and "save_place" in _executors)
 
+print("\n── bounding what the routing provider is asked ───────")
+
+from jobs import _WalkBudget, WALK_ORS_MAX_CALLS, WALK_ORS_MAX_FAILURES  # noqa: E402
+
+_b = _WalkBudget(limit=3)
+check_true("a fresh budget allows a route", _b.allows())
+for _ in range(3):
+    _b.record(True)
+check_true("...and stops at its limit", not _b.allows())
+_b.note_exhausted()
+check_true("the reason names the budget", "budget" in _b.stopped)
+
+# The failure that actually happened: ORS answers 429 and every later call is
+# both useless and still billed. Three in a row is not a blip.
+_f = _WalkBudget(limit=50)
+for _ in range(WALK_ORS_MAX_FAILURES):
+    _f.record(False)
+check_true("consecutive failures stop the run asking", not _f.allows())
+check_true("...and say why", "stopped answering" in _f.stopped)
+
+# A success in between means the provider is alive; don't trip on noise.
+_m = _WalkBudget(limit=50)
+_m.record(False); _m.record(False); _m.record(True); _m.record(False)
+check_true("a success resets the failure streak", _m.allows())
+
+check_true("the default budget is smaller than the 158 stops discovery finds",
+           WALK_ORS_MAX_CALLS < 158)
+
 print("\n── the harness itself ────────────────────────────────")
 
 # The stubs exist to satisfy imports, never to answer questions. A stub that
