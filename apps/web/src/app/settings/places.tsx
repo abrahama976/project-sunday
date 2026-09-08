@@ -33,16 +33,6 @@ function isPlace(x: unknown): x is Place {
   );
 }
 
-const inputStyle = {
-  width: "100%",
-  padding: "var(--space-3)",
-  background: "var(--color-surface-2)",
-  border: "1px solid var(--color-border)",
-  borderRadius: "var(--radius-md)",
-  color: "var(--color-text)",
-  fontSize: "0.9375rem",
-  outline: "none",
-} as const;
 
 export default function SavedPlaces() {
   const supabase = useMemo(() => createClient(), []);
@@ -257,13 +247,13 @@ export default function SavedPlaces() {
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             placeholder="Label — home, work, gym"
-            style={inputStyle}
+            className="field"
           />
           <input
             value={address}
             onChange={(e) => setAddress(e.target.value)}
             placeholder="Address — 1 Example St, Sydney NSW 2000"
-            style={inputStyle}
+            className="field"
           />
           <button
             onClick={() => void add()}

@@ -323,7 +323,7 @@ export default function TravelPage() {
           onChange={(e) => setDestination(e.target.value)}
           placeholder="Where to?"
           onKeyDown={(e) => { if (e.key === "Enter") void startPlan(destination); }}
-          style={{ ...inputStyle, fontSize: "1rem" }}
+          className="field" style={{ fontSize: "1rem" }}
         />
 
         {recent.length > 0 && (
@@ -352,7 +352,7 @@ export default function TravelPage() {
               type="datetime-local"
               value={at}
               onChange={(e) => setAt(e.target.value)}
-              style={{ ...inputStyle, flex: "1 1 12rem" }}
+              className="field" style={{ flex: "1 1 12rem" }}
             />
           )}
         </div>
@@ -385,7 +385,7 @@ export default function TravelPage() {
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
             placeholder="From (blank = home)"
-            style={inputStyle}
+            className="field"
           />
         )}
 
@@ -619,16 +619,6 @@ function toLocalInput(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-const inputStyle: React.CSSProperties = {
-  padding: "var(--space-3)",
-  borderRadius: "var(--radius-md)",
-  border: "1px solid var(--color-border)",
-  background: "var(--color-bg)",
-  color: "var(--color-text)",
-  fontSize: "0.875rem",
-  fontFamily: "inherit",
-  width: "100%",
-};
 
 const chipButton: React.CSSProperties = {
   padding: "var(--space-1) var(--space-3)",
