@@ -1361,6 +1361,21 @@ check_true("a success resets the failure streak", _m.allows())
 check_true("the default budget is smaller than the 158 stops discovery finds",
            WALK_ORS_MAX_CALLS < 158)
 
+print("\n── telling the user, without telling everyone ────────")
+
+import asyncio as _asyncio                                    # noqa: E402
+from executors.notify_ops import notify                       # noqa: E402
+
+# Guard clauses return before any I/O, so these run against the stubbed
+# supabase without reaching it — which the harness would refuse anyway.
+check("no client, no notification",
+      _asyncio.run(notify(None, "u1", "Title")), False)
+check("no user, no notification",
+      _asyncio.run(notify(object(), "", "Title")), False)
+# A notification with no title is a bell with nothing behind it.
+check("no title, no notification",
+      _asyncio.run(notify(object(), "u1", "")), False)
+
 print("\n── the harness itself ────────────────────────────────")
 
 # The stubs exist to satisfy imports, never to answer questions. A stub that
