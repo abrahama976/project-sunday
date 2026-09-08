@@ -38,5 +38,8 @@ drop table if exists public.expenses;
 create index if not exists notifications_user_created_idx
     on public.notifications (user_id, created_at desc);
 
-create index if not exists notifications_unread_idx
-    on public.notifications (user_id) where read = false;
+-- One index, not two. An unread index was added here as well and dropped again
+-- minutes later: `idx_notifications_user_unread` on (user_id, read) WHERE
+-- read = false already existed and already covers that query. A duplicate
+-- index is write cost and disk for nothing, and the only reason it got written
+-- is that nobody looked at the table's existing indexes first.

@@ -62,7 +62,7 @@ function LoginPageInner() {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={inputStyle}
+          className="field"
         />
         <input
           type="password"
@@ -73,7 +73,7 @@ function LoginPageInner() {
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSubmit();
           }}
-          style={inputStyle}
+          className="field"
         />
 
         {error && (
@@ -114,13 +114,3 @@ export default function LoginPage() {
     </Suspense>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--color-surface-2)",
-  border: "1px solid var(--color-border)",
-  borderRadius: "var(--radius-lg)",
-  padding: "var(--space-3) var(--space-4)",
-  color: "var(--color-text)",
-  fontSize: "0.9375rem",
-  outline: "none",
-};

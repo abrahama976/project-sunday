@@ -13,6 +13,10 @@ import {
  * arrival is second. Everything else — walking, waiting, changes — is the
  * detail you check once you have decided, so it reads as a quiet row rather
  * than competing with the two numbers that matter.
+ *
+ * Styling comes from globals.css. This file used to carry 23 inline style
+ * objects, several of which were the same card and the same chip written out
+ * again with slightly different padding.
  */
 
 const MODE_TONE: Record<string, string> = {
@@ -28,16 +32,10 @@ function legTone(leg: Leg): string {
 function LegRow({ leg }: { leg: Leg }) {
   const isMove = leg.mode === "Walk";
   return (
-    <li style={{ display: "flex", gap: "var(--space-3)", alignItems: "baseline" }}>
+    <li className="row gap-3" style={{ alignItems: "baseline" }}>
       <span
-        style={{
-          flexShrink: 0,
-          width: "3.25rem",
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.75rem",
-          color: "var(--color-text-faint)",
-          fontVariantNumeric: "tabular-nums",
-        }}
+        className="t-xs faint nums"
+        style={{ flexShrink: 0, width: "3.25rem", fontFamily: "var(--font-mono)" }}
       >
         {clock(leg.depart)}
       </span>
@@ -53,15 +51,15 @@ function LegRow({ leg }: { leg: Leg }) {
           transform: "translateY(-1px)",
         }}
       />
-      <span style={{ fontSize: "0.8125rem", color: "var(--color-text)", minWidth: 0 }}>
+      <span className="t-sm" style={{ minWidth: 0 }}>
         {leg.line ? (
           <strong style={{ color: legTone(leg) }}>
             {leg.mode} {leg.line}
           </strong>
         ) : (
-          <span style={{ color: "var(--color-text-muted)" }}>{leg.mode}</span>
+          <span className="muted">{leg.mode}</span>
         )}
-        <span style={{ color: "var(--color-text-muted)" }}>
+        <span className="muted">
           {" "}
           {leg.minutes} min{leg.to ? ` → ${leg.to}` : ""}
         </span>
@@ -72,19 +70,9 @@ function LegRow({ leg }: { leg: Leg }) {
 
 function Stat({ value, label }: { value: string; label: string }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-      <span
-        style={{
-          fontSize: "0.8125rem",
-          color: "var(--color-text)",
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        {value}
-      </span>
-      <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
-        {label}
-      </span>
+    <div className="col" style={{ gap: "1px" }}>
+      <span className="t-sm nums">{value}</span>
+      <span className="label">{label}</span>
     </div>
   );
 }
@@ -104,85 +92,35 @@ export default function OptionCard({
   const label = STRATEGY_LABELS[option.strategy ?? ""] ?? "";
 
   return (
-    <div
-      style={{
-        background: "var(--color-surface)",
-        border: `1px solid ${best ? "var(--color-primary)" : "var(--color-border)"}`,
-        borderRadius: "var(--radius-lg)",
-        padding: "var(--space-4)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--space-3)",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-3)" }}>
+    <div className={`card col gap-3${best ? " card-accent" : ""}`}>
+      <div className="row gap-3" style={{ alignItems: "flex-start" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
-            Leave
-          </div>
+          <div className="label">Leave</div>
           <div
-            style={{
-              fontSize: "1.5rem",
-              fontWeight: 600,
-              color: "var(--color-text)",
-              lineHeight: 1.1,
-              fontVariantNumeric: "tabular-nums",
-            }}
+            className="t-lg nums"
+            style={{ fontWeight: 600, lineHeight: 1.1 }}
           >
             {clock(option.depart)}
           </div>
-          <div style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginTop: "2px" }}>
+          <div className="t-sm muted" style={{ marginTop: "2px" }}>
             arrive {clock(option.arrive)} · {duration(option.duration_min)}
           </div>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", alignItems: "flex-end" }}>
-          {best && (
-            <span
-              style={{
-                fontSize: "0.6875rem",
-                fontWeight: 600,
-                padding: "2px var(--space-2)",
-                borderRadius: "999px",
-                background: "var(--color-primary-faint)",
-                color: "var(--color-primary)",
-              }}
-            >
-              Best
-            </span>
-          )}
+        <div className="col gap-1" style={{ alignItems: "flex-end" }}>
+          {best && <span className="chip chip-primary">Best</span>}
           {carFreeAnchor && !best && (
-            <span
-              style={{
-                fontSize: "0.6875rem",
-                fontWeight: 600,
-                padding: "2px var(--space-2)",
-                borderRadius: "999px",
-                background: "var(--color-success-faint)",
-                color: "var(--color-success)",
-              }}
-            >
-              No car
-            </span>
+            <span className="chip chip-success">No car</span>
           )}
           {label && (
-            <span
-              style={{
-                fontSize: "0.6875rem",
-                padding: "2px var(--space-2)",
-                borderRadius: "999px",
-                background: driven ? "var(--color-warning-faint)" : "var(--color-surface-2)",
-                color: driven ? "var(--color-warning)" : "var(--color-text-muted)",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <span className={`chip${driven ? " chip-warning" : ""}`}>
               {label}
             </span>
           )}
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "var(--space-5)" }}>
+      <div className="row" style={{ gap: "var(--space-5)" }}>
         <Stat value={`${option.changes}`} label={option.changes === 1 ? "change" : "changes"} />
         <Stat value={`${option.walk_min} min`} label="walking" />
         <Stat value={`${option.wait_min} min`} label="waiting" />
@@ -195,28 +133,18 @@ export default function OptionCard({
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            style={{
-              alignSelf: "flex-start",
-              background: "none",
-              border: "none",
-              padding: 0,
-              cursor: "pointer",
-              fontSize: "0.75rem",
-              color: "var(--color-primary)",
-            }}
+            className="link-btn"
+            style={{ alignSelf: "flex-start" }}
           >
             {open ? "Hide steps" : `Show ${option.legs.length} steps`}
           </button>
           {open && (
             <ul
+              className="col gap-2"
               style={{
                 listStyle: "none",
-                margin: 0,
                 padding: "var(--space-3) 0 0",
                 borderTop: "1px solid var(--color-border)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-2)",
               }}
             >
               {option.legs.map((leg, i) => (

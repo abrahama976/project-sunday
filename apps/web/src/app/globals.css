@@ -38,6 +38,23 @@
   --font-body:  var(--font-inter), system-ui, -apple-system, sans-serif;
   --font-mono:  var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, monospace;
 
+  /* Type scale.
+     There wasn't one. Nine sizes were in use across the app — 0.625, 0.6875,
+     0.75, 0.8125, 0.875, 0.9375, 1, 1.125, 1.25 and 1.75rem — each chosen at
+     the point of use, which is why pages that should look alike don't. These
+     five cover every real case; the odd sizes map to the nearest step.
+
+     --text-2xs  labels under a number, timestamps
+     --text-xs   secondary detail, chip text
+     --text-sm   body text in dense UI (the app's workhorse)
+     --text-md   section headings, primary body
+     --text-lg   the one number a card exists to show */
+  --text-2xs: 0.6875rem;
+  --text-xs:  0.75rem;
+  --text-sm:  0.8125rem;
+  --text-md:  0.9375rem;
+  --text-lg:  1.5rem;
+
   /* Radii */
   --radius-sm:  0.375rem;
   --radius-md:  0.5rem;
@@ -150,6 +167,130 @@ button { cursor: pointer; background: none; border: none; }
 .markdown-body h1 { font-size: 1.125rem; }
 .markdown-body h2 { font-size: 1rem; }
 .markdown-body h3 { font-size: 0.9375rem; }
+
+/* ── The pieces every page was rebuilding ──────────────────────
+   The tokens above have always existed; almost nothing turned them into
+   reusable rules, so there were 300+ inline style objects across 13 pages and
+   27 hand-rolled cards, each picking its own padding and radius.
+
+   These are CSS, not React components, deliberately. A card is a border and
+   some padding — it needs no props, no state and no import, and a class costs
+   one attribute where a component costs a file. Components are for things with
+   behaviour.
+
+   Every value here matches what the pages already used, so adopting a class is
+   a no-op visually. The gain is that the next page cannot quietly pick
+   different ones. */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+/* Same object, less room — list rows and dense panels. */
+.card-tight { padding: var(--space-3) var(--space-4); }
+
+/* Lifted, for the one card that is the answer rather than an option. */
+.card-accent { border-color: var(--color-primary); }
+
+/* Text roles. Named for what they mean, not what they look like, so a colour
+   change lands everywhere at once. */
+.t-2xs   { font-size: var(--text-2xs); }
+.t-xs    { font-size: var(--text-xs); }
+.t-sm    { font-size: var(--text-sm); }
+.t-md    { font-size: var(--text-md); }
+.t-lg    { font-size: var(--text-lg); }
+.muted   { color: var(--color-text-muted); }
+.faint   { color: var(--color-text-faint); }
+
+/* A label above or below a value: small, quiet, and never wrapping mid-phrase. */
+.label {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  text-wrap: balance;
+}
+
+/* Digits that line up in a column. Wanted in every table and stat row and
+   applied in about half of them. */
+.nums { font-variant-numeric: tabular-nums; }
+
+/* Rounded pill for a status, mode or strategy. */
+.chip {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+}
+.chip-primary { background: var(--color-primary-faint); color: var(--color-primary); }
+.chip-success { background: var(--color-success-faint); color: var(--color-success); }
+.chip-warning { background: var(--color-warning-faint); color: var(--color-warning); }
+.chip-danger  { background: var(--color-danger-faint);  color: var(--color-danger); }
+
+/* A button that reads as a link. The single most repeated inline style in the
+   app — "background: none, border: none, padding: 0, colour: primary" appeared
+   in nine files. */
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--color-primary);
+}
+.link-btn:hover { color: var(--color-primary-hover); }
+
+/* The solid one. */
+.btn {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { background: var(--color-surface-hover); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-bg);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+
+/* Text inputs, which four pages defined identically as `inputStyle`. */
+.field {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-md);
+  font-family: inherit;
+}
+.field::placeholder { color: var(--color-text-faint); }
+
+/* Stacks. `display:flex` with a gap is the layout in almost every component
+   here, and it was written out by hand each time. */
+.col   { display: flex; flex-direction: column; }
+.row   { display: flex; flex-direction: row; align-items: center; }
+.gap-1 { gap: var(--space-1); }
+.gap-2 { gap: var(--space-2); }
+.gap-3 { gap: var(--space-3); }
+.gap-4 { gap: var(--space-4); }
+
+/* Wide content — tables, code, diagrams — scrolls inside its own box so the
+   page body never scrolls sideways on a 390px screen. */
+.scroll-x { overflow-x: auto; }
 
 /* ── Grouped list ──────────────────────────────────────── */
 .grouped-list { display: flex; flex-direction: column; }

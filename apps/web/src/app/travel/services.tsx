@@ -31,26 +31,19 @@ function ServiceRow({
   const rail = service.mode_class === 1 || service.mode_class === 2;
   return (
     <li
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-3)",
-        padding: "var(--space-2) 0",
-        opacity: service.is_hidden ? 0.45 : 1,
-      }}
+      className="row gap-3"
+      style={{ padding: "var(--space-2) 0", opacity: service.is_hidden ? 0.45 : 1 }}
     >
+      {/* The route number is the thing you scan for, so it gets a fixed width
+          and tabular digits — 358 and 306 line up rather than jittering. */}
       <span
+        className={`chip nums${rail ? " chip-primary" : ""}`}
         style={{
           flexShrink: 0,
           minWidth: "2.75rem",
           textAlign: "center",
-          padding: "2px var(--space-2)",
           borderRadius: "var(--radius-sm)",
-          background: rail ? "var(--color-primary-faint)" : "var(--color-surface-2)",
-          color: rail ? "var(--color-primary)" : "var(--color-text)",
-          fontSize: "0.75rem",
-          fontWeight: 600,
-          fontVariantNumeric: "tabular-nums",
+          fontSize: "var(--text-xs)",
         }}
       >
         {service.route}
@@ -58,17 +51,12 @@ function ServiceRow({
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
-          style={{
-            fontSize: "0.8125rem",
-            color: "var(--color-text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+          className="t-sm"
+          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
         >
           {service.headsign || modeName(service.mode_class) || "—"}
         </div>
-        <div style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
+        <div className="label">
           {service.walk_min != null ? `${service.walk_min} min walk` : "walk unknown"}
           {/* A frequency is only shown when it was measured. A guessed one gets
               read as fact and changes when somebody leaves the house. */}
@@ -80,15 +68,13 @@ function ServiceRow({
       <button
         type="button"
         onClick={() => onToggle(service)}
+        className="btn t-2xs"
         style={{
           flexShrink: 0,
           background: "none",
-          border: "1px solid var(--color-border)",
           borderRadius: "var(--radius-sm)",
           padding: "2px var(--space-2)",
-          fontSize: "0.6875rem",
           color: "var(--color-text-muted)",
-          cursor: "pointer",
         }}
       >
         {service.is_hidden ? "Restore" : "Hide"}
@@ -190,9 +176,7 @@ export default function Services({ userId }: { userId: string | null }) {
 
   if (!services) {
     return (
-      <p style={{ fontSize: "0.8125rem", color: "var(--color-text-faint)" }}>
-        Loading services…
-      </p>
+      <p className="t-sm faint">Loading services…</p>
     );
   }
 
@@ -217,30 +201,28 @@ export default function Services({ userId }: { userId: string | null }) {
   }
 
   return (
-    <section style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "var(--space-3)" }}>
-        <h2 style={{ fontSize: "0.9375rem", fontWeight: 600, margin: 0 }}>
+    <section className="col gap-3">
+      <div className="row gap-3" style={{ alignItems: "baseline", justifyContent: "space-between" }}>
+        <h2 className="t-md" style={{ fontWeight: 600 }}>
           Services near home
         </h2>
-        <span style={{ fontSize: "0.75rem", color: "var(--color-text-faint)" }}>
+        <span className="t-xs faint">
           {near.length} within {MAX_WALK_MIN} min
         </span>
       </div>
 
-      <p style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", margin: 0 }}>
+      <p className="t-xs muted">
         What Sunday searches when planning. Hide what you would never catch — it
         narrows every search from here on. Anything you add is kept through the
         weekly refresh.
       </p>
 
       {error && (
-        <p style={{ fontSize: "0.75rem", color: "var(--color-danger)", margin: 0 }}>
-          {error}
-        </p>
+        <p className="t-xs" style={{ color: "var(--color-danger)" }}>{error}</p>
       )}
 
       {byStop.size === 0 ? (
-        <p style={{ fontSize: "0.8125rem", color: "var(--color-text-faint)" }}>
+        <p className="t-sm faint">
           Nothing discovered yet. The worker fills this on startup and again
           every Sunday at 4am.
         </p>
@@ -248,12 +230,7 @@ export default function Services({ userId }: { userId: string | null }) {
         [...byStop.entries()].map(([stopName, list]) => (
           <div
             key={stopName}
-            style={{
-              background: "var(--color-surface)",
-              border: "1px solid var(--color-border)",
-              borderRadius: "var(--radius-lg)",
-              padding: "var(--space-3) var(--space-4)",
-            }}
+            className="card card-tight"
           >
             <div
               style={{
@@ -291,15 +268,12 @@ export default function Services({ userId }: { userId: string | null }) {
         ))
       )}
 
-      <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
+      <div className="row gap-3" style={{ flexWrap: "wrap" }}>
         {far.length > 0 && (
           <button
             type="button"
             onClick={() => setShowFar((v) => !v)}
-            style={{
-              background: "none", border: "none", padding: 0, cursor: "pointer",
-              fontSize: "0.75rem", color: "var(--color-primary)",
-            }}
+            className="link-btn"
           >
             {showFar
               ? `Hide the ${far.length} further away`
@@ -310,10 +284,7 @@ export default function Services({ userId }: { userId: string | null }) {
           <button
             type="button"
             onClick={() => setShowHidden((v) => !v)}
-            style={{
-              background: "none", border: "none", padding: 0, cursor: "pointer",
-              fontSize: "0.75rem", color: "var(--color-primary)",
-            }}
+            className="link-btn"
           >
             {showHidden ? "Hide retired" : `Show ${hidden.length} retired`}
           </button>
@@ -321,10 +292,7 @@ export default function Services({ userId }: { userId: string | null }) {
         <button
           type="button"
           onClick={() => setAdding((v) => !v)}
-          style={{
-            background: "none", border: "none", padding: 0, cursor: "pointer",
-            fontSize: "0.75rem", color: "var(--color-primary)",
-          }}
+          className="link-btn"
         >
           {adding ? "Cancel" : "Add a service Sunday missed"}
         </button>
@@ -333,41 +301,27 @@ export default function Services({ userId }: { userId: string | null }) {
       {adding && (
         <form
           onSubmit={add}
-          style={{
-            display: "flex", flexDirection: "column", gap: "var(--space-2)",
-            background: "var(--color-surface-2)",
-            border: "1px solid var(--color-border)",
-            borderRadius: "var(--radius-lg)",
-            padding: "var(--space-4)",
-          }}
+          className="card col gap-2"
+          style={{ background: "var(--color-surface-2)" }}
         >
           <input
             value={route} onChange={(e) => setRoute(e.target.value)}
             placeholder="Route, e.g. 306" required
-            style={inputStyle}
+            className="field"
           />
           <input
             value={stop} onChange={(e) => setStop(e.target.value)}
             placeholder="Stop, e.g. Gardeners Rd at Rosebery" required
-            style={inputStyle}
+            className="field"
           />
           <input
             value={headsign} onChange={(e) => setHeadsign(e.target.value)}
             placeholder="Heading towards (optional)"
-            style={inputStyle}
+            className="field"
           />
           <button
             type="submit"
-            style={{
-              padding: "var(--space-2) var(--space-4)",
-              borderRadius: "var(--radius-md)",
-              border: "none",
-              background: "var(--color-primary)",
-              color: "var(--color-bg)",
-              fontSize: "0.8125rem",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
+            className="btn btn-primary"
           >
             Add
           </button>
@@ -377,12 +331,3 @@ export default function Services({ userId }: { userId: string | null }) {
   );
 }
 
-const inputStyle: React.CSSProperties = {
-  padding: "var(--space-2) var(--space-3)",
-  borderRadius: "var(--radius-md)",
-  border: "1px solid var(--color-border)",
-  background: "var(--color-bg)",
-  color: "var(--color-text)",
-  fontSize: "0.875rem",
-  fontFamily: "inherit",
-};
