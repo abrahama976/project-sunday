@@ -1000,6 +1000,15 @@ async def travel_learn(client: Client, gemini_api_key: str) -> None:
                     "approved": None,
                 }).execute()
             )
+            # The bell is the in-app channel chosen over the public topic
+            # for exactly this: a question about where you keep going.
+            from executors.notify_ops import notify
+            await notify(
+                client, uid,
+                f"Remember {place['name']} as a place?",
+                f"You've planned a trip there on {place['days']} different "
+                f"days. Approve or dismiss it on the Approvals page.",
+            )
             print(f"[travel_learn] asked about {place['name']} "
                   f"({place['days']} days)")
         except Exception as e:
@@ -1104,6 +1113,10 @@ async def travel_preview(client: Client, gemini_api_key: str) -> None:
                 "content": body, "model_used": "system",
             }).execute()
         )
+        from executors.notify_ops import notify
+        await notify(client, uid, "Tomorrow's travel",
+                     f"{len(lines)} trip{'s' if len(lines) != 1 else ''} "
+                     f"planned. Open Chat for the times.")
         print(f"[travel_preview] previewed {len(lines)} trips for tomorrow")
     except Exception as e:
         print(f"[travel_preview] could not write the preview: {e}")
@@ -1140,7 +1153,7 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
     it costs nothing against the 250/day budget however often it runs.
     """
     from executors.travel_ops import plan_journeys, leave_time_from
-    from executors.notify_ops import push
+    from executors.notify_ops import push, notify
     from config import TRAVEL_BUFFER_MINUTES
 
     try:
@@ -1250,7 +1263,20 @@ async def travel_watch(client: Client, gemini_api_key: str) -> None:
         if not best["realtime"]:
             body += " (timetable only — no live data for this trip)"
 
-        sent = await push("🚆 Time to go", body, priority="high", tags=["train"])
+        # The full detail goes in the app, where it is private and stays
+        # readable. The push carries the time and nothing else.
+        #
+        # It used to push the whole body — "Leave by 6:16 PM for Tutoring at
+        # Kogarah". The ntfy topic is PUBLIC, so that broadcast the user's
+        # movements to anyone who knows the topic name. A bare time is still
+        # actionable at a glance on a lock screen, which is the whole point of
+        # a leave-now alert, and says nothing about where or why.
+        await notify(client, uid, "🚆 Time to go", body)
+        sent = await push(
+            "🚆 Time to go",
+            f"Leave by {local_leave}. Open the app for the route.",
+            priority="high", tags=["train"],
+        )
 
         # `alerted_at` is set only after a successful push, so a failed
         # notification is retried on the next tick rather than silently marked
