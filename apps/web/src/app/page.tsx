@@ -5,33 +5,19 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createClient } from "@/lib/supabase/client";
+import {
+  type Task,
+  isTask,
+  dueMeta,
+  sortTasksByDueDate,
+  matchesTaskFilter,
+  priorityBadge,
+} from "@/lib/tasks";
 
-/* ── Type Guards ────────────────────────────────────────── */
-type Task = {
-  id: string;
-  title: string;
-  status: "open" | "done";
-  priority: 0 | 1 | 2 | 3;
-  due_date: string | null;
-  category: string | null;
-  is_archived: boolean;
-  created_at: string;
-};
-
-function isTask(x: unknown): x is Task {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
-  return (
-    typeof o.id === "string" &&
-    typeof o.title === "string" &&
-    (o.status === "open" || o.status === "done") &&
-    (o.priority === 0 || o.priority === 1 || o.priority === 2 || o.priority === 3) &&
-    (o.due_date === null || typeof o.due_date === "string") &&
-    (o.category === null || typeof o.category === "string") &&
-    typeof o.is_archived === "boolean" &&
-    typeof o.created_at === "string"
-  );
-}
+/* ── Type Guards ──────────────────────────────────────────
+   `Task` and `isTask` now live in `@/lib/tasks`, with the priority ladder and
+   the due-date vocabulary, so this screen and /tasks cannot drift apart again —
+   which is exactly how priority 4 and 5 stopped appearing on /tasks. */
 
 type Message = {
   id: string;
@@ -62,37 +48,121 @@ type CalEvent = {
   calendar_name?: string;
 };
 
-/* ── Greeting ───────────────────────────────────────────── */
-function getGreeting(): string {
-  const h = new Date().getHours();
-  if (h < 5)  return "Good evening";
+/* ── Pure helpers ───────────────────────────────────────────
+   Every one of these takes `now` as an argument rather than reading the
+   clock. A date computed during render is a hydration mismatch waiting to
+   happen, and this page has already been burned by a clock frozen at mount. */
+
+function greetingFor(now: Date): string {
+  const h = now.getHours();
+  if (h < 5) return "Good evening";
   if (h < 12) return "Good morning";
   if (h < 17) return "Good afternoon";
   return "Good evening";
 }
 
-/* ── Components ─────────────────────────────────────────── */
-function Card({ children, href }: { children: React.ReactNode; href?: string }) {
-  const content = (
-    <div style={{
-      background: "var(--color-surface)",
-      border: "1px solid var(--color-border)",
-      borderRadius: "var(--radius-lg)",
-      padding: "var(--space-4) var(--space-5)",
-      cursor: href ? "pointer" : "default",
-    }}>
-      {children}
+function clock(date: string): string {
+  return new Date(date).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function minutesUntil(date: string, now: Date): number {
+  return Math.round((new Date(date).getTime() - now.getTime()) / 60_000);
+}
+
+/** "in 40 min" / "started 5 min ago" — the figure a glance actually needs. */
+function untilLabel(date: string, now: Date): string {
+  const mins = minutesUntil(date, now);
+  if (mins < -60) return "";
+  if (mins < 0) return `started ${Math.abs(mins)} min ago`;
+  if (mins < 60) return `in ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  if (hours < 24) return rest ? `in ${hours}h ${rest}m` : `in ${hours}h`;
+  return `in ${Math.round(hours / 24)}d`;
+}
+
+function ago(from: Date, now: Date): string {
+  const mins = Math.round((now.getTime() - from.getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/* ── Small presentational pieces ────────────────────────── */
+
+function CheckIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function StatusPill({
+  online,
+  lastSeen,
+  now,
+  local,
+}: {
+  online: boolean;
+  lastSeen: Date | null;
+  now: Date;
+  local: boolean;
+}) {
+  return (
+    <div className="col" style={{ alignItems: "flex-end", gap: 2, marginTop: "var(--space-1)" }}>
+      <div className="row" style={{ gap: 6 }}>
+        <span
+          aria-hidden
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: online ? "var(--color-success)" : "var(--color-danger)",
+            boxShadow: online
+              ? "0 0 8px var(--color-success-faint)"
+              : "0 0 8px var(--color-danger-faint)",
+          }}
+        />
+        <span className="label" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+          {online ? "Online" : "Offline"}
+        </span>
+      </div>
+      {online && local && (
+        <span className="t-2xs" style={{ color: "var(--color-warning)", fontWeight: 500 }}>
+          Local / low power
+        </span>
+      )}
+      {!online && lastSeen && <span className="t-2xs faint">seen {ago(lastSeen, now)}</span>}
     </div>
   );
-  if (href) {
-    return <Link href={href} style={{ textDecoration: "none", color: "inherit", display: "block" }}>{content}</Link>;
-  }
-  return content;
 }
+
+function TaskSkeleton() {
+  return (
+    <div className="grouped-list">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="grouped-list-item">
+          <span className="skeleton" style={{ width: 30, height: 30, borderRadius: "50%" }} />
+          <span className="skeleton" style={{ flex: 1, height: 14, maxWidth: 220 - i * 30 }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Page ───────────────────────────────────────────────── */
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
-  
+
   // Null until the browser has a clock. The server and the browser format a
   // local date differently, so this doubles as the hydration guard `mounted`
   // used to be — one piece of state instead of two saying the same thing.
@@ -109,7 +179,10 @@ export default function DashboardPage() {
     const tick = () => setCurrentTime(new Date());
     const soon = setTimeout(tick, 0);
     const every = setInterval(tick, 30000);
-    return () => { clearTimeout(soon); clearInterval(every); };
+    return () => {
+      clearTimeout(soon);
+      clearInterval(every);
+    };
   }, []);
   const mounted = currentTime !== null;
 
@@ -117,10 +190,13 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [approvalsCount, setApprovalsCount] = useState(0);
   const [nextEvent, setNextEvent] = useState<CalEvent | null>(null);
-  const [loadingTasks, setLoadingTasks] = useState<Set<string>>(new Set());
+  const [completing, setCompleting] = useState<Set<string>>(new Set());
   const [refreshingBrief, setRefreshingBrief] = useState(false);
   const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(null);
   const [isLocalMode, setIsLocalMode] = useState(false);
+  // Distinguishes "still loading" from "genuinely empty". Without it the empty
+  // state flashed before the first query returned, which reads as bad news.
+  const [loaded, setLoaded] = useState(false);
 
   const refreshBrief = async () => {
     setRefreshingBrief(true);
@@ -142,7 +218,6 @@ export default function DashboardPage() {
     setRefreshingBrief(false);
   };
 
-
   useEffect(() => {
     let cancelled = false;
 
@@ -160,15 +235,16 @@ export default function DashboardPage() {
         .limit(1)
         .maybeSingle();
 
+      // 20 rather than 5: the strip shows 5, but "3 late, 2 due today" cannot
+      // be counted from the five rows that happened to sort highest.
       const pTasks = supabase
         .from("tasks")
         .select("*")
         .eq("user_id", user.id)
         .eq("status", "open")
         .eq("is_archived", false)
-        .order("priority", { ascending: false })
         .order("created_at", { ascending: true })
-        .limit(5);
+        .limit(20);
 
       const pApprovals = supabase
         .from("action_queue")
@@ -199,39 +275,22 @@ export default function DashboardPage() {
         .limit(1)
         .maybeSingle();
 
-      const [resBrief, resTasks, resApprovals, resNextEvent, resHeartbeat, resRecentMessage] = await Promise.all([
-        pBrief, pTasks, pApprovals, pNextEvent, pHeartbeat, pRecentMessage
-      ]);
+      const [resBrief, resTasks, resApprovals, resNextEvent, resHeartbeat, resRecentMessage] =
+        await Promise.all([pBrief, pTasks, pApprovals, pNextEvent, pHeartbeat, pRecentMessage]);
 
       if (cancelled) return;
 
-      if (resBrief.data && isMessage(resBrief.data)) {
-        setBrief(resBrief.data);
-      } else {
-        setBrief(null);
-      }
-
-      if (resTasks.data) {
-        setTasks(resTasks.data.filter(isTask));
-      }
-
-      if (resApprovals.count !== null) {
-        setApprovalsCount(resApprovals.count);
-      }
-
-      if (resNextEvent.data) {
-        setNextEvent(resNextEvent.data as CalEvent);
-      } else {
-        setNextEvent(null);
-      }
-
+      setBrief(resBrief.data && isMessage(resBrief.data) ? resBrief.data : null);
+      if (resTasks.data) setTasks(resTasks.data.filter(isTask));
+      if (resApprovals.count !== null) setApprovalsCount(resApprovals.count);
+      setNextEvent(resNextEvent.data ? (resNextEvent.data as CalEvent) : null);
       if (resHeartbeat.data && resHeartbeat.data.last_seen) {
         setLastHeartbeat(new Date(resHeartbeat.data.last_seen));
       }
-
       if (resRecentMessage.data && resRecentMessage.data.model_used) {
         setIsLocalMode(resRecentMessage.data.model_used === "ollama");
       }
+      setLoaded(true);
     };
 
     void loadData();
@@ -245,15 +304,12 @@ export default function DashboardPage() {
           if (cancelled) return;
           const row = payload.new;
           if (isMessage(row) && row.role === "assistant" && row.model_used === "system") {
-            // New brief arrived, set it
             setBrief(row);
           }
         }
       )
       .subscribe();
 
-    // Assigned once, so const — it was `let`, declared a hundred lines above
-    // where it is set.
     const pollInterval = setInterval(() => {
       void loadData();
     }, 30000) as unknown as number;
@@ -266,13 +322,9 @@ export default function DashboardPage() {
   }, [supabase]);
 
   const toggleTask = async (task: Task) => {
-    if (loadingTasks.has(task.id)) return;
-    
-    setLoadingTasks(prev => {
-      const next = new Set(prev);
-      next.add(task.id);
-      return next;
-    });
+    if (completing.has(task.id)) return;
+
+    setCompleting((prev) => new Set(prev).add(task.id));
 
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -285,10 +337,10 @@ export default function DashboardPage() {
         .eq("user_id", user.id);
 
       if (!error) {
-        setTasks(prev => prev.filter(t => t.id !== task.id));
+        setTasks((prev) => prev.filter((t) => t.id !== task.id));
       }
     } finally {
-      setLoadingTasks(prev => {
+      setCompleting((prev) => {
         const next = new Set(prev);
         next.delete(task.id);
         return next;
@@ -296,250 +348,310 @@ export default function DashboardPage() {
     }
   };
 
-  const dateStr = currentTime ? currentTime.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" }) : "";
-  const isOnline = (lastHeartbeat && currentTime) ? (currentTime.getTime() - lastHeartbeat.getTime() < 120000) : false;
+  const now = currentTime;
+  const ordered = useMemo(() => sortTasksByDueDate(tasks), [tasks]);
+
+  // Same predicate, same `now` as the list below and as /tasks?filter=… — so a
+  // chip cannot promise a count its destination view does not show.
+  const overdueCount = now ? ordered.filter((t) => matchesTaskFilter(t, "late", now)).length : 0;
+  const todayCount = now ? ordered.filter((t) => matchesTaskFilter(t, "today", now)).length : 0;
+
+  const isOnline = lastHeartbeat && currentTime
+    ? currentTime.getTime() - lastHeartbeat.getTime() < 120000
+    : false;
+
+  const dateStr = currentTime
+    ? currentTime.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" })
+    : "";
 
   return (
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      minHeight: "calc(100dvh - var(--nav-top-h))",
-      paddingBottom: "calc(var(--nav-bottom-h) + var(--safe-area-bottom))",
-    }}>
-      <div style={{
+    <div
+      className="col"
+      style={{
         padding: "var(--space-6) var(--space-5)",
-        display: "flex",
-        flexDirection: "column",
         gap: "var(--space-6)",
         maxWidth: "800px",
         margin: "0 auto",
         width: "100%",
-      }}>
-        
-        {/* Date header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      }}
+    >
+      {/* Date header */}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ minWidth: 0 }}>
+          <h1
+            className="t-lg"
+            style={{ fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}
+          >
+            {mounted ? (
+              dateStr
+            ) : (
+              <span className="skeleton" style={{ display: "inline-block", width: 190, height: 24 }} />
+            )}
+          </h1>
+          <p className="t-md muted" style={{ marginTop: "var(--space-1)" }}>
+            {currentTime ? (
+              greetingFor(currentTime)
+            ) : (
+              <span className="skeleton" style={{ display: "inline-block", width: 110, height: 14 }} />
+            )}
+          </p>
+        </div>
+
+        {mounted && currentTime && (
+          <StatusPill
+            online={isOnline}
+            lastSeen={lastHeartbeat}
+            now={currentTime}
+            local={isLocalMode}
+          />
+        )}
+      </div>
+
+      {/* Offline is a state, not a dot. The old screen showed a red dot with no
+          explanation, so "Sunday is asleep" and "something is broken" looked
+          identical — and the difference decides whether you wait or fix it. */}
+      {mounted && currentTime && !isOnline && (
+        <div
+          className="card card-tight"
+          style={{ borderColor: "var(--color-warning)", display: "flex", gap: "var(--space-3)", alignItems: "flex-start" }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "var(--color-warning)",
+              marginTop: 6,
+              flexShrink: 0,
+            }}
+          />
           <div>
-            <h1 style={{ fontSize: "1.75rem", fontWeight: 600, color: "var(--color-text-muted)", letterSpacing: "-0.02em" }}>
-              {mounted ? dateStr : <span style={{ visibility: "hidden" }}>Loading date...</span>}
-            </h1>
-            <p style={{ fontSize: "0.9375rem", color: "var(--color-text-muted)", marginTop: "var(--space-1)" }}>
-              {mounted ? getGreeting() : <span style={{ visibility: "hidden" }}>Loading...</span>}
+            <p className="t-sm" style={{ fontWeight: 600 }}>
+              The worker is offline
+            </p>
+            <p className="t-xs muted" style={{ marginTop: 2 }}>
+              {lastHeartbeat ? `Last heartbeat ${ago(lastHeartbeat, currentTime)}. ` : "No heartbeat recorded yet. "}
+              Chat, briefs and approvals need it running. Tasks you tick here still save.
             </p>
           </div>
-          
-          {mounted && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", marginTop: "var(--space-1)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <div style={{
-                  width: 8, 
-                  height: 8, 
-                  borderRadius: "50%", 
-                  background: isOnline ? "var(--color-success)" : "var(--color-danger)",
-                  boxShadow: isOnline ? "0 0 8px var(--color-success-faint)" : "0 0 8px var(--color-danger-faint)"
-                }} />
-                <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
-                  {isOnline ? "Online" : "Offline"}
+        </div>
+      )}
+
+      {/* Approvals */}
+      {approvalsCount > 0 && (
+        <Link href="/approvals" style={{ textDecoration: "none" }}>
+          <div
+            className="card card-tight tappable"
+            style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: "var(--color-warning)",
+                flexShrink: 0,
+              }}
+            />
+            <span className="t-md" style={{ fontWeight: 500 }}>
+              {approvalsCount} action{approvalsCount === 1 ? "" : "s"} waiting for your approval
+            </span>
+          </div>
+        </Link>
+      )}
+
+      {/* What actually needs attention today. Counted from the same rows, so it
+          cannot disagree with the list below it. */}
+      {loaded && now && (overdueCount > 0 || todayCount > 0) && (
+        <div className="row gap-2" style={{ flexWrap: "wrap" }}>
+          {overdueCount > 0 && (
+            <Link href="/tasks?filter=late" className="chip chip-danger" style={{ textDecoration: "none" }}>
+              {overdueCount} late
+            </Link>
+          )}
+          {todayCount > 0 && (
+            <Link href="/tasks?filter=today" className="chip chip-warning" style={{ textDecoration: "none" }}>
+              {todayCount} due today
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* Next event */}
+      {nextEvent && (
+        <section>
+          <div className="section-head">
+            <h2 className="label" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+              Next event
+            </h2>
+          </div>
+          <Link href="/schedule" style={{ textDecoration: "none" }}>
+            <div
+              className="card card-tight tappable"
+              style={{ borderLeft: "3px solid var(--color-primary)", display: "flex", flexDirection: "column", gap: 2 }}
+            >
+              <div className="row" style={{ justifyContent: "space-between", gap: "var(--space-3)" }}>
+                <span className="t-md" style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {nextEvent.title}
+                </span>
+                <span className="t-xs faint nums" style={{ flexShrink: 0 }}>
+                  {currentTime
+                    ? `${clock(nextEvent.start_time)} – ${clock(nextEvent.end_time)}`
+                    : "--:--"}
                 </span>
               </div>
-              {isOnline && isLocalMode && (
-                <span style={{ fontSize: "0.625rem", color: "var(--color-warning)", fontWeight: 500 }}>
-                  Local / Low-power
-                </span>
-              )}
+              <div className="row gap-2">
+                {nextEvent.location && (
+                  <span className="t-2xs faint" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {nextEvent.location}
+                  </span>
+                )}
+                {currentTime && untilLabel(nextEvent.start_time, currentTime) ? (
+                  <span className="chip chip-primary">{untilLabel(nextEvent.start_time, currentTime)}</span>
+                ) : null}
+              </div>
             </div>
+          </Link>
+        </section>
+      )}
+
+      {/* Daily brief */}
+      <section>
+        <div className="section-head">
+          <h2 className="label" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+            Daily brief
+          </h2>
+          <div className="row gap-3">
+            {brief && currentTime && (
+              <span className="t-2xs faint nums">{clock(brief.created_at)}</span>
+            )}
+            <button
+              type="button"
+              className="link-btn"
+              onClick={refreshBrief}
+              disabled={refreshingBrief}
+              style={{ opacity: refreshingBrief ? 0.5 : 1 }}
+            >
+              {refreshingBrief ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+        <div className="card" aria-live="polite">
+          {!loaded && !brief ? (
+            <div className="col gap-2">
+              <span className="skeleton" style={{ height: 13, width: "94%" }} />
+              <span className="skeleton" style={{ height: 13, width: "88%" }} />
+              <span className="skeleton" style={{ height: 13, width: "55%" }} />
+            </div>
+          ) : brief ? (
+            <div className="markdown-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{brief.content}</ReactMarkdown>
+            </div>
+          ) : (
+            <p className="t-md faint">No brief yet — the worker sends one at 8am.</p>
+          )}
+        </div>
+      </section>
+
+      {/* Open tasks */}
+      <section>
+        <div className="section-head">
+          <h2 className="label" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+            Open tasks
+          </h2>
+          {loaded && ordered.length > 0 && (
+            <span className="t-2xs faint nums">{ordered.length}</span>
           )}
         </div>
 
-        {/* Approvals Badge Row */}
-        {approvalsCount > 0 && (
-          <Link href="/approvals" style={{ textDecoration: "none" }}>
-            <div style={{
-              background: "var(--color-surface)",
-              border: "1px solid var(--color-border)",
-              borderRadius: "var(--radius-lg)",
-              padding: "var(--space-3) var(--space-4)",
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--space-3)",
-            }}>
-              <span style={{
-                width: 8, height: 8, borderRadius: "50%",
-                background: "var(--color-warning)",
-                flexShrink: 0,
-                display: "inline-block",
-              }} />
-              <span style={{ fontSize: "0.9375rem", fontWeight: 500, color: "var(--color-text)" }}>
-                {approvalsCount} action{approvalsCount === 1 ? "" : "s"} waiting for your approval
-              </span>
-            </div>
-          </Link>
-        )}
-
-        {/* Next Event Widget */}
-        {nextEvent && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginLeft: "2px", marginRight: "2px" }}>
-              <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
-                Next Event
-              </h2>
-            </div>
-            <Link href="/schedule" style={{ textDecoration: "none" }}>
-              <div style={{
-                background: "var(--color-surface)",
-                borderRadius: "var(--radius-xl)",
-                padding: "var(--space-3) var(--space-4)",
-                border: "1px solid var(--color-border)",
-                borderLeft: "4px solid var(--color-primary)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "2px"
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ color: "var(--color-text)", fontWeight: 700, fontSize: "1rem" }}>
-                    {nextEvent.title}
-                  </span>
-                  <span style={{ color: "var(--color-text-faint)", fontSize: "0.75rem" }}>
-                    {mounted ? (
-                      `${new Date(nextEvent.start_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} – ${new Date(nextEvent.end_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`
-                    ) : (
-                      <span style={{ visibility: "hidden" }}>--:-- – --:--</span>
-                    )}
-                  </span>
-                </div>
-                {nextEvent.location && (
-                  <div style={{
-                    color: "var(--color-text-faint)",
-                    fontSize: "0.6875rem",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis"
-                  }}>
-                    {nextEvent.location}
-                  </div>
-                )}
-              </div>
-            </Link>
-          </div>
-        )}
-
-        {/* Daily brief card */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginLeft: "2px", marginRight: "2px" }}>
-            <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
-              Daily Brief
-            </h2>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-              {brief && (
-                <span style={{ fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
-                  {mounted ? `Updated at ${new Date(brief.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}` : <span style={{ visibility: "hidden" }}>Updated at --:--</span>}
-                </span>
-              )}
-              <button
-                onClick={refreshBrief}
-                disabled={refreshingBrief}
-                style={{
-                  fontSize: "0.75rem",
-                  color: "var(--color-primary)",
-                  background: "none",
-                  border: "none",
-                  cursor: refreshingBrief ? "default" : "pointer",
-                  opacity: refreshingBrief ? 0.5 : 1,
-                }}
-              >
-                {refreshingBrief ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-          </div>
-          <Card>
-            {brief ? (
-              <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {brief.content}
-                </ReactMarkdown>
-              </div>
-            ) : (
-              <div style={{ color: "var(--color-text-faint)", fontSize: "0.9375rem" }}>
-                No brief yet — worker will send one at 8am.
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Open tasks strip */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginLeft: "2px", marginRight: "2px" }}>
-            <h2 style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-faint)" }}>
-              Open Tasks
-            </h2>
-          </div>
-          
+        {!loaded ? (
+          <TaskSkeleton />
+        ) : ordered.length > 0 ? (
           <div className="grouped-list">
-            {(tasks?.length ?? 0) > 0 ? (
-              (tasks || []).map((task) => {
-                const isLoading = loadingTasks?.has(task.id);
-                
-                return (
-                  <div key={task.id} className="grouped-list-item" style={{
-                    opacity: isLoading ? 0.5 : 1,
-                  }}>
-                    <button
-                      onClick={() => void toggleTask(task)}
-                      disabled={isLoading}
+            {ordered.slice(0, 5).map((task) => {
+              const busy = completing.has(task.id);
+              const meta = now ? dueMeta(task.due_date, now) : null;
+              const toneClass = meta ? (meta.tone === "muted" ? "chip" : `chip chip-${meta.tone}`) : "";
+              const badge = priorityBadge(task.priority);
+
+              return (
+                <div key={task.id} className="grouped-list-item tappable" style={{ opacity: busy ? 0.55 : 1 }}>
+                  <button
+                    type="button"
+                    className="tap"
+                    onClick={() => void toggleTask(task)}
+                    disabled={busy}
+                    aria-label={`Mark “${task.title}” done`}
+                    aria-pressed={busy}
+                    style={{ color: "var(--color-success)" }}
+                  >
+                    <span
+                      aria-hidden
                       style={{
-                        width: 20,
-                        height: 20,
+                        width: 22,
+                        height: 22,
                         borderRadius: "50%",
-                        border: "2px solid var(--color-border)",
-                        background: "transparent",
+                        border: `2px solid ${busy ? "var(--color-success)" : "var(--color-border-strong)"}`,
+                        background: busy ? "var(--color-success-faint)" : "transparent",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        flexShrink: 0,
+                        transition: "background 150ms ease, border-color 150ms ease",
                       }}
-                    />
-                    <div style={{
-                      flex: 1,
-                      minWidth: 0,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      fontSize: "0.9375rem",
-                      color: "var(--color-text)",
-                    }}>
+                    >
+                      {busy && <CheckIcon />}
+                    </span>
+                  </button>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Two lines, then clamp. On one clipped line the badge
+                        took 53px of a 217px column and a perfectly ordinary
+                        title — "Review the travel plan for Thursday" — became
+                        "…for Th…", with no way to read the rest on a phone. */}
+                    <div
+                      className="t-md"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 2,
+                        overflow: "hidden",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
                       {task.title}
                     </div>
+                    {(meta || task.category) && (
+                      <div className="row gap-2" style={{ marginTop: 2 }}>
+                        {meta && <span className={toneClass}>{meta.label}</span>}
+                        {task.category && <span className="t-2xs faint">{task.category}</span>}
+                      </div>
+                    )}
                   </div>
-                );
-              })
-            ) : (
-              <div style={{
-                padding: "var(--space-4)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-border)",
-                borderRadius: "var(--radius-lg)",
-                color: "var(--color-text-faint)",
-                fontSize: "0.9375rem",
-                textAlign: "center",
-              }}>
-                All caught up for now.
-              </div>
-            )}
-            
-            <Link href="/tasks" style={{ 
-              display: "block", 
-              marginTop: "var(--space-2)", 
-              marginLeft: "0",
-              fontSize: "0.875rem", 
-              color: "var(--color-primary)", 
-              textDecoration: "none",
-              fontWeight: 500,
-            }}>
-              View all →
-            </Link>
-          </div>
-        </div>
 
-      </div>
+                  {badge && <span className={badge.className}>{badge.label}</span>}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="card" style={{ textAlign: "center" }}>
+            <p className="t-md faint">All caught up for now.</p>
+            <p className="t-2xs faint" style={{ marginTop: 2 }}>
+              Anything you mention in chat can become a task.
+            </p>
+          </div>
+        )}
+
+        <Link
+          href="/tasks"
+          className="link-btn"
+          style={{ display: "inline-block", marginTop: "var(--space-3)" }}
+        >
+          View all tasks →
+        </Link>
+      </section>
     </div>
   );
 }
