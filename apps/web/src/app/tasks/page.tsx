@@ -171,7 +171,9 @@ function TasksPageInner() {
           priority: 2,
           status: "open",
           is_archived: false,
-          flexibility_score: 0,
+          // `flexibility_score` is deliberately omitted: the column is NOT NULL
+          // DEFAULT 3 with CHECK 1..5, so the old explicit 0 failed the
+          // constraint and every insert from this screen was rejected.
         });
 
       if (insertErr) throw insertErr;
