@@ -1,44 +1,58 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import {
+  type Task,
+  isTask,
+  PRIORITY_LABELS,
+  PRIORITY_COLORS,
+  priorityBadge,
+  sortTasksByDueDate,
+  parseTaskFilter,
+  matchesTaskFilter,
+} from "@/lib/tasks";
 
-type Task = {
-  id: string;
-  title: string;
-  status: "open" | "done";
-  priority: 0 | 1 | 2 | 3;
-  due_date: string | null;
-  category: string | null;
-  is_archived: boolean;
-  created_at: string;
-};
+/**
+ * "Active" is a product rule, not a type rule: an in-progress task is still
+ * yours to do, a cancelled one is not. It lives in the query, where an
+ * exclusion is visible, rather than in `isTask`, where it would be silent.
+ */
+const ACTIVE_STATUSES = ["open", "in_progress"];
 
-function isTask(x: unknown): x is Task {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
+function FilterChip({
+  href,
+  label,
+  count,
+  active,
+  tone,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  active: boolean;
+  tone?: "chip-danger" | "chip-warning";
+}) {
+  const className = active ? `chip ${tone ?? "chip-primary"}` : "chip";
   return (
-    typeof o.id === "string" &&
-    typeof o.title === "string" &&
-    (o.status === "open" || o.status === "done") &&
-    (o.priority === 0 || o.priority === 1 || o.priority === 2 || o.priority === 3) &&
-    (o.due_date === null || typeof o.due_date === "string") &&
-    (o.category === null || typeof o.category === "string") &&
-    typeof o.is_archived === "boolean" &&
-    typeof o.created_at === "string"
+    <Link
+      href={href}
+      className={className}
+      style={{ textDecoration: "none" }}
+      aria-current={active ? "page" : undefined}
+    >
+      {label} · {count}
+    </Link>
   );
 }
 
-const PRIORITY_LABELS: Record<0 | 1 | 2 | 3, string> = { 0: "None", 1: "Low", 2: "Normal", 3: "High" };
-const PRIORITY_COLORS: Record<0 | 1 | 2 | 3, string> = {
-  0: "var(--color-text-faint)",
-  1: "var(--color-text-faint)",
-  2: "var(--color-primary)",
-  3: "var(--color-danger)",
-};
-
-export default function TasksPage() {
+function TasksPageInner() {
   const supabase = useMemo(() => createClient(), []);
+  const search = useSearchParams();
+  const filter = parseTaskFilter(search.get("filter"));
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -47,6 +61,16 @@ export default function TasksPage() {
   // Read by the polling fallback below, which closes over its initial value
   // and so cannot use state to decide whether Realtime is carrying updates.
   const liveRef = useRef(false);
+
+  // Same clock as Today: ticking, so "late" cannot go stale overnight, and one
+  // value shared by the chip counts and the filtered rows so they cannot
+  // disagree. Safe to seed in an initialiser — the server render has no rows to
+  // count, so nothing it produces depends on the hour.
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const every = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(every);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +85,7 @@ export default function TasksPage() {
         .from("tasks")
         .select("*")
         .eq("user_id", user.id)
+        .in("status", ACTIVE_STATUSES)
         .eq("is_archived", false)
         .order("created_at", { ascending: false });
 
@@ -180,6 +205,29 @@ export default function TasksPage() {
     }
   };
 
+  // Sorted once, then filtered — so the counts below are read off the same
+  // rows the list shows, not off a second pass with its own rules.
+  const active = useMemo(() => sortTasksByDueDate(tasks), [tasks]);
+  const visible = useMemo(
+    () => active.filter((t) => matchesTaskFilter(t, filter, now)),
+    [active, filter, now]
+  );
+  const lateCount = useMemo(
+    () => active.filter((t) => matchesTaskFilter(t, "late", now)).length,
+    [active, now]
+  );
+  const todayCount = useMemo(
+    () => active.filter((t) => matchesTaskFilter(t, "today", now)).length,
+    [active, now]
+  );
+
+  const emptyMessage =
+    filter === "late"
+      ? "Nothing overdue."
+      : filter === "today"
+        ? "Nothing due today."
+        : "No active tasks.";
+
   return (
     <div style={{
       display: "flex",
@@ -195,84 +243,130 @@ export default function TasksPage() {
         flexDirection: "column",
         gap: "var(--space-2)",
       }}>
-        {tasks.length === 0 && !error && (
+        <div className="row gap-2" style={{ flexWrap: "wrap", marginBottom: "var(--space-2)" }}>
+          <FilterChip href="/tasks" label="All" count={active.length} active={filter === "all"} />
+          <FilterChip
+            href="/tasks?filter=late"
+            label="Late"
+            count={lateCount}
+            active={filter === "late"}
+            tone="chip-danger"
+          />
+          <FilterChip
+            href="/tasks?filter=today"
+            label="Due today"
+            count={todayCount}
+            active={filter === "today"}
+            tone="chip-warning"
+          />
+        </div>
+
+        {visible.length === 0 && !error && (
           <div style={{
             padding: "var(--space-8)", textAlign: "center",
             color: "var(--color-text-faint)", fontSize: "0.875rem",
           }}>
-            No open tasks. Add one from the Schedule page.
+            {emptyMessage}
+            {filter !== "all" && (
+              <div style={{ marginTop: "var(--space-3)" }}>
+                <Link href="/tasks" className="link-btn">Show all tasks</Link>
+              </div>
+            )}
           </div>
         )}
 
-        {tasks.map((task) => (
-          <div
-            key={task.id}
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: "var(--space-3)",
-              padding: "var(--space-3)",
-              background: "var(--color-surface-2)",
-              borderRadius: "var(--radius-lg)",
-              border: "1px solid var(--color-border)",
-              opacity: task.status === "done" ? 0.6 : 1,
-            }}
-          >
-            <button
-              onClick={() => void toggleTask(task)}
+        {visible.map((task) => {
+          const badge = priorityBadge(task.priority);
+          return (
+            <div
+              key={task.id}
               style={{
-                width: 20,
-                height: 20,
-                borderRadius: "50%",
-                border: `2px solid ${task.status === "done" ? "var(--color-primary)" : "var(--color-border)"}`,
-                background: task.status === "done" ? "var(--color-primary)" : "transparent",
                 display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                flexShrink: 0,
-                marginTop: 2,
+                alignItems: "flex-start",
+                gap: "var(--space-3)",
+                padding: "var(--space-3)",
+                background: "var(--color-surface-2)",
+                borderRadius: "var(--radius-lg)",
+                border: "1px solid var(--color-border)",
+                opacity: task.status === "done" ? 0.6 : 1,
               }}
             >
-              {task.status === "done" && (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              )}
-            </button>
-
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{
-                fontSize: "0.9375rem",
-                color: "var(--color-text)",
-                textDecoration: task.status === "done" ? "line-through" : "none",
-                wordBreak: "break-word",
-              }}>
-                {task.title}
-              </div>
-              <div style={{
-                display: "flex",
-                gap: "var(--space-3)",
-                marginTop: "var(--space-1)",
-                fontSize: "0.75rem",
-              }}>
-                <span style={{ color: PRIORITY_COLORS[task.priority] }}>
-                  {PRIORITY_LABELS[task.priority]} Priority
+              <button
+                type="button"
+                onClick={() => void toggleTask(task)}
+                aria-label={task.status === "done" ? `Mark “${task.title}” not done` : `Mark “${task.title}” done`}
+                aria-pressed={task.status === "done"}
+                className="tap"
+                style={{
+                  padding: 0,
+                  border: "none",
+                  background: "none",
+                  cursor: "pointer",
+                  color: "var(--color-primary)",
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    border: `2px solid ${task.status === "done" ? "var(--color-primary)" : "var(--color-border)"}`,
+                    background: task.status === "done" ? "var(--color-primary)" : "transparent",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {task.status === "done" && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
                 </span>
-                {task.category && (
-                  <span style={{ color: "var(--color-text-faint)" }}>
-                    {task.category}
-                  </span>
-                )}
-                {task.due_date && (
-                  <span style={{ color: "var(--color-text-faint)" }}>
-                    Due {task.due_date}
-                  </span>
-                )}
+              </button>
+
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: "0.9375rem",
+                  color: "var(--color-text)",
+                  textDecoration: task.status === "done" ? "line-through" : "none",
+                  wordBreak: "break-word",
+                }}>
+                  {task.title}
+                </div>
+                <div style={{
+                  display: "flex",
+                  gap: "var(--space-3)",
+                  marginTop: "var(--space-1)",
+                  fontSize: "0.75rem",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                }}>
+                  {/* 4 and 5 are carried by the badge, so the word "Priority" is
+                      not repeated. 1–3 have no badge, so they need the text. */}
+                  {task.priority <= 3 && (
+                    <span style={{ color: PRIORITY_COLORS[task.priority] }}>
+                      {PRIORITY_LABELS[task.priority]}
+                    </span>
+                  )}
+                  {task.category && (
+                    <span style={{ color: "var(--color-text-faint)" }}>
+                      {task.category}
+                    </span>
+                  )}
+                  {task.due_date && (
+                    <span style={{ color: "var(--color-text-faint)" }}>
+                      Due {task.due_date}
+                    </span>
+                  )}
+                </div>
               </div>
+
+              {badge && <span className={badge.className}>{badge.label}</span>}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {error && (
@@ -319,6 +413,7 @@ export default function TasksPage() {
         <button
           onClick={() => void addTask()}
           disabled={loading || !input.trim()}
+          aria-label="Add task"
           style={{
             width: 36,
             height: 36,
@@ -343,5 +438,17 @@ export default function TasksPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * `useSearchParams()` must sit under a Suspense boundary or the production
+ * build fails; `login/page.tsx` uses the same shape for its `?next=`.
+ */
+export default function TasksPage() {
+  return (
+    <Suspense fallback={null}>
+      <TasksPageInner />
+    </Suspense>
   );
 }
