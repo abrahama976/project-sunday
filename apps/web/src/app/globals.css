@@ -314,3 +314,75 @@ button { cursor: pointer; background: none; border: none; }
   border-bottom: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
 }
+
+/* ── Interaction ───────────────────────────────────────────────
+   The minimum touch target is 44px, and the task checkbox was 20px — under
+   half of it, on the one control the home screen exists to offer. A wrapper
+   class rather than a bigger dot, so the visual stays small while the thumb
+   does not have to be. */
+.tap {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin: calc(var(--space-2) * -1);
+  border-radius: 999px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Press feedback. iOS gives none on a div, so every tappable row felt dead. */
+.tappable { transition: background 120ms ease, transform 120ms ease; }
+.tappable:active { background: var(--color-surface-hover); transform: scale(0.995); }
+
+/* Section heading, used by every screen that has more than one section. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 2px var(--space-2);
+}
+
+/* ── Loading ───────────────────────────────────────────────────
+   Content used to pop in with nothing on screen beforehand, because the
+   placeholder was `visibility:hidden` text — the layout was reserved, but the
+   user saw an empty page and no sign anything was coming. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-2) 25%,
+    var(--color-surface-offset) 37%,
+    var(--color-surface-2) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+
+@keyframes skeleton-sweep {
+  from { background-position: 100% 0; }
+  to   { background-position: -100% 0; }
+}
+
+/* A shimmer is decoration; anyone who has asked their OS for less motion gets
+   a still block instead. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  .tappable { transition: none; }
+  .tappable:active { transform: none; }
+}
+
+/* Announced by screen readers, never drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
