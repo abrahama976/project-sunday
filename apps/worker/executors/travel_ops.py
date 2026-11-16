@@ -7,7 +7,8 @@ from config import (OPENROUTESERVICE_API_KEY, TFNSW_API_KEY, TRAVEL_BUFFER_MINUT
                     USER_TIMEZONE)
 from utils import resolve_origin, row
 from travel.contracts import ResolvedPlace, NOT_FOUND, RESOLVED
-from travel.resolve import candidate_from_location, choose_place, saved_place_match
+from travel.resolve import (candidate_from_location, choose_place, efa_query,
+                            saved_place_match)
 from travel.gate import gate_journeys, rejection_summary
 
 # ── Driving, walking, cycling (OpenRouteService) ────────────────────────────
@@ -310,6 +311,11 @@ PARK_RIDE_PARKING_MIN = 5
 # different candidate sets rather than a shared one with a flag.
 DROP_OFF_MAX_CANDIDATES = 2
 DROP_OFF_CLASSES = {1, 2, 4, 5}      # train, metro, light rail, bus
+
+# A full plan is one baseline plus up to BOARDING_POINT_LIMIT boarding queries,
+# and firing them all at once is what earns a 429 from TfNSW. A 429 used to
+# come back as an empty list, i.e. as "no services". Three at a time.
+EFA_CONCURRENCY = 3
 
 # Every drive-assisted strategy, so a caller can ask "was a car involved in
 # this" without matching strings in three places.
@@ -1207,7 +1213,7 @@ def _trip_params(origin, destination, arrive_by=None, depart_at=None,
     return params
 
 
-async def _fetch_journeys(http, headers, params) -> list:
+async def _fetch_journeys(http, headers, params, errors=None) -> list:
     """Raw journeys for one strategy. Returns [] rather than raising.
 
     One strategy failing must not take the search down with it — that is the
@@ -1215,6 +1221,11 @@ async def _fetch_journeys(http, headers, params) -> list:
     TfNSW ignores or rejects the exclusion form, the biased searches simply
     contribute nothing and the baseline result stands, which is exactly
     today's behaviour rather than a regression.
+
+    `errors`, when given, collects the failures. An empty list because the
+    provider answered "nothing" and an empty list because it answered 429 look
+    identical to the caller otherwise, and the second must not be reported as
+    "no services run".
     """
     try:
         res = await http.get(TRIP_URL, headers=headers, params=params, timeout=ORS_TIMEOUT)
@@ -1222,6 +1233,8 @@ async def _fetch_journeys(http, headers, params) -> list:
         data = res.json() or {}
     except Exception as e:
         print(f"[trip] a search failed, continuing without it: {e}", flush=True)
+        if errors is not None:
+            errors.append(str(e))
         return []
 
     journeys = data.get("journeys") or []
@@ -1347,7 +1360,7 @@ async def _stop_finder(http, headers, text, origin_ll, allow_long_distance):
         "outputFormat": "rapidJSON",
         "coordOutputFormat": "EPSG:4326",
         "type_sf": "any",
-        "name_sf": text,
+        "name_sf": efa_query(text),
         "TfNSWSF": "true",
         "version": "10.2.1.42",
     }
@@ -1618,7 +1631,8 @@ async def _nearby_stations(http, headers, origin_ll, limit: int = 8,
 async def _drive_and_park_ride(http, headers, origin, destination,
                                arrive_by=None, depart_at=None,
                                origin_ll=None, dest_ll=None,
-                               car_available=False, drop_off_available=False):
+                               car_available=False, drop_off_available=False,
+                               errors=None):
     """The driving comparison, and any drive-assisted options worth considering.
 
     Returns `({minutes, km} | None, [summaries])` and never raises: losing the
@@ -1682,6 +1696,12 @@ async def _drive_and_park_ride(http, headers, origin, destination,
 
     origin_ll = (start[1], start[0])     # ORS speaks [lon, lat]; compare in (lat, lng)
     dest_ll = (end[1], end[0])
+    # The resolved coordinate, not the user's words. Handing EFA the raw text
+    # here answered "destination: multiple matches" with no journeys, so every
+    # drop-off and park-and-ride query came back empty and "Drive all the way"
+    # was the only option left — while the baseline search, which already used
+    # the coordinate, found six.
+    dest_ref = as_efa_coord(dest_ll)
 
     summaries = []
 
@@ -1731,9 +1751,10 @@ async def _drive_and_park_ride(http, headers, origin, destination,
         station_depart = depart_at if arrive_by else park_ride_depart_at(
             depart_at, access_min, _dt_now_utc())
         raw = await _fetch_journeys(http, headers, _trip_params(
-            station.get("id") or station["name"], destination,
+            station.get("id") or station["name"], dest_ref,
             arrive_by, station_depart,
-            origin_type="stop" if station.get("id") else "any"))
+            origin_type="stop" if station.get("id") else "any",
+            destination_type="coord"), errors)
         for journey in raw:
             summary = summarise_journey(journey)
             if not summary:
@@ -1981,9 +2002,15 @@ async def plan_journeys(
             for service in boarding
         ]
 
+        errors = []
+        gate = asyncio.Semaphore(EFA_CONCURRENCY)
+
+        async def _limited(params):
+            async with gate:
+                return await _fetch_journeys(http, headers, params, errors)
+
         results = await asyncio.gather(
-            *[_fetch_journeys(http, headers, p)
-              for p in [baseline_params] + boarding_params]
+            *[_limited(p) for p in [baseline_params] + boarding_params]
         )
 
         summaries = []
@@ -2013,8 +2040,19 @@ async def plan_journeys(
                 http, headers, origin, destination, arrive_by, depart_at,
                 origin_ll=origin_ll, dest_ll=dest_ll,
                 car_available=car_available,
-                drop_off_available=drop_off_available)
+                drop_off_available=drop_off_available,
+                errors=errors)
             summaries.extend(driven)
+
+    # Nothing public-transport came back AND the provider errored: that is a
+    # provider problem, not a plan. Without this, a throttled TfNSW left
+    # drive_direct as the only survivor and the page offered "Drive all the way"
+    # with no hint that the transit search had never happened.
+    if errors and not any(s.get("strategy") != "drive_direct" for s in summaries):
+        return {"ok": False, "error": (
+            f"TfNSW didn't answer {len(errors)} of my searches just now, so I "
+            f"can't tell you the public transport options to {destination}. "
+            "Worth trying again in a minute.")}
 
     if not summaries:
         # Both ends resolved — otherwise we returned above — so this really is

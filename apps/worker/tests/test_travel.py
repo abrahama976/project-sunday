@@ -1376,6 +1376,126 @@ check("no user, no notification",
 check("no title, no notification",
       _asyncio.run(notify(object(), "u1", "")), False)
 
+print("\n── Artarmon: the wrong place, 143 km out ─────────────")
+
+import asyncio as _aio                                        # noqa: E402
+import executors.travel_ops as _T                             # noqa: E402
+from travel.resolve import choose_place, efa_query, LOCAL_KM  # noqa: E402
+from travel.contracts import RESOLVED                         # noqa: E402
+
+# The recorded regression. EFA offered the Australian Army Infantry Museum at
+# Singleton for "Artarmon NSW 2064, Australia", flagged it isBest with the higher
+# score, and it sat 6 km inside the 150 km cliff. The real Artarmon was 8 km away.
+_museum = PlaceCandidate(name="Australian Army Infantry Museum",
+                         lat=-32.629075, lng=151.175203, kind="poi",
+                         quality=1000, is_best=True, distance_km=143.5)
+_artarmon = PlaceCandidate(name="Artarmon", lat=-33.8104, lng=151.1850,
+                           kind="locality", quality=700, is_best=False,
+                           distance_km=8.4)
+_picked = choose_place("Artarmon NSW 2064", [_museum, _artarmon])
+check("a local place beats a far one even when the far one is isBest",
+      _picked.selected.name, "Artarmon")
+check("...and resolves rather than asking", _picked.state, RESOLVED)
+
+# Not a cliff: with nothing local the old ordering stands, so a genuine
+# Newcastle trip still resolves to the provider's pick.
+_far_best = PlaceCandidate(name="Newcastle", lat=-32.9283, lng=151.7817,
+                           kind="locality", quality=900, is_best=True,
+                           distance_km=116.0)
+_far_other = PlaceCandidate(name="Newcastle West", lat=-32.93, lng=151.76,
+                            kind="locality", quality=500, is_best=False,
+                            distance_km=115.0)
+check("with every candidate far, the provider's pick still wins",
+      choose_place("Newcastle", [_far_other, _far_best]).selected.name,
+      "Newcastle")
+check_true("LOCAL_KM sits inside MAX_PLACE_KM, so it only ever re-orders",
+           LOCAL_KM < 150.0)
+
+check("a trailing country is dropped for EFA",
+      efa_query("Artarmon NSW 2064, Australia"), "Artarmon NSW 2064")
+check("...with or without the comma",
+      efa_query("Artarmon NSW 2064 Australia"), "Artarmon NSW 2064")
+check("...case-insensitively", efa_query("Kogarah, australia"), "Kogarah")
+check("a place with no country is untouched", efa_query("Kogarah"), "Kogarah")
+check("the word alone is not stripped to nothing", efa_query("Australia"), "Australia")
+check("None is an empty query, not a crash", efa_query(None), "")
+
+print("\n── the drop-off path asks EFA about the coordinate ───")
+
+
+class _Resp:
+    def __init__(self, data):
+        self._data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._data
+
+
+class _FakeHttp:
+    """Answers the one request _fetch_journeys makes. `fail` raises like a 429."""
+    def __init__(self, data=None, fail=None):
+        self.data, self.fail = data or {}, fail
+
+    async def get(self, *_a, **_k):
+        if self.fail:
+            raise self.fail
+        return _Resp(self.data)
+
+
+# The incident, directly: a throttled provider and a provider with nothing to
+# say both return [], and only one of them is "no services run".
+_errs = []
+check("a failed search returns no journeys",
+      _aio.run(_T._fetch_journeys(_FakeHttp(fail=RuntimeError("429")), {}, {}, _errs)),
+      [])
+check("...and is recorded, so it can be told from an empty answer", len(_errs), 1)
+_errs = []
+check("an empty answer returns no journeys",
+      _aio.run(_T._fetch_journeys(_FakeHttp({"journeys": []}), {}, {}, _errs)), [])
+check("...and is NOT recorded as an error", _errs, [])
+check("errors stay optional for callers that do not care",
+      _aio.run(_T._fetch_journeys(_FakeHttp(fail=RuntimeError("x")), {}, {})), [])
+
+_seen = {}
+
+
+async def _fake_fetch(_http, _headers, params, errors=None):
+    _seen.setdefault("params", []).append(params)
+    return []
+
+
+async def _fake_route(_http, _start, _end, _profile="driving-car"):
+    return (20, 8.0)
+
+
+async def _fake_nearby(*_a, **_k):
+    return [{"id": "10101100", "name": "Central Station",
+             "lat": -33.8830, "lng": 151.2060, "distance_m": 4000.0,
+             "classes": {1}}]
+
+
+_orig = (_T._fetch_journeys, _T._ors_route, _T._nearby_stations)
+_T._fetch_journeys, _T._ors_route, _T._nearby_stations = (
+    _fake_fetch, _fake_route, _fake_nearby)
+try:
+    _aio.run(_T._drive_and_park_ride(
+        _FakeHttp(), {}, "home", "Artarmon NSW 2064, Australia",
+        origin_ll=(-33.9229, 151.2065), dest_ll=(-33.8104, 151.1850),
+        drop_off_available=True))
+finally:
+    _T._fetch_journeys, _T._ors_route, _T._nearby_stations = _orig
+
+_p = (_seen.get("params") or [{}])[0]
+check_true("a drop-off query was made", bool(_seen.get("params")))
+check("its destination is the resolved coordinate, longitude first",
+      _p.get("name_destination"), as_efa_coord((-33.8104, 151.1850)))
+check("...typed as a coordinate", _p.get("type_destination"), "coord")
+check_true("the user's words never reach EFA on this path",
+           "Artarmon" not in str(_p.get("name_destination")))
+
 print("\n── the harness itself ────────────────────────────────")
 
 # The stubs exist to satisfy imports, never to answer questions. A stub that

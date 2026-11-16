@@ -12,6 +12,8 @@ away: `isBest`, `matchQuality`, `type`, and a coordinate that can be measured
 against where the journey starts. All four are used here, deterministically —
 no model call, so this stays off the 250/day budget and stays explainable.
 """
+import re
+
 from .contracts import (PlaceCandidate, ResolvedPlace,
                         RESOLVED, AMBIGUOUS, IMPLAUSIBLE, NOT_FOUND)
 
@@ -25,6 +27,17 @@ MAX_PLACE_KM = 150.0
 # entrances to the same one, so a tie between them is worth asking about.
 DISTINCT_PLACE_KM = 15.0
 
+# A candidate beyond this is not what "how do I get to X" meant while a nearer
+# candidate for the same words exists. 60 km spans Greater Sydney (Rosebery to
+# Penrith is 55). A preference, not a cliff: when every candidate is far — a
+# genuine Newcastle trip — the term is constant and ordering is unchanged.
+# MAX_PLACE_KM above stays as the outright rejection.
+#
+# Needed because MAX_PLACE_KM alone let "Artarmon NSW 2064, Australia" resolve to
+# the Australian Army Infantry Museum at Singleton, 143 km out: under the 150 km
+# cliff, and ahead of the real Artarmon because the provider flagged it isBest.
+LOCAL_KM = 60.0
+
 # Preference between kinds, used only to break an exact tie on the provider's
 # own scores. A stop is the most useful answer to "how do I get to X" and a
 # locality centroid the least: it is a point in a suburb, not a destination.
@@ -37,6 +50,21 @@ _DEFAULT_KIND_RANK = 3
 
 def _kind_rank(kind: str) -> int:
     return _KIND_RANK.get((kind or "").strip().lower(), _DEFAULT_KIND_RANK)
+
+
+_COUNTRY_SUFFIX = re.compile(r",?\s*Australia\s*$", re.IGNORECASE)
+
+
+def efa_query(text: str) -> str:
+    """`text` without a trailing country, for EFA. Pure.
+
+    EFA is a NSW provider; ", Australia" tells it nothing and is one more token
+    it can match on — which is how "Artarmon NSW 2064, Australia" became the
+    Australian Army Infantry Museum. Autocomplete and Google-style addresses
+    both append it. Only a trailing one is stripped, and never to empty.
+    """
+    stripped = _COUNTRY_SUFFIX.sub("", text or "").strip()
+    return stripped or (text or "")
 
 
 def candidate_from_location(loc, coord_pair, origin_ll=None, haversine=None):
@@ -63,10 +91,14 @@ def candidate_from_location(loc, coord_pair, origin_ll=None, haversine=None):
 
 
 def _sort_key(candidate):
-    # isBest first — it is the provider's own answer to "which did you mean".
-    # Then its match score, then the kind, then proximity. Every term is
+    # Local first, then isBest — the provider's own answer to "which did you
+    # mean". Then its match score, then the kind, then proximity. Every term is
     # ordered so that smaller is better, so one sorted() does the whole thing.
     return (
+        # Local before anything the provider says: its isBest and score know
+        # nothing about where the user is standing.
+        0 if (candidate.distance_km is None
+              or candidate.distance_km <= LOCAL_KM) else 1,
         0 if candidate.is_best else 1,
         -(candidate.quality if candidate.quality is not None else -1),
         _kind_rank(candidate.kind),

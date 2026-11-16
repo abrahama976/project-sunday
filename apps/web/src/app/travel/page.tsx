@@ -408,7 +408,10 @@ export default function TravelPage() {
         </button>
       </section>
 
-      {error && (
+      {/* The warning card below carries plan.reason, the candidate buttons and the
+          map pin. Showing the same sentence here as well printed every
+          failure twice. This is for failures with no plan to explain them. */}
+      {error && !plan && (
         <p style={{ fontSize: "0.8125rem", color: "var(--color-danger)", marginBottom: "var(--space-4)" }}>
           {error}
         </p>
