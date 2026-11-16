@@ -50,6 +50,12 @@ the only writer of `agent_turns`. When touching it:
   loses the whole turn.
 - **Telemetry never breaks the answer.** `log_turn` swallows its own errors.
 
+The reasoning behind these rules — why verification is deterministic here
+instead of a second model call, why tool descriptions are priced per request,
+why the memory caps are load-bearing — lives in
+`apps/worker/.agents/skills/agent-loop-discipline/SKILL.md`. Read it before
+adding a tool, a model call, or a memory cap.
+
 ## Two failure modes this project has already paid for
 
 - **`maybe_single()` returns `None`**, not a response with `data=None`, when no
