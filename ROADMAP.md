@@ -17,13 +17,45 @@ Last updated: **2026-09-06**
 | `apps/web` | Deployed | Today, **Travel**, Chat, Tasks, Approvals, Schedule, Health, Profile, Traces, Settings. Travel took the Schedule tab; the full week view stays at `/schedule`, linked from Travel |
 | `apps/worker` | **Behind `main`, and dirty** | `mac_heartbeat.version` reports the running sha, so this row is a lookup rather than an inference — which is the whole reason it exists. **Do not write a sha here**; read it. At the last check it said `fc17d67+dirty`, i.e. PR #47 plus uncommitted local edits, so a plain `git pull` may conflict — `git status` first |
 | Google OAuth | **In production** | Re-authorised 2026-09-02 via a Desktop-app client; all services report authorised |
-| LLM router | Built | Flash 2.5 → Lite → 2.0 → 2.0-Lite → Groq → Ollama, budget-gated |
+| LLM router | Built | Flash → Flash-Lite → NVIDIA → Groq → Ollama, budget-gated. IDs verified live 2026-11-17 and overridable from `.env` |
 | Learning brain | Built | `brain_directives`, approve-tier, capped, superseding |
 | Watchdog | **Armed & proven** | Topic set; ntfy returned 200 on a live alert |
 | **Agentic loop** | Built | `agent_loop.py`, 5 rounds max, budget-gated per round |
 | `agent_turns` | Written | thought / tool_call / tool_result / final / loop_break |
 | Agent trace UI | Built | `/traces` — run list, steps in order, termination reason |
 | **Travel** | **Working** | 2026-09-05, Rosebery → Moore Park by 7 PM: leave 6:16, arrive 6:52 — eight minutes of slack, not two hours. Bus 358 → Light Rail L2, so cross-mode planning is real. `nearby_services` holds **93 services across 35 stops** including T8 at Green Square. Park-and-ride still unproven end to end. Ambiguous names are now offered as tappable choices with map pins; a web search rewrites the query for venue names, never the coordinate |
+
+---
+
+## Model cascade — IDs checked live, 2026-11-17
+
+`GET /v1beta/models` on the worker's own key, then one `generateContent` each,
+because a model can be listed and still refuse the free tier:
+
+| ID | Listed | Answers |
+|---|---|---|
+| `gemini-3.5-flash` | yes | yes (reports `modelVersion gemini-3.6-flash`) |
+| `gemini-3.5-flash-lite` | yes | yes |
+| `gemini-3.1-flash-lite` | yes | yes |
+| `gemini-2.5-flash` / `-lite` | yes | yes — listed as retired for 16 Oct 2026, still answering today |
+| `gemini-3.8-flash` | yes | empty body |
+| `gemini-3.7-flash`, `gemini-flash-latest` | yes | 503, high demand |
+| `gemini-2.5-pro` | yes | not free-tier; removed from the cascade |
+
+**Chosen:** `GEMINI_MODEL=gemini-3.5-flash`, `GEMINI_LITE_MODEL=gemini-3.5-flash-lite`.
+The 2.0 tiers (`gemini-2.0-flash`, `gemini-2.0-flash-lite`) are gone: shut down
+1 Jun 2026, and they sat third and fourth in the cascade, so every exhausted day
+walked through two dead IDs before reaching Groq.
+
+All of `GEMINI_MODEL`, `GEMINI_LITE_MODEL`, `NVIDIA_MODEL`, `GROQ_MODEL`,
+`OLLAMA_MODEL` and `OLLAMA_HOST` now come from the environment, so the next
+retirement is a `.env` change.
+
+**NVIDIA tier:** `https://integrate.api.nvidia.com/v1`, between the Gemini tiers
+and Groq because it does tool calling. Default `NVIDIA_MODEL` is
+`meta/llama-3.3-70b-instruct` — **not yet verified against `/v1/models`**, as
+this machine has no `NVIDIA_API_KEY`; the tier is skipped cleanly until one is
+added. Per-minute guard at 40 requests, plus its own ledger tier.
 
 ---
 

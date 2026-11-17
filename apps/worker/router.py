@@ -1,11 +1,12 @@
 import asyncio
 import json
+import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
-from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL, USER_TIMEZONE
+from config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, TOOL_TIER_MAP, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL, USER_TIMEZONE, NVIDIA_BASE_URL, NVIDIA_API_KEY, NVIDIA_MODEL
 from utils import generate_with_retry
 from context.loader import get_profile, get_directives
 from executors.brain_ops import render_directives
@@ -129,6 +130,151 @@ async def _ask_groq(message: str, history: list[dict]) -> dict:
         print(f"[router] Groq failed: {e}")
         return {"type": "text", "content": f"Groq unavailable: {e}", "model_used": "system"}
 
+def _nvidia_messages(contents: list) -> list[dict]:
+    """Convert the loop's Gemini Content list into OpenAI chat messages.
+
+    The loop hands `contents` around in Gemini's shape and appends the model
+    turn plus a function_response after each tool call, so this has to carry
+    both directions: function_call parts become assistant tool_calls, and
+    function_response parts become role="tool" messages. There is at most one
+    call per round — the loop keeps only the first — which is why a single
+    stable call id is enough.
+    """
+    messages: list[dict] = []
+    for c in contents:
+        role = "assistant" if getattr(c, "role", None) == "model" else "user"
+        texts, calls, results = [], [], []
+        for part in (getattr(c, "parts", None) or []):
+            if getattr(part, "text", None):
+                texts.append(part.text)
+            if getattr(part, "function_call", None):
+                calls.append(part.function_call)
+            if getattr(part, "function_response", None):
+                results.append(part.function_response)
+
+        if calls:
+            messages.append({
+                "role": "assistant",
+                "content": "\n".join(texts) or None,
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(dict(call.args or {})),
+                        },
+                    }
+                    for call in calls
+                ],
+            })
+        elif results:
+            for result in results:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": "call_0",
+                    "content": json.dumps(
+                        result.response
+                        if isinstance(result.response, dict)
+                        else {"result": str(result.response)}
+                    )[:4000],
+                })
+        elif texts:
+            messages.append({"role": role, "content": "\n".join(texts)})
+    return messages
+
+
+def _nvidia_tools() -> list[dict]:
+    """The same declarations Gemini gets, in OpenAI's shape.
+
+    Same registry, so a tier change cannot change what the model is allowed to
+    call — only whether it can call it at all.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["parameters"],
+            },
+        }
+        for t in TOOLS
+    ]
+
+
+async def _nvidia_turn(client: Client, contents: list, user_id: str) -> dict:
+    """One think step on NVIDIA's OpenAI-compatible endpoint.
+
+    Returns the same shape route_turn promises: a real Gemini Content object,
+    so the loop's history threading and `_observe` keep working unchanged.
+    """
+    payload = {
+        "model": NVIDIA_MODEL,
+        "messages": [{"role": "system", "content": build_system_prompt()}]
+        + _nvidia_messages(contents),
+        "tools": _nvidia_tools(),
+        "temperature": GEMINI_TEMPERATURE,
+        "max_tokens": GEMINI_MAX_TOKENS,
+    }
+    print(f"[router] Attempting generation with {NVIDIA_MODEL} (NVIDIA)...")
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as hc:
+            r = await hc.post(
+                f"{NVIDIA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {NVIDIA_API_KEY}"},
+                json=payload,
+            )
+    except Exception as e:
+        print(f"[router] NVIDIA failed: {e}")
+        return {"status": "degraded", "provider": "groq" if _groq_available() else "ollama"}
+
+    if r.status_code != 200:
+        print(f"[router] NVIDIA HTTP {r.status_code}: {r.text[:200]}")
+        return {"status": "degraded", "provider": "groq" if _groq_available() else "ollama"}
+
+    await check_and_increment(client, user_id, NVIDIA_MODEL)
+
+    data = r.json()
+    choice = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+    text = (choice.get("content") or "").strip()
+    calls = choice.get("tool_calls") or []
+
+    if calls:
+        fn = calls[0].get("function") or {}
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            args = {}
+        parts = [types.Part(text=text)] if text else []
+        parts.append(types.Part(
+            function_call=types.FunctionCall(name=fn.get("name", ""), args=args)
+        ))
+        return {
+            "status": "ok",
+            "content": types.Content(role="model", parts=parts),
+            "text": text,
+            "function_call": {"name": fn.get("name", ""), "args": args},
+            "model_used": NVIDIA_MODEL,
+        }
+
+    if not text:
+        return {
+            "status": "error",
+            "message": "NVIDIA returned an empty response. This is not a budget "
+                       "problem — try rephrasing, or ask for one thing at a time.",
+        }
+
+    return {
+        "status": "ok",
+        "content": types.Content(role="model", parts=[types.Part(text=text)]),
+        "text": text,
+        "function_call": None,
+        "model_used": NVIDIA_MODEL,
+    }
+
+
 # record_llm_usage removed — all recording is now via budget_gate.check_and_increment
 
 async def route_special(client: Client, message: str, history: list[dict], gemini_api_key: str, user_id: str) -> dict | None:
@@ -183,11 +329,12 @@ async def route_special(client: Client, message: str, history: list[dict], gemin
             model_id = await pick_model(client, user_id)
             if model_id == "EXHAUSTED":
                 return {"type": "text", "content": "You've hit today's free-tier LLM limit. Please try again later.", "model_used": "system"}
-            if model_id == GROQ_MODEL:
-                # Groq doesn't support structured JSON schema — skip brain-dump on this tier
+            # Structured extraction is a Gemini-shaped call (response_schema),
+            # so every other tier is out rather than tried and failed: Groq and
+            # Ollama skip it, and NVIDIA is OpenAI-shaped and gets the plain
+            # tool-calling path instead.
+            if model_id not in (GEMINI_MODEL, GEMINI_LITE_MODEL):
                 return {"type": "text", "content": "Budget low — brain-dump parsing requires Gemini. Please try again tomorrow.", "model_used": "system"}
-            if model_id == "ollama":
-                return {"type": "text", "content": "Budget exhausted — brain-dump parsing requires a cloud model. Please try again tomorrow.", "model_used": "system"}
             response = await generate_with_retry(
                 lambda: ai_client.models.generate_content(
                     model=model_id,
@@ -297,12 +444,16 @@ async def route_turn(client: Client, contents: list, user_id: str, gemini_api_ke
     if budget_model == "ollama":
         print("[router] All tiers exhausted — degrading to Ollama.")
         return {"status": "degraded", "provider": "ollama"}
+    if budget_model == NVIDIA_MODEL:
+        # Gemini is spent; NVIDIA still calls tools, so the turn keeps them.
+        print("[router] Gemini tiers exhausted — trying NVIDIA.")
+        return await _nvidia_turn(client, contents, user_id)
 
     client_genai = genai.Client(api_key=gemini_api_key)
     gemini_tools = build_gemini_tools()
 
     # Start the cascade from whatever tier pick_model said was available.
-    GEMINI_TIER_ORDER = [GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_FLASH2_MODEL, GEMINI_FLASH15_MODEL]
+    GEMINI_TIER_ORDER = [GEMINI_MODEL, GEMINI_LITE_MODEL]
     start = (GEMINI_TIER_ORDER.index(budget_model)
              if budget_model in GEMINI_TIER_ORDER else len(GEMINI_TIER_ORDER))
     models_to_try = GEMINI_TIER_ORDER[start:]
