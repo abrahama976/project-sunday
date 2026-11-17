@@ -4,18 +4,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_LITE_MODEL = "gemini-2.5-flash-lite"
-GEMINI_PRO_MODEL = "gemini-2.5-pro"
-# Extended free-tier cascade models
-GEMINI_FLASH2_MODEL = "gemini-2.0-flash"     # 1,500 RPD free
-GEMINI_FLASH15_MODEL = "gemini-2.0-flash-lite"    # 1,500 RPD free
-# Per-user daily limits for new tiers
-DAILY_FLASH2_LIMIT = 500
-GLOBAL_FLASH2_CEILING = 1000
-DAILY_FLASH15_LIMIT = 500
-GLOBAL_FLASH15_CEILING = 1000
-# Thinking tokens are drawn from this same allowance on the 2.5 models, and
+# ── Model IDs ──────────────────────────────────────────────────────────────
+# Every ID is overridable from the environment, so the next retirement is an
+# .env change rather than a code change. Defaults are the IDs verified live on
+# 2026-11-17 (GET /v1beta/models, then one generateContent each) — see
+# ROADMAP.md. The 2.0 IDs (shut down 1 Jun 2026) and the 2.5 Pro tier (left the
+# free tier 1 Apr 2026) are gone from the cascade entirely rather than left in
+# place to fail on every turn.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_LITE_MODEL = os.getenv("GEMINI_LITE_MODEL", "gemini-3.5-flash-lite")
+# Thinking tokens are drawn from this same allowance on the Gemini models, and
 # they are spent BEFORE any visible output. At 2048, a question needing a
 # couple of reasoning steps against ~20 tool declarations could burn the lot
 # and return a candidate with no parts at all — which the loop then reported
@@ -25,8 +23,9 @@ GLOBAL_FLASH15_CEILING = 1000
 GEMINI_MAX_TOKENS = 8192
 GEMINI_TEMPERATURE = 0.3
 
-OLLAMA_MODEL = "llama3.2:latest"
-OLLAMA_HOST = "http://localhost:11434"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
+# S2 points this at the Windows laptop; localhost is the Mac.
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # Per-user daily LLM budget limits (tunable)
 DAILY_FLASH_LIMIT = 100
@@ -109,7 +108,23 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 OPENROUTESERVICE_API_KEY = os.environ.get("OPENROUTESERVICE_API_KEY", "")
 TFNSW_API_KEY = os.environ.get("TFNSW_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# NVIDIA's OpenAI-compatible endpoint. Sits between the Gemini tiers and
+# Groq: it does tool calling, so a turn that still needs a tool keeps it.
+# No key means the tier is skipped — it is not an error, just a provider
+# this machine has not been given.
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")
+# Forum reports for the free endpoint run to ~40 requests/minute. This is a
+# per-process window guard on top of the daily ledger, so a failover storm
+# cannot earn a 429 either.
+NVIDIA_RPM_LIMIT = int(os.getenv("NVIDIA_RPM_LIMIT", "40"))
+# The free endpoint is credit-limited rather than requests/day, so these are
+# a local spend guard, not a mirror of a published cap.
+DAILY_NVIDIA_LIMIT = int(os.getenv("DAILY_NVIDIA_LIMIT", "200"))
+GLOBAL_NVIDIA_CEILING = int(os.getenv("GLOBAL_NVIDIA_CEILING", "400"))
 TOOL_TIER_MAP = {
     # File operations
     "file_read":            "auto",
