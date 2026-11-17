@@ -191,8 +191,16 @@ python3 main.py
 itself never opens one: a background job that needs Google fails with
 `ReauthRequired` and says what to run. That is deliberate — see the runbook.
 
-The worker is normally managed by `launchd` via
-`apps/worker/com.projectsunday.worker.plist`, which restarts it when it exits.
+The worker runs in a Docker container on the Windows laptop, which stays on:
+`docker compose up -d --build` from the repo root, with native Ollama on the
+host behind `host.docker.internal:11434`. See
+**[docs/windows-runbook.md](./docs/windows-runbook.md)** for install, update,
+logs and rollback.
+
+The Mac path is kept as a fallback, unchanged: `launchd` via
+`apps/worker/com.projectsunday.worker.plist` restarts it when it exits, and
+`run_worker.sh` does the same by hand. Do not run both at once — they share one
+message queue.
 
 ### First run after a break
 

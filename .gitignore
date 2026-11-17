@@ -50,3 +50,6 @@ run_checks*.sh
 pr_*.txt
 rls_*.txt
 rls_*.json
+
+# Docker runtime state (the worker /data volume)
+/data/

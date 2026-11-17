@@ -1,6 +1,9 @@
 import asyncio
+import os
 import sys
+import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from supabase import create_client, Client
 from auth import get_service_role_key
 from config import (
@@ -522,6 +525,26 @@ async def _load_brain(client: Client) -> None:
         print(f"[brain] load failed: {e}", flush=True)
 
 
+# ── Liveness file, for the container healthcheck ───────────────────────────
+# The image has no `ps`, so a process-name check cannot work there. The main
+# poll loop touches this file once per iteration instead, and its AGE is the
+# honest answer to "is the worker still working?" — a healthy process wedged on
+# a Supabase call stops touching it, which is the failure that matters and the
+# one a name check would happily report as fine.
+#
+# Unused on the Mac: launchd watches the process directly. Writing one small
+# file every two seconds costs nothing either way.
+HEARTBEAT_FILE = Path(os.getenv("WORKER_HEARTBEAT_FILE", "/tmp/sunday-worker.alive"))
+
+
+def _touch_heartbeat() -> None:
+    try:
+        HEARTBEAT_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError as e:
+        # Never fatal: a read-only path costs a failed healthcheck, not a turn.
+        print(f"[worker] could not touch {HEARTBEAT_FILE}: {e}", flush=True)
+
+
 async def main():
     # The commit, first line, before anything else can fail. "Is the fix
     # deployed?" was answered for an hour by inference from model behaviour —
@@ -785,6 +808,7 @@ async def main():
                             await maybe_summarise(client, GEMINI_API_KEY, message_count, uid)
                         last_processed_ids[uid] = latest["id"]
 
+            _touch_heartbeat()
             await asyncio.sleep(2)
             retries = 0
 
