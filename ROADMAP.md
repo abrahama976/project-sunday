@@ -583,9 +583,11 @@ and the reason matters more than the list.
 - **Health and meals have no tool.** The Health page writes rows; the agent
   cannot. `meal_checkin` used to offer "let me log it for you" and now points at
   the page instead, which is honest but not the same as being able to.
-- **No container.** The worker runs from a checkout on the Mac under `launchd`.
-  Docker was considered and set aside as more moving parts than one machine
-  needs.
+- ~~**No container.**~~ The worker now runs in Docker on the Windows laptop,
+  which stays on; the Mac's `launchd` job is the fallback. Docker was originally
+  set aside as more moving parts than one machine needs, and that reasoning was
+  right until the machine that was always on stopped being the Mac. See
+  [docs/windows-runbook.md](./docs/windows-runbook.md).
 - **Two security items were deprioritised, twice, explicitly.** The Google OAuth
   client whose secret was pasted into a chat is still live, and the Supabase
   **service-role key** — which bypasses RLS entirely — appeared in a screenshot

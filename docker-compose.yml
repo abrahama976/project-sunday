@@ -1,0 +1,75 @@
+# Project Sunday — worker runtime for the Windows laptop.
+#
+# Ollama stays NATIVE on Windows (CUDA) and the container reaches it through
+# host.docker.internal. Do not containerise Ollama here: the GPU passthrough is
+# the entire reason the local model moved to this machine.
+#
+#   docker compose up -d --build      # first start, and every update
+#   docker compose logs -f worker     # the worker logs to stdout
+#   docker compose ps                 # health is the heartbeat's age
+#
+# See docs/windows-runbook.md.
+name: sunday
+
+services:
+  worker:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    image: sunday-worker:local
+    container_name: sunday-worker
+
+    # Supervision parity with the Mac's launchd job: a background task that dies
+    # calls sys.exit(1), and this is what brings the worker back.
+    restart: unless-stopped
+    # Long enough for an in-flight turn to finish writing its agent_turns row
+    # rather than being killed mid-answer.
+    stop_grace_period: 30s
+
+    # Secrets are in neither the image nor this file. They come from a
+    # hand-copied apps/worker/.env, which is gitignored.
+    #
+    # `required: false` keeps `docker compose config` valid on a checkout that
+    # has no .env — the Mac, and CI/review — instead of failing with "env file
+    # not found". Needs Compose 2.24+.
+    env_file:
+      - path: ./apps/worker/.env
+        required: false
+
+    environment:
+      TZ: Australia/Sydney
+      PYTHONUNBUFFERED: "1"
+      # Native Ollama on the Windows host, not a sibling container. config.py
+      # reads this; without it the worker would look for Ollama in its own
+      # namespace and report it unreachable.
+      OLLAMA_HOST: http://host.docker.internal:11434
+      # file_write is confined here by executors/file_ops.py.
+      ALLOWED_WRITE_ROOT: /data
+      # Read by main.py and by the HEALTHCHECK in the Dockerfile.
+      WORKER_HEARTBEAT_FILE: /tmp/sunday-worker.alive
+
+    # Makes host.docker.internal resolve on a Linux engine too. Harmless on
+    # Docker Desktop, where it is defined already.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # Read-write on purpose. google_auth.py writes refreshed tokens back in
+      # place; a read-only mount would break Google access at the first refresh
+      # (~hourly), which looks like an expired account rather than a mount.
+      - ./apps/worker/credentials.json:/app/credentials.json
+      - ./apps/worker/token_calendar.json:/app/token_calendar.json
+      - ./apps/worker/token_gmail.json:/app/token_gmail.json
+      # Agent file writes and the calendar/task artefacts, outside the image.
+      - ./data:/data
+      - ./apps/worker/logs:/app/logs
+
+    # The worker prints to stdout; this keeps the JSON log from growing without
+    # limit on a machine that is expected to stay on for months.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

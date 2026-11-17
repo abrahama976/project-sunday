@@ -1,0 +1,32 @@
+# Build context is apps/worker. Everything listed here is kept OUT of the image.
+#
+# ── Secrets ────────────────────────────────────────────────────────────────
+# The previous draft ran `COPY . /app/` with no exclusions, so .env,
+# credentials.json and the token files would have been baked into a layer —
+# readable forever by anyone who can pull the image or run `docker history`.
+# They arrive at runtime instead: .env through compose `env_file`, the Google
+# files through bind mounts (see docker-compose.yml).
+.env
+.env.*
+credentials.json
+token_*.json
+
+# ── Runtime state ─────────────────────────────────────────────────────────
+logs/
+data/
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ── Not needed at runtime ─────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+.DS_Store
