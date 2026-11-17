@@ -14,10 +14,12 @@ export async function POST(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // 2. Use the service-role client to UPDATE — guarded by our auth check above.
+  // 2. Service-role client. It bypasses RLS, so the ownership predicate below
+  //    is the enforcement boundary on this path, not a defence in depth.
   const admin = createServiceRoleClient();
 
-  // 3. Only allow approving rows currently in 'awaiting_approval'. Prevents replay/upgrade.
+  // 3. Only the owner, and only while the row is 'awaiting_approval': prevents
+  //    replay and upgrade, and stops an id alone from being enough.
   const { data, error } = await admin
     .from("action_queue")
     .update({
@@ -27,15 +29,15 @@ export async function POST(
       approved_by: user.id,
     })
     .eq("id", id)
+    .eq("user_id", user.id)
     .eq("status", "awaiting_approval")
     .select()
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-  if (!data) {
-    return NextResponse.json({ error: "row not pending" }, { status: 409 });
+  // 404 for absent, foreign-owned and already-resolved ids alike: the caller
+  // should not be able to tell those apart.
+  if (error || !data) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   return NextResponse.json({ ok: true, action: data });

@@ -13,6 +13,8 @@ export async function POST(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  // Service-role client: it bypasses RLS, so the ownership predicate below is
+  // the enforcement boundary on this path, not a defence in depth.
   const admin = createServiceRoleClient();
   const { data, error } = await admin
     .from("action_queue")
@@ -23,12 +25,15 @@ export async function POST(
       approved_by: user.id,
     })
     .eq("id", id)
+    .eq("user_id", user.id)
     .eq("status", "awaiting_approval")
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  if (!data)  return NextResponse.json({ error: "row not pending" }, { status: 409 });
+  // 404 for absent, foreign-owned and already-resolved ids alike.
+  if (error || !data) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   return NextResponse.json({ ok: true, action: data });
 }
